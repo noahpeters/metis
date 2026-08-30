@@ -21,7 +21,7 @@ The prepared pull-request body must include `Metis-Task: owner/repository#issue`
 
 ## Merge and deployment lifecycle
 
-Signed `pull_request`, `pull_request_review`, and `check_suite` events re-evaluate guarded auto-merge. Each repository must explicitly opt in through `METIS_LIFECYCLE_POLICY_JSON`. Metis requires successful checks, the configured number of current approvals, a mergeable non-draft PR to the default branch, and no repository recovery lock. It then enables GitHub native auto-merge; it never calls the direct merge endpoint.
+Signed `pull_request`, `pull_request_review`, and `check_suite` events re-evaluate guarded auto-merge. Each repository must explicitly opt in through `METIS_LIFECYCLE_POLICY_JSON`. Metis requires the configured number of current human approvals, a mergeable non-draft PR to the default branch, no repository recovery lock, and successful checks when `requiredChecks` is enabled. A repository that verifies only after merge may explicitly set `requiredChecks:false`; its named deployment workflows remain mandatory. Metis then enables GitHub native auto-merge; it never calls the direct merge endpoint.
 
 A merged `pull_request.closed` event records the exact merge SHA and locks the repository in `deploying`. Signed `workflow_run.completed` events count only when both the SHA and configured workflow name match. All required workflows must succeed before the task becomes `complete`.
 

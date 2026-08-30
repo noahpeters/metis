@@ -155,7 +155,7 @@ async function evaluateAutoMerge(env, task, lifecycle) {
     githubRequest(env, `/repos/${task.repository}/commits/${pullRequest.head.sha}/check-runs?per_page=100`),
     githubRequest(env, `/repos/${task.repository}/pulls/${lifecycle.pull_request_number}/reviews?per_page=100`),
   ]);
-  const checksReady = checksPassed(checks.check_runs || []);
+  const checksReady = !policy.requiredChecks || checksPassed(checks.check_runs || []);
   const approvalsReady = approvalCount(reviews || []) >= policy.requiredApprovals;
   if (!checksReady || !approvalsReady || pullRequest.mergeable !== true) {
     await env.DB.prepare("UPDATE tasks SET state='reviewing', updated_at=unixepoch() WHERE id=? AND state IN ('pr_ready','reviewing','merge_ready')").bind(task.id).run();

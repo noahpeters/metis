@@ -25,7 +25,7 @@ variable "metis_policy_json" {
 variable "metis_lifecycle_policy_json" {
   description = "Fail-closed repository merge, deployment, and recovery policy. Repositories must explicitly opt in."
   type        = string
-  default     = "{\"defaults\":{\"autoMerge\":false,\"requiredApprovals\":1,\"deploymentWorkflows\":[],\"maxRecoveryAttempts\":2,\"mergeMethod\":\"SQUASH\"},\"repositories\":{}}"
+  default     = "{\"defaults\":{\"autoMerge\":false,\"requiredApprovals\":1,\"requiredChecks\":true,\"deploymentWorkflows\":[],\"maxRecoveryAttempts\":2,\"mergeMethod\":\"SQUASH\"},\"repositories\":{}}"
 }
 
 variable "github_app_bot_login" {

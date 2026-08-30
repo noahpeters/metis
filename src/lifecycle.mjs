@@ -11,12 +11,13 @@ export function lifecyclePolicy(env, repository) {
   try {
     supplied = JSON.parse(env.METIS_LIFECYCLE_POLICY_JSON || "{}");
   } catch {
-    return { autoMerge: false, requiredApprovals: 1, deploymentWorkflows: [], maxRecoveryAttempts: 2, mergeMethod: "SQUASH" };
+    return { autoMerge: false, requiredApprovals: 1, requiredChecks: true, deploymentWorkflows: [], maxRecoveryAttempts: 2, mergeMethod: "SQUASH" };
   }
   const defaults = supplied.defaults || {};
   const selected = supplied.repositories?.[repository] || {};
   return {
     requiredApprovals: 1,
+    requiredChecks: true,
     deploymentWorkflows: [],
     maxRecoveryAttempts: 2,
     mergeMethod: "SQUASH",
