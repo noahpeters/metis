@@ -214,8 +214,16 @@ async function handleRevisionDispatch(env, message) {
   } catch (error) {
     await env.DB.batch([
       env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(task.id),
-      env.DB.prepare("UPDATE tasks SET state='reviewing',updated_at=unixepoch() WHERE id=?").bind(task.id),
+      env.DB.prepare("UPDATE budget_windows SET cost_units_used=MAX(0,cost_units_used-?),tasks_started=MAX(0,tasks_started-1) WHERE window_key=date('now')").bind(decision.estimate),
+      env.DB.prepare("UPDATE provider_capacity SET remaining_units=CASE WHEN remaining_units IS NULL THEN NULL ELSE remaining_units+? END,updated_at=unixepoch() WHERE provider='codex_included'").bind(decision.estimate),
+      env.DB.prepare("UPDATE tasks SET state=?,attempt_count=MAX(0,attempt_count-1),blocker_reason=?,updated_at=unixepoch() WHERE id=?")
+        .bind([401, 403].includes(error.status) ? "blocked" : "reviewing", [401, 403].includes(error.status) ? "GitHub revision dispatch credential lacks pull-request comment permission." : null, task.id),
     ]);
+    if ([401, 403].includes(error.status)) {
+      await setState(env, task.repository, task.issue_number, "metis:blocked");
+      await comment(env, task.repository, task.issue_number, "## Metis blocked the review revision\n\nThe GitHub user credential used to invoke Codex cannot comment on pull requests. Grant that credential Pull requests read/write access, update `GITHUB_DISPATCH_USER_TOKEN`, then submit the requested-changes review again. No revision capacity remains charged.");
+      return;
+    }
     throw error;
   }
 }
