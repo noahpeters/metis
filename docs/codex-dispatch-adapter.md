@@ -17,6 +17,15 @@ Any other billing mode, including `api_metered`, is rejected before task creatio
 
 The adapter must later call Metis with `completed`, `blocked`, or `failed`. Completed work must include a pull-request URL; blocked work must include one concrete question.
 
-## Current availability
+## GitHub Codex cloud driver
 
-The contract and enforcement layer are implemented, but no production driver is checked in. As of the documentation review on 2026-08-30, official OpenAI documentation describes API model execution but does not establish a public endpoint for programmatically creating Codex cloud tasks against included ChatGPT/Codex subscription capacity. Metis therefore remains fail-closed until a supported driver is confirmed.
+Metis includes a GitHub-mediated driver for the supported Codex cloud integration. It posts an idempotently marked `@codex` task request to the allowlisted GitHub issue. The request tells Codex to open a pull request, obey repository instructions, never merge or deploy, and return a first-class `BLOCKED:` question when information is missing.
+
+This path does not use the OpenAI API. It relies on the repository being connected to Codex cloud and the GitHub actor being linked to an eligible ChatGPT/Codex account. It is controlled by two independent fail-closed settings:
+
+- `CODEX_DISPATCH_MODE=github_integration`
+- `CODEX_GITHUB_INTEGRATION_ENABLED=true`
+
+The repository must also be present in `ALLOWED_REPOSITORIES`, and `codex_included` capacity must be enabled in both policy and D1. Staging keeps all four gates closed by default.
+
+Metis searches existing issue comments for the lease marker before posting, so a queue retry does not launch duplicate Codex work. The existing authenticated callback contract remains available for completion reconciliation; the GitHub driver currently owns launch only.

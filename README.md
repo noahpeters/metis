@@ -34,7 +34,7 @@ Perplexity is optional and research-only. It is disabled by default. Paid API fa
 - a provider-neutral callback contract for included-capacity Codex/cloud execution;
 - no merge or deployment privileges.
 
-`CODEX_DISPATCH_URL` is deliberately an adapter boundary. It must point to a supported cloud coding-task launcher that uses included capacity. Metis does not silently substitute a metered OpenAI API call when that adapter or its capacity is unavailable.
+Metis can launch included-capacity Codex cloud work through the supported GitHub integration by posting an idempotent `@codex` task request on an allowlisted issue. `CODEX_DISPATCH_URL` remains available as an authenticated adapter boundary for another supported included-capacity launcher. Metis never silently substitutes a metered OpenAI API call.
 
 See `docs/codex-dispatch-adapter.md` for the authenticated capability, task, idempotency, callback, and fail-closed contract.
 

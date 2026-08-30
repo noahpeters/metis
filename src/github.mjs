@@ -1,6 +1,6 @@
 const STATE_LABELS = ["metis:ready", "metis:planning", "metis:implementing", "metis:reviewing", "metis:blocked", "metis:budget-blocked", "metis:pr-ready", "metis:failed"];
 
-async function request(env, path, init = {}) {
+export async function githubRequest(env, path, init = {}) {
   const response = await fetch(`https://api.github.com${path}`, {
     ...init,
     headers: {
@@ -20,17 +20,17 @@ export function repositoryAllowed(env, repository) {
 }
 
 export async function setState(env, repository, issueNumber, nextState) {
-  const issue = await request(env, `/repos/${repository}/issues/${issueNumber}`);
+  const issue = await githubRequest(env, `/repos/${repository}/issues/${issueNumber}`);
   const labels = issue.labels.map((label) => typeof label === "string" ? label : label.name);
   const nextLabels = [...labels.filter((label) => !STATE_LABELS.includes(label)), nextState];
-  await request(env, `/repos/${repository}/issues/${issueNumber}`, {
+  await githubRequest(env, `/repos/${repository}/issues/${issueNumber}`, {
     method: "PATCH",
     body: JSON.stringify({ labels: nextLabels }),
   });
 }
 
 export async function comment(env, repository, issueNumber, body) {
-  await request(env, `/repos/${repository}/issues/${issueNumber}/comments`, {
+  return githubRequest(env, `/repos/${repository}/issues/${issueNumber}/comments`, {
     method: "POST",
     body: JSON.stringify({ body }),
   });

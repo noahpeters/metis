@@ -1,3 +1,5 @@
+import { dispatchViaGithubCodex, githubCodexCapabilities } from "./github-codex-adapter.mjs";
+
 const ALLOWED_BILLING_MODES = new Set(["included_subscription"]);
 
 export function validateCapabilities(value) {
@@ -26,6 +28,9 @@ async function dispatcherRequest(env, path, init = {}) {
 }
 
 export async function getCodexCapabilities(env) {
+  if (env.CODEX_DISPATCH_MODE === "github_integration") {
+    return validateCapabilities(githubCodexCapabilities(env));
+  }
   return validateCapabilities(await dispatcherRequest(env, "/v1/capabilities"));
 }
 
@@ -53,6 +58,9 @@ export function buildCodexTask(task, leaseId, callbackUrl) {
 
 export async function dispatchCodexTask(env, task, leaseId) {
   await getCodexCapabilities(env);
+  if (env.CODEX_DISPATCH_MODE === "github_integration") {
+    return dispatchViaGithubCodex(env, task, leaseId);
+  }
   const result = await dispatcherRequest(env, "/v1/tasks", {
     method: "POST",
     headers: { "content-type": "application/json", "idempotency-key": leaseId },
