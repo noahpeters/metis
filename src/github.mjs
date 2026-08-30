@@ -1,11 +1,66 @@
 const STATE_LABELS = ["metis:ready", "metis:planning", "metis:implementing", "metis:reviewing", "metis:blocked", "metis:budget-blocked", "metis:pr-ready", "metis:failed"];
 
+let installationTokenCache;
+
+function base64Url(value) {
+  const bytes = typeof value === "string" ? new TextEncoder().encode(value) : new Uint8Array(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+function pemBytes(pem) {
+  const encoded = pem.replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g, "");
+  const binary = atob(encoded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+export async function createGithubAppJwt(appId, privateKey, nowSeconds = Math.floor(Date.now() / 1000)) {
+  if (!appId || !privateKey) throw new Error("GitHub App credentials are incomplete");
+  const header = base64Url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const payload = base64Url(JSON.stringify({ iat: nowSeconds - 60, exp: nowSeconds + 540, iss: String(appId) }));
+  const unsigned = `${header}.${payload}`;
+  const key = await crypto.subtle.importKey(
+    "pkcs8",
+    pemBytes(privateKey),
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(unsigned));
+  return `${unsigned}.${base64Url(signature)}`;
+}
+
+async function githubToken(env) {
+  if (env.GITHUB_TOKEN) return env.GITHUB_TOKEN;
+  if (!env.GITHUB_APP_ID || !env.GITHUB_APP_INSTALLATION_ID || !env.GITHUB_APP_PRIVATE_KEY) {
+    throw new Error("GitHub authentication is not configured");
+  }
+  const now = Date.now();
+  if (installationTokenCache?.expiresAt > now + 60_000) return installationTokenCache.token;
+  const jwt = await createGithubAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
+  const response = await fetch(`https://api.github.com/app/installations/${env.GITHUB_APP_INSTALLATION_ID}/access_tokens`, {
+    method: "POST",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${jwt}`,
+      "User-Agent": "metis-control-plane",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+  if (!response.ok) throw new Error(`GitHub installation token request failed (${response.status})`);
+  const result = await response.json();
+  installationTokenCache = { token: result.token, expiresAt: Date.parse(result.expires_at) };
+  return result.token;
+}
+
 export async function githubRequest(env, path, init = {}) {
+  const token = await githubToken(env);
   const response = await fetch(`https://api.github.com${path}`, {
     ...init,
     headers: {
       Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+      Authorization: `Bearer ${token}`,
       "User-Agent": "metis-control-plane",
       "X-GitHub-Api-Version": "2022-11-28",
       ...init.headers,

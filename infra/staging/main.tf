@@ -35,6 +35,8 @@ resource "cloudflare_workers_script" "metis" {
     { name = "ALLOWED_REPOSITORIES", type = "plain_text", text = var.allowed_repositories },
     { name = "CODEX_DISPATCH_MODE", type = "plain_text", text = var.codex_dispatch_mode },
     { name = "CODEX_GITHUB_INTEGRATION_ENABLED", type = "plain_text", text = tostring(var.codex_github_integration_enabled) },
+    { name = "GITHUB_APP_ID", type = "plain_text", text = var.github_app_id },
+    { name = "GITHUB_APP_INSTALLATION_ID", type = "plain_text", text = var.github_app_installation_id },
     { name = "DB", type = "d1", database_id = cloudflare_d1_database.metis.id },
     { name = "DISPATCH_QUEUE", type = "queue", queue_name = cloudflare_queue.dispatch.queue_name },
     { name = "METIS_POLICY_JSON", type = "plain_text", text = var.metis_policy_json },

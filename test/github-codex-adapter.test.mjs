@@ -1,6 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { buildGithubCodexComment, githubCodexCapabilities } from "../src/github-codex-adapter.mjs";
+import { createGithubAppJwt } from "../src/github.mjs";
+
+test("GitHub App JWT is signed with bounded timestamps", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" });
+  const jwt = await createGithubAppJwt("4772921", pem, 2_000_000_000);
+  const [header, payload, signature] = jwt.split(".");
+  assert.deepEqual(JSON.parse(Buffer.from(header, "base64url")), { alg: "RS256", typ: "JWT" });
+  assert.deepEqual(JSON.parse(Buffer.from(payload, "base64url")), {
+    iat: 1_999_999_940,
+    exp: 2_000_000_540,
+    iss: "4772921",
+  });
+  assert.ok(signature.length > 100);
+});
 
 test("GitHub Codex capability is fail-closed by default", () => {
   assert.deepEqual(githubCodexCapabilities({}), {

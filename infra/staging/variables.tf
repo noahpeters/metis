@@ -38,3 +38,15 @@ variable "codex_github_integration_enabled" {
   type        = bool
   default     = false
 }
+
+variable "github_app_id" {
+  description = "GitHub App ID used for short-lived installation authentication."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_installation_id" {
+  description = "GitHub App installation ID scoped to the staging sandbox repository."
+  type        = string
+  default     = ""
+}
