@@ -1,4 +1,4 @@
-import { comment, githubRequest, repositoryAllowed } from "./github.mjs";
+import { githubUserRequest, repositoryAllowed } from "./github.mjs";
 
 const MARKER_PREFIX = "metis-codex-dispatch";
 
@@ -7,8 +7,8 @@ export function githubCodexCapabilities(env) {
     provider: "codex",
     execution: "cloud",
     billing_mode: "included_subscription",
-    accepting_tasks: env.CODEX_GITHUB_INTEGRATION_ENABLED === "true",
-    driver: "github_integration",
+    accepting_tasks: env.CODEX_GITHUB_INTEGRATION_ENABLED === "true" && Boolean(env.GITHUB_DISPATCH_USER_TOKEN),
+    driver: "github_user_integration",
   };
 }
 
@@ -41,14 +41,17 @@ export async function dispatchViaGithubCodex(env, task, leaseId) {
   if (!repositoryAllowed(env, task.repository)) throw new Error("Repository is not allowlisted for Codex dispatch");
 
   const path = `/repos/${task.repository}/issues/${task.issue_number}/comments?per_page=100`;
-  const comments = await githubRequest(env, path);
+  const comments = await githubUserRequest(env, path);
   const existing = comments.find((item) => item.body?.includes(marker(leaseId)));
-  const created = existing || await comment(env, task.repository, task.issue_number, buildGithubCodexComment(task, leaseId));
+  const created = existing || await githubUserRequest(env, `/repos/${task.repository}/issues/${task.issue_number}/comments`, {
+    method: "POST",
+    body: JSON.stringify({ body: buildGithubCodexComment(task, leaseId) }),
+  });
 
   return {
     id: `github-issue-comment:${created.id}`,
     status: "queued",
-    driver: "github_integration",
+    driver: "github_user_integration",
     idempotent_replay: Boolean(existing),
   };
 }

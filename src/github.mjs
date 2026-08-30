@@ -56,6 +56,10 @@ async function githubToken(env) {
 
 export async function githubRequest(env, path, init = {}) {
   const token = await githubToken(env);
+  return authenticatedGithubRequest(token, path, init);
+}
+
+async function authenticatedGithubRequest(token, path, init = {}) {
   const response = await fetch(`https://api.github.com${path}`, {
     ...init,
     headers: {
@@ -68,6 +72,13 @@ export async function githubRequest(env, path, init = {}) {
   });
   if (!response.ok) throw new Error(`GitHub ${init.method || "GET"} ${path} failed (${response.status})`);
   return response.status === 204 ? null : response.json();
+}
+
+export async function githubUserRequest(env, path, init = {}) {
+  if (!env.GITHUB_DISPATCH_USER_TOKEN) {
+    throw new Error("GitHub Codex user dispatch credential is not configured");
+  }
+  return authenticatedGithubRequest(env.GITHUB_DISPATCH_USER_TOKEN, path, init);
 }
 
 export function repositoryAllowed(env, repository) {

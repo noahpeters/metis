@@ -24,9 +24,13 @@ test("GitHub Codex capability is fail-closed by default", () => {
     execution: "cloud",
     billing_mode: "included_subscription",
     accepting_tasks: false,
-    driver: "github_integration",
+    driver: "github_user_integration",
   });
-  assert.equal(githubCodexCapabilities({ CODEX_GITHUB_INTEGRATION_ENABLED: "true" }).accepting_tasks, true);
+  assert.equal(githubCodexCapabilities({ CODEX_GITHUB_INTEGRATION_ENABLED: "true" }).accepting_tasks, false);
+  assert.equal(githubCodexCapabilities({
+    CODEX_GITHUB_INTEGRATION_ENABLED: "true",
+    GITHUB_DISPATCH_USER_TOKEN: "github_pat_test",
+  }).accepting_tasks, true);
 });
 
 test("GitHub Codex task comment is idempotently marked and preserves guardrails", () => {
