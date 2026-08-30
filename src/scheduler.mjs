@@ -3,6 +3,10 @@ import { loadPolicy, taskBudget } from "./config.mjs";
 export async function admissionDecision(env, task) {
   const policy = loadPolicy(env.METIS_POLICY_JSON);
   const sizePolicy = policy.taskSizes[task.size_class || "unknown"];
+  const health = await env.DB.prepare("SELECT state, blocking_sha FROM repository_health WHERE repository=?").bind(task.repository).first();
+  if (health && health.state !== "healthy" && !task.is_recovery) {
+    return { admitted: false, defer: true, repositoryLocked: true, reason: `Repository recovery for ${health.blocking_sha || "main"} has priority over normal work.` };
+  }
   if (!policy.providers.codex_included.enabled) return { admitted: false, reason: "Codex included capacity is disabled." };
   if (policy.providers.paid_api.enabled) throw new Error("Unsafe policy: paid API fallback must remain disabled unless explicitly implemented and approved");
   if (sizePolicy.dispatch !== "automatic" && !task.budget_approved) {

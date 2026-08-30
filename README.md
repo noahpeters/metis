@@ -32,8 +32,11 @@ Perplexity is optional and research-only. It is disabled by default. Paid API fa
 - global task, cost, concurrency, retry, and per-task limits;
 - hard `metis:budget-blocked` and human-decision `metis:blocked` stops;
 - first-class `metis:awaiting-pr` checkpoint that releases the coding lease;
+- guarded GitHub-native auto-merge with repository-specific opt-in;
+- exact-merge-SHA deployment monitoring and repository health locks;
+- bounded, idempotent corrective-PR recovery that outranks normal work;
 - a provider-neutral callback contract for included-capacity Codex/cloud execution;
-- no merge or deployment privileges.
+- no direct default-branch push, forced merge, or manual deployment path.
 
 Metis can launch included-capacity Codex cloud work through the supported GitHub integration by posting an idempotent `@codex` task request on an allowlisted issue. `CODEX_DISPATCH_URL` remains available as an authenticated adapter boundary for another supported included-capacity launcher. Metis never silently substitutes a metered OpenAI API call.
 
@@ -72,5 +75,8 @@ npm run verify
 - A human applies `metis:ready`.
 - Missing information or decisions enter `metis:blocked`, not failure.
 - Budget exhaustion stops work before dispatch or retry.
-- Metis never merges, deploys, or mutates production data.
+- Metis never pushes directly to a default branch, forces a merge, manually deploys, or mutates production data.
+- Metis may enable GitHub-native auto-merge after explicit repository gates pass; it never calls a forced/direct merge path.
+- A merge is incomplete until every configured deployment workflow succeeds for the exact merge SHA.
+- Deployment failure freezes normal dispatch and starts a bounded corrective-PR recovery chain.
 - Target CI and human PR review remain authoritative.

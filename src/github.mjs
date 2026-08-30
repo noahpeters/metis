@@ -1,4 +1,4 @@
-const STATE_LABELS = ["metis:ready", "metis:planning", "metis:implementing", "metis:reviewing", "metis:awaiting-pr", "metis:blocked", "metis:budget-blocked", "metis:pr-ready", "metis:failed"];
+const STATE_LABELS = ["metis:ready", "metis:planning", "metis:implementing", "metis:reviewing", "metis:awaiting-pr", "metis:blocked", "metis:budget-blocked", "metis:pr-ready", "metis:merge-ready", "metis:merging", "metis:deploying", "metis:complete", "metis:recovery", "metis:recovery-blocked", "metis:failed"];
 
 let installationTokenCache;
 
@@ -59,6 +59,35 @@ export async function githubRequest(env, path, init = {}) {
   return authenticatedGithubRequest(token, path, init);
 }
 
+export async function githubGraphql(env, query, variables) {
+  const token = await githubToken(env);
+  const response = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "User-Agent": "metis-control-plane",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  if (!response.ok) throw new Error(`GitHub GraphQL failed (${response.status})`);
+  const result = await response.json();
+  if (result.errors?.length) throw new Error(`GitHub GraphQL rejected the operation: ${result.errors[0].message}`);
+  return result.data;
+}
+
+export async function enableAutoMerge(env, pullRequestNodeId, mergeMethod = "SQUASH") {
+  return githubGraphql(env, `
+    mutation EnableMetisAutoMerge($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
+      enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId, mergeMethod: $mergeMethod}) {
+        pullRequest { number autoMergeRequest { enabledAt } }
+      }
+    }
+  `, { pullRequestId: pullRequestNodeId, mergeMethod });
+}
+
 async function authenticatedGithubRequest(token, path, init = {}) {
   const response = await fetch(`https://api.github.com${path}`, {
     ...init,
@@ -70,7 +99,11 @@ async function authenticatedGithubRequest(token, path, init = {}) {
       ...init.headers,
     },
   });
-  if (!response.ok) throw new Error(`GitHub ${init.method || "GET"} ${path} failed (${response.status})`);
+  if (!response.ok) {
+    const error = new Error(`GitHub ${init.method || "GET"} ${path} failed (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
   return response.status === 204 ? null : response.json();
 }
 
@@ -88,6 +121,17 @@ export function repositoryAllowed(env, repository) {
 export async function setState(env, repository, issueNumber, nextState) {
   const issue = await githubRequest(env, `/repos/${repository}/issues/${issueNumber}`);
   const labels = issue.labels.map((label) => typeof label === "string" ? label : label.name);
+  if (!labels.includes(nextState)) {
+    try {
+      await githubRequest(env, `/repos/${repository}/labels/${encodeURIComponent(nextState)}`);
+    } catch (error) {
+      if (error.status !== 404) throw error;
+      await githubRequest(env, `/repos/${repository}/labels`, {
+        method: "POST",
+        body: JSON.stringify({ name: nextState, color: nextState.includes("blocked") || nextState === "metis:recovery" ? "b60205" : nextState === "metis:complete" ? "0e8a16" : "1d76db", description: "Metis lifecycle state" }),
+      });
+    }
+  }
   const nextLabels = [...labels.filter((label) => !STATE_LABELS.includes(label)), nextState];
   await githubRequest(env, `/repos/${repository}/issues/${issueNumber}`, {
     method: "PATCH",

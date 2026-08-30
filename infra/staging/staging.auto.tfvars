@@ -5,3 +5,5 @@ github_app_id                    = "4772921"
 github_app_installation_id       = "157788676"
 
 metis_policy_json = "{\"global\":{\"maxConcurrentTasks\":1,\"maxCostUnitsPerWindow\":4,\"maxTasksPerWindow\":1,\"maxRetries\":1},\"providers\":{\"codex_included\":{\"enabled\":true},\"paid_api\":{\"enabled\":false},\"perplexity\":{\"enabled\":false}}}"
+
+metis_lifecycle_policy_json = "{\"defaults\":{\"autoMerge\":false,\"requiredApprovals\":1,\"deploymentWorkflows\":[],\"maxRecoveryAttempts\":2,\"mergeMethod\":\"SQUASH\"},\"repositories\":{\"noahpeters/metis-sandbox\":{\"autoMerge\":false}}}"

@@ -23,3 +23,12 @@ test("awaiting PR creation is a first-class human checkpoint", () => {
   assert.doesNotThrow(() => assertTransition("metis:implementing", "metis:awaiting-pr"));
   assert.doesNotThrow(() => assertTransition("metis:awaiting-pr", "metis:pr-ready"));
 });
+
+test("merge and deployment recovery are explicit guarded transitions", () => {
+  assert.doesNotThrow(() => assertTransition("metis:pr-ready", "metis:reviewing"));
+  assert.doesNotThrow(() => assertTransition("metis:reviewing", "metis:merge-ready"));
+  assert.doesNotThrow(() => assertTransition("metis:merge-ready", "metis:merging"));
+  assert.doesNotThrow(() => assertTransition("metis:merging", "metis:deploying"));
+  assert.doesNotThrow(() => assertTransition("metis:deploying", "metis:recovery"));
+  assert.doesNotThrow(() => assertTransition("metis:deploying", "metis:complete"));
+});

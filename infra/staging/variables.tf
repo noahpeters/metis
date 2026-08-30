@@ -22,6 +22,12 @@ variable "metis_policy_json" {
   default     = "{\"global\":{\"maxConcurrentTasks\":2,\"maxCostUnitsPerWindow\":20,\"maxTasksPerWindow\":4,\"maxRetries\":2},\"providers\":{\"codex_included\":{\"enabled\":false},\"paid_api\":{\"enabled\":false},\"perplexity\":{\"enabled\":false}}}"
 }
 
+variable "metis_lifecycle_policy_json" {
+  description = "Fail-closed repository merge, deployment, and recovery policy. Repositories must explicitly opt in."
+  type        = string
+  default     = "{\"defaults\":{\"autoMerge\":false,\"requiredApprovals\":1,\"deploymentWorkflows\":[],\"maxRecoveryAttempts\":2,\"mergeMethod\":\"SQUASH\"},\"repositories\":{}}"
+}
+
 variable "codex_dispatch_mode" {
   description = "Codex launch driver. Keep disabled until the GitHub Codex integration is connected and tested."
   type        = string

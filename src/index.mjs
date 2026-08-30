@@ -1,7 +1,8 @@
 import { analyzeIssue } from "./ai.mjs";
-import { blockTask, comment, repositoryAllowed, setState } from "./github.mjs";
+import { blockTask, comment, enableAutoMerge, githubRequest, repositoryAllowed, setState } from "./github.mjs";
 import { admissionDecision, claimTask } from "./scheduler.mjs";
 import { dispatchCodexTask } from "./codex-dispatch.mjs";
+import { approvalCount, checksPassed, checkSuiteLifecycleFromWebhook, lifecyclePolicy, pullRequestLifecycleFromWebhook, reviewLifecycleFromWebhook, workflowRunFromWebhook } from "./lifecycle.mjs";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
@@ -75,16 +76,127 @@ export function readyForPrCodexFromWebhook(event, payload) {
 }
 
 export function pullRequestForTaskFromWebhook(event, payload) {
-  if (event !== "pull_request" || !["opened", "reopened"].includes(payload.action)) return null;
-  const repository = payload.repository?.full_name;
-  const marker = (payload.pull_request?.body || "").match(/Metis-Task:\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)/i);
-  if (!marker || marker[1].toLowerCase() !== repository?.toLowerCase()) return null;
+  const lifecycle = pullRequestLifecycleFromWebhook(event, payload);
+  if (!lifecycle || !["opened", "reopened"].includes(lifecycle.action)) return null;
   return {
-    repository,
-    issue_number: Number(marker[2]),
-    pull_request_url: payload.pull_request?.html_url,
-    pull_request_number: payload.pull_request?.number,
+    repository: lifecycle.repository,
+    issue_number: lifecycle.issue_number,
+    pull_request_url: lifecycle.pull_request_url,
+    pull_request_number: lifecycle.pull_request_number,
   };
+}
+
+async function taskForPullRequest(env, repository, pullRequestNumber) {
+  return env.DB.prepare("SELECT * FROM tasks WHERE repository=? AND pull_request_number=? ORDER BY updated_at DESC LIMIT 1")
+    .bind(repository, pullRequestNumber).first();
+}
+
+async function evaluateAutoMerge(env, task, lifecycle) {
+  const policy = lifecyclePolicy(env, task.repository);
+  if (!policy.autoMerge || task.is_recovery && policy.autoMergeRecovery === false) return { enabled: false, reason: "auto-merge disabled" };
+  const health = await env.DB.prepare("SELECT state FROM repository_health WHERE repository=?").bind(task.repository).first();
+  if (health && health.state !== "healthy" && !task.is_recovery) return { enabled: false, reason: "repository recovery lock active" };
+  if (task.state === "merging") return { enabled: true, reason: "already enabled" };
+  const pullRequest = await githubRequest(env, `/repos/${task.repository}/pulls/${lifecycle.pull_request_number}`);
+  if (pullRequest.draft || pullRequest.state !== "open" || pullRequest.base?.ref !== pullRequest.base?.repo?.default_branch) {
+    return { enabled: false, reason: "pull request is not an open, non-draft change to the default branch" };
+  }
+  const [checks, reviews] = await Promise.all([
+    githubRequest(env, `/repos/${task.repository}/commits/${pullRequest.head.sha}/check-runs?per_page=100`),
+    githubRequest(env, `/repos/${task.repository}/pulls/${lifecycle.pull_request_number}/reviews?per_page=100`),
+  ]);
+  const checksReady = checksPassed(checks.check_runs || []);
+  const approvalsReady = approvalCount(reviews || []) >= policy.requiredApprovals;
+  if (!checksReady || !approvalsReady || pullRequest.mergeable !== true) {
+    await env.DB.prepare("UPDATE tasks SET state='reviewing', updated_at=unixepoch() WHERE id=? AND state IN ('pr_ready','reviewing','merge_ready')").bind(task.id).run();
+    await setState(env, task.repository, task.issue_number, "metis:reviewing");
+    return { enabled: false, reason: `waiting for checks, approvals, or mergeability (${checksReady}/${approvalsReady}/${pullRequest.mergeable})` };
+  }
+  await env.DB.prepare("UPDATE tasks SET state='merge_ready', updated_at=unixepoch() WHERE id=?").bind(task.id).run();
+  await setState(env, task.repository, task.issue_number, "metis:merge-ready");
+  await enableAutoMerge(env, lifecycle.pull_request_node_id || pullRequest.node_id, policy.mergeMethod);
+  await env.DB.prepare("UPDATE tasks SET state='merging', updated_at=unixepoch() WHERE id=?").bind(task.id).run();
+  await setState(env, task.repository, task.issue_number, "metis:merging");
+  await comment(env, task.repository, task.issue_number, "## Metis enabled guarded auto-merge\n\nRequired checks, approvals, mergeability, and repository health passed. GitHub native auto-merge now owns the merge gate; Metis will monitor the exact merge SHA through deployment.");
+  return { enabled: true };
+}
+
+async function beginRecovery(env, task, workflow) {
+  const policy = lifecyclePolicy(env, task.repository);
+  const health = await env.DB.prepare("SELECT recovery_attempts FROM repository_health WHERE repository=?").bind(task.repository).first();
+  const attempts = (health?.recovery_attempts || 0) + 1;
+  if (attempts > policy.maxRecoveryAttempts) {
+    await env.DB.prepare("UPDATE repository_health SET state='recovery_blocked', workflow_url=?, recovery_attempts=?, updated_at=unixepoch() WHERE repository=?")
+      .bind(workflow.workflow_url, attempts, task.repository).run();
+    await env.DB.prepare("UPDATE tasks SET state='recovery_blocked', blocker_reason='Automated deployment recovery retry limit reached.', updated_at=unixepoch() WHERE id=?").bind(task.id).run();
+    await setState(env, task.repository, task.issue_number, "metis:recovery-blocked");
+    await comment(env, task.repository, task.issue_number, `## Deployment recovery is blocked\n\n[The deployment workflow](${workflow.workflow_url}) failed after ${policy.maxRecoveryAttempts} automated recovery attempt(s). Normal work remains frozen until a human diagnoses the infrastructure or authorizes another recovery attempt.`);
+    return;
+  }
+  await env.DB.prepare("INSERT INTO repository_health (repository,state,blocking_sha,workflow_url,root_task_id,recovery_attempts,updated_at) VALUES (?, 'recovery', ?, ?, ?, ?, unixepoch()) ON CONFLICT(repository) DO UPDATE SET state='recovery', blocking_sha=excluded.blocking_sha, workflow_url=excluded.workflow_url, root_task_id=COALESCE(repository_health.root_task_id,excluded.root_task_id), recovery_attempts=excluded.recovery_attempts, updated_at=unixepoch()")
+    .bind(task.repository, workflow.head_sha, workflow.workflow_url, task.id, attempts).run();
+  await env.DB.prepare("UPDATE tasks SET state='recovery', blocker_reason=?, updated_at=unixepoch() WHERE id=?")
+    .bind(`Deployment workflow ${workflow.workflow_name} failed for ${workflow.head_sha}.`, task.id).run();
+  await setState(env, task.repository, task.issue_number, "metis:recovery");
+
+  const existing = await env.DB.prepare("SELECT id FROM tasks WHERE repository=? AND recovery_for_sha=?").bind(task.repository, workflow.head_sha).first();
+  if (existing) return;
+  const issue = await githubRequest(env, `/repos/${task.repository}/issues`, {
+    method: "POST",
+    body: JSON.stringify({
+      title: `[Metis recovery] Restore main deployment for ${workflow.head_sha.slice(0, 12)}`,
+      body: [
+        `The required deployment workflow **${workflow.workflow_name}** failed for main commit \`${workflow.head_sha}\`.`,
+        "",
+        `Failure: ${workflow.workflow_url}`,
+        "",
+        "Diagnose the exact workflow failure and any merge-related side effects. Prepare the smallest corrective pull request. Do not bypass checks, push directly to main, merge, or deploy manually.",
+        "",
+        `Metis-Recovery: ${task.repository}@${workflow.head_sha}`,
+      ].join("\n"),
+      labels: ["metis:planning", "metis:size-unknown", "metis:budget-approved"],
+    }),
+  });
+  const recoveryId = `${task.repository}#${issue.number}`;
+  await env.DB.prepare("INSERT INTO tasks (id,repository,issue_number,issue_node_id,title,body,state,actor,size_class,budget_approved,priority_score,is_recovery,recovery_for_sha,created_at,updated_at) VALUES (?,?,?,?,?,?,'intake','metis-recovery','unknown',1,100000,1,?,unixepoch(),unixepoch())")
+    .bind(recoveryId, task.repository, issue.number, issue.node_id, issue.title, issue.body, workflow.head_sha).run();
+  await env.DISPATCH_QUEUE.send({ type: "intake", taskId: recoveryId });
+  await comment(env, task.repository, task.issue_number, `## Metis activated deployment recovery\n\nNormal coding dispatch is frozen for this repository. Recovery issue #${issue.number} has priority and will produce a corrective pull request within the configured retry and budget limits.`);
+}
+
+async function handleWorkflowCompletion(env, workflow) {
+  const health = await env.DB.prepare("SELECT * FROM repository_health WHERE repository=? AND blocking_sha=?").bind(workflow.repository, workflow.head_sha).first();
+  if (!health || health.state !== "deploying") return { accepted: false, reason: "workflow is not for the active deployment SHA" };
+  const policy = lifecyclePolicy(env, workflow.repository);
+  if (!policy.deploymentWorkflows.includes(workflow.workflow_name)) return { accepted: false, reason: "workflow is not required by lifecycle policy" };
+  await env.DB.prepare("INSERT INTO deployment_runs (repository,head_sha,workflow_name,conclusion,workflow_url,updated_at) VALUES (?,?,?,?,?,unixepoch()) ON CONFLICT(repository,head_sha,workflow_name) DO UPDATE SET conclusion=excluded.conclusion, workflow_url=excluded.workflow_url, updated_at=unixepoch()")
+    .bind(workflow.repository, workflow.head_sha, workflow.workflow_name, workflow.conclusion, workflow.workflow_url).run();
+  const task = await env.DB.prepare("SELECT * FROM tasks WHERE repository=? AND merge_sha=? ORDER BY updated_at DESC LIMIT 1").bind(workflow.repository, workflow.head_sha).first();
+  if (!task) return { accepted: false, reason: "no task for deployment SHA" };
+  if (!["success", "neutral", "skipped"].includes(workflow.conclusion)) {
+    await beginRecovery(env, task, workflow);
+    return { accepted: true, state: "recovery", task_id: task.id };
+  }
+  const runs = await env.DB.prepare("SELECT workflow_name,conclusion FROM deployment_runs WHERE repository=? AND head_sha=?").bind(workflow.repository, workflow.head_sha).all();
+  const byName = new Map(runs.results.map((run) => [run.workflow_name, run.conclusion]));
+  if (!policy.deploymentWorkflows.every((name) => ["success", "neutral", "skipped"].includes(byName.get(name)))) {
+    return { accepted: true, state: "deploying", task_id: task.id };
+  }
+  await env.DB.batch([
+    env.DB.prepare("UPDATE repository_health SET state='healthy', blocking_sha=NULL, workflow_url=NULL, recovery_attempts=0, updated_at=unixepoch() WHERE repository=?").bind(workflow.repository),
+    env.DB.prepare("UPDATE tasks SET state='complete', blocker_reason=NULL, updated_at=unixepoch() WHERE id=?").bind(task.id),
+  ]);
+  await setState(env, task.repository, task.issue_number, "metis:complete");
+  await comment(env, task.repository, task.issue_number, `## Metis verified deployment\n\nAll required deployment workflows succeeded for merge commit \`${workflow.head_sha}\`. Repository health is restored and normal dispatch may resume.`);
+  if (health.root_task_id && health.root_task_id !== task.id) {
+    const rootTask = await env.DB.prepare("SELECT id,issue_number FROM tasks WHERE id=?").bind(health.root_task_id).first();
+    if (rootTask) {
+      await env.DB.prepare("UPDATE tasks SET state='complete', blocker_reason=NULL, updated_at=unixepoch() WHERE id=? AND state='recovery'").bind(rootTask.id).run();
+      await setState(env, workflow.repository, rootTask.issue_number, "metis:complete");
+      await comment(env, workflow.repository, rootTask.issue_number, `## Metis verified corrective deployment\n\nThe bounded recovery chain succeeded at \`${workflow.head_sha}\`. Repository health is restored.`);
+    }
+  }
+  return { accepted: true, state: "complete", task_id: task.id };
 }
 
 async function receiveWebhook(request, env) {
@@ -98,14 +210,80 @@ async function receiveWebhook(request, env) {
   const blocked = blockedCodexFromWebhook(event, payload);
   const readyForPr = readyForPrCodexFromWebhook(event, payload);
   const pullRequest = pullRequestForTaskFromWebhook(event, payload);
-  if (!task && !blocked && !readyForPr && !pullRequest) return json({ accepted: false }, 202);
-  const repository = task?.repository || blocked?.repository || readyForPr?.repository || pullRequest.repository;
+  const pullRequestLifecycle = pullRequestLifecycleFromWebhook(event, payload);
+  const reviewLifecycle = reviewLifecycleFromWebhook(event, payload);
+  const checkSuiteLifecycle = checkSuiteLifecycleFromWebhook(event, payload);
+  const workflowRun = workflowRunFromWebhook(event, payload);
+  if (!task && !blocked && !readyForPr && !pullRequest && !pullRequestLifecycle && !reviewLifecycle && !checkSuiteLifecycle && !workflowRun) return json({ accepted: false }, 202);
+  const repository = task?.repository || blocked?.repository || readyForPr?.repository || pullRequest?.repository || pullRequestLifecycle?.repository || reviewLifecycle?.repository || checkSuiteLifecycle?.repository || workflowRun?.repository;
   if (!repositoryAllowed(env, repository)) return json({ error: "repository not allowed" }, 403);
   try {
     await env.DB.prepare("INSERT INTO webhook_deliveries (delivery_id, event_name, received_at) VALUES (?, ?, unixepoch())").bind(delivery, event).run();
   } catch (error) {
     if (String(error).includes("UNIQUE")) return json({ accepted: true, duplicate: true }, 202);
     throw error;
+  }
+  if (workflowRun) return json(await handleWorkflowCompletion(env, workflowRun), 202);
+  if (pullRequestLifecycle) {
+    const id = `${pullRequestLifecycle.repository}#${pullRequestLifecycle.issue_number}`;
+    const existing = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(id).first();
+    if (!existing) return json({ accepted: false, reason: "unknown task" }, 202);
+    if (existing.pull_request_number && existing.pull_request_number !== pullRequestLifecycle.pull_request_number) {
+      return json({ accepted: false, reason: "task is already bound to another pull request" }, 202);
+    }
+    if (["opened", "reopened"].includes(pullRequestLifecycle.action)
+      && !["awaiting_pr_creation", "pr_ready", "reviewing", "merge_ready", "merging"].includes(existing.state)) {
+      return json({ accepted: false, reason: "task is not in a pull-request lifecycle state" }, 202);
+    }
+    if (["synchronize", "closed"].includes(pullRequestLifecycle.action) && !existing.pull_request_number) {
+      return json({ accepted: false, reason: "task is not bound to this pull request" }, 202);
+    }
+    if (pullRequestLifecycle.action === "closed") {
+      if (!pullRequestLifecycle.merged || !pullRequestLifecycle.merge_sha) {
+        await env.DB.prepare("UPDATE tasks SET state='blocked', blocker_reason='Pull request closed without merging.', updated_at=unixepoch() WHERE id=?").bind(id).run();
+        await setState(env, existing.repository, existing.issue_number, "metis:blocked");
+        return json({ accepted: true, task_id: id, state: "blocked" }, 202);
+      }
+      const policy = lifecyclePolicy(env, existing.repository);
+      if (!policy.deploymentWorkflows.length) {
+        await env.DB.prepare("UPDATE tasks SET state='recovery_blocked', merge_sha=?, blocker_reason='No required deployment workflows are configured.', updated_at=unixepoch() WHERE id=?").bind(pullRequestLifecycle.merge_sha, id).run();
+        await env.DB.prepare("INSERT INTO repository_health(repository,state,blocking_sha,root_task_id,recovery_attempts,updated_at) VALUES (?, 'recovery_blocked', ?, ?, 0, unixepoch()) ON CONFLICT(repository) DO UPDATE SET state='recovery_blocked', blocking_sha=excluded.blocking_sha, root_task_id=COALESCE(repository_health.root_task_id,excluded.root_task_id), updated_at=unixepoch()")
+          .bind(existing.repository, pullRequestLifecycle.merge_sha, existing.id).run();
+        await setState(env, existing.repository, existing.issue_number, "metis:recovery-blocked");
+        return json({ accepted: true, task_id: id, state: "recovery_blocked" }, 202);
+      }
+      await env.DB.batch([
+        env.DB.prepare("UPDATE tasks SET state='deploying', merge_sha=?, blocker_reason=NULL, updated_at=unixepoch() WHERE id=?").bind(pullRequestLifecycle.merge_sha, id),
+        env.DB.prepare("INSERT INTO repository_health(repository,state,blocking_sha,root_task_id,recovery_attempts,updated_at) VALUES (?, 'deploying', ?, ?, 0, unixepoch()) ON CONFLICT(repository) DO UPDATE SET state='deploying', blocking_sha=excluded.blocking_sha, root_task_id=CASE WHEN excluded.root_task_id IS NULL THEN repository_health.root_task_id ELSE excluded.root_task_id END, updated_at=unixepoch() ").bind(existing.repository, pullRequestLifecycle.merge_sha, existing.is_recovery ? null : existing.id),
+      ]);
+      await setState(env, existing.repository, existing.issue_number, "metis:deploying");
+      return json({ accepted: true, task_id: id, state: "deploying", merge_sha: pullRequestLifecycle.merge_sha }, 202);
+    }
+    if (["opened", "reopened"].includes(pullRequestLifecycle.action)) {
+      await env.DB.prepare("UPDATE dispatches SET state='completed', result_json=?, updated_at=unixepoch() WHERE task_id=? AND state='awaiting_pr_creation'")
+        .bind(JSON.stringify({ status: "completed", pull_request_url: pullRequestLifecycle.pull_request_url, pull_request_number: pullRequestLifecycle.pull_request_number }), id).run();
+      await env.DB.prepare("UPDATE tasks SET state='pr_ready', pull_request_url=?, pull_request_number=?, blocker_reason=NULL, updated_at=unixepoch() WHERE id=?")
+        .bind(pullRequestLifecycle.pull_request_url, pullRequestLifecycle.pull_request_number, id).run();
+      await setState(env, existing.repository, existing.issue_number, "metis:pr-ready");
+    }
+    const current = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(id).first();
+    const result = await evaluateAutoMerge(env, current, pullRequestLifecycle);
+    return json({ accepted: true, task_id: id, state: result.enabled ? "merging" : current.state, auto_merge: result }, 202);
+  }
+  if (reviewLifecycle) {
+    const taskForReview = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(`${reviewLifecycle.repository}#${reviewLifecycle.issue_number}`).first();
+    if (!taskForReview) return json({ accepted: false, reason: "unknown task" }, 202);
+    if (!taskForReview.pull_request_number || taskForReview.pull_request_number !== reviewLifecycle.pull_request_number) {
+      return json({ accepted: false, reason: "review is not for the task pull request" }, 202);
+    }
+    const result = await evaluateAutoMerge(env, taskForReview, reviewLifecycle);
+    return json({ accepted: true, task_id: taskForReview.id, auto_merge: result }, 202);
+  }
+  if (checkSuiteLifecycle) {
+    const taskForCheck = await taskForPullRequest(env, checkSuiteLifecycle.repository, checkSuiteLifecycle.pull_request_number);
+    if (!taskForCheck) return json({ accepted: false, reason: "unknown pull request" }, 202);
+    const result = await evaluateAutoMerge(env, taskForCheck, checkSuiteLifecycle);
+    return json({ accepted: true, task_id: taskForCheck.id, auto_merge: result }, 202);
   }
   if (blocked) {
     const id = `${blocked.repository}#${blocked.issue_number}`;
@@ -143,19 +321,6 @@ async function receiveWebhook(request, env) {
     ].join("\n"));
     return json({ accepted: true, task_id: id, state: "awaiting_pr_creation" }, 202);
   }
-  if (pullRequest) {
-    const id = `${pullRequest.repository}#${pullRequest.issue_number}`;
-    const existing = await env.DB.prepare("SELECT id, state FROM tasks WHERE id=?").bind(id).first();
-    if (!existing || existing.state !== "awaiting_pr_creation") return json({ accepted: false, reason: "task is not awaiting PR creation" }, 202);
-    const result = JSON.stringify({ status: "completed", pull_request_url: pullRequest.pull_request_url, pull_request_number: pullRequest.pull_request_number });
-    await env.DB.batch([
-      env.DB.prepare("UPDATE dispatches SET state='completed', result_json=?, updated_at=unixepoch() WHERE task_id=? AND state='awaiting_pr_creation'").bind(result, id),
-      env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(id),
-      env.DB.prepare("UPDATE tasks SET state='pr_ready', pull_request_url=?, blocker_reason=NULL, updated_at=unixepoch() WHERE id=?").bind(pullRequest.pull_request_url, id),
-    ]);
-    await setState(env, pullRequest.repository, pullRequest.issue_number, "metis:pr-ready");
-    return json({ accepted: true, task_id: id, state: "pr_ready", pull_request_url: pullRequest.pull_request_url }, 202);
-  }
   const id = `${task.repository}#${task.issue_number}`;
   await env.DB.prepare("INSERT INTO tasks (id, repository, issue_number, issue_node_id, title, body, state, actor, size_class, max_cost_units, budget_approved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?, ?, unixepoch(), unixepoch()) ON CONFLICT(id) DO UPDATE SET title=excluded.title, body=excluded.body, state='intake', actor=excluded.actor, size_class=excluded.size_class, max_cost_units=excluded.max_cost_units, budget_approved=excluded.budget_approved, updated_at=unixepoch()")
     .bind(id, task.repository, task.issue_number, task.issue_node_id, task.title, task.body, task.actor, task.size_class, task.max_cost_units, task.budget_approved).run();
@@ -186,6 +351,7 @@ async function handleDispatch(env, message) {
   if (!decision.admitted) {
     if (decision.defer) {
       await env.DB.prepare("UPDATE tasks SET state='ready', updated_at=unixepoch() WHERE id=?").bind(task.id).run();
+      if (decision.repositoryLocked) return;
       throw new Error(decision.reason);
     }
     await env.DB.prepare("UPDATE tasks SET state='budget_blocked', blocker_reason=?, updated_at=unixepoch() WHERE id=?").bind(decision.reason, task.id).run();

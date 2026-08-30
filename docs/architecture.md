@@ -21,6 +21,8 @@
 7. D1 reserves a lease and cost units before Codex dispatch.
 8. A connector result releases the lease and moves GitHub to awaiting PR, blocked, or failed.
 9. For included Codex Cloud work, a human reviews the prepared diff and clicks Create PR.
+10. Repository-scoped policy may enable GitHub native auto-merge after checks, approvals, mergeability, and health pass.
+11. Metis monitors required deployment workflows for the exact merge SHA; a failure freezes normal work and creates a bounded corrective PR chain.
 10. The signed pull-request webhook verifies the Metis task marker and moves GitHub to PR ready.
 
 ## Provider boundary
@@ -29,4 +31,4 @@ Metis does not assume a generic API key consumes included ChatGPT/Codex capacity
 
 ## Trust boundaries
 
-Issue text, model output, and repository files are untrusted. GitHub webhook signatures and callback tokens are verified. Repository access is allowlisted. Target repositories are edited only by the isolated coding runner, which may open a PR but cannot merge or deploy.
+Issue text, model output, and repository files are untrusted. GitHub webhook signatures and callback tokens are verified. Repository access is allowlisted. Target repositories are edited only by the isolated coding runner. Metis may enable GitHub-native auto-merge under explicit repository policy, but cannot push directly to the default branch or deploy manually.

@@ -7,7 +7,7 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "check": "node --check src/index.mjs && node --check src/ai.mjs && node --check src/codex-dispatch.mjs && node --check src/github-codex-adapter.mjs && node --check src/config.mjs && node --check src/github.mjs && node --check src/scheduler.mjs && node --check scripts/lib/state.mjs && node --check scripts/require-github-actions.mjs",
+    "check": "node --check src/index.mjs && node --check src/ai.mjs && node --check src/codex-dispatch.mjs && node --check src/github-codex-adapter.mjs && node --check src/config.mjs && node --check src/github.mjs && node --check src/lifecycle.mjs && node --check src/scheduler.mjs && node --check scripts/lib/state.mjs && node --check scripts/require-github-actions.mjs",
     "db:migrate:staging": "node scripts/require-github-actions.mjs && wrangler d1 migrations apply DB --remote",
     "deploy:staging": "node scripts/require-github-actions.mjs && wrangler deploy",
     "test": "node --test test/*.test.mjs",
