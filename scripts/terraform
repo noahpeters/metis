@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+
+version="1.16.0"
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+tool_dir="$root_dir/.tools/terraform/$version"
+binary="$tool_dir/terraform"
+
+if [ ! -x "$binary" ]; then
+  os=$(uname -s | tr '[:upper:]' '[:lower:]')
+  case "$(uname -m)" in
+    arm64|aarch64) arch="arm64" ;;
+    x86_64|amd64) arch="amd64" ;;
+    *) echo "Unsupported Terraform architecture: $(uname -m)" >&2; exit 1 ;;
+  esac
+  archive="terraform_${version}_${os}_${arch}.zip"
+  base_url="https://releases.hashicorp.com/terraform/$version"
+  mkdir -p "$tool_dir"
+  curl --fail --location --silent --show-error "$base_url/$archive" --output "$tool_dir/$archive"
+  curl --fail --location --silent --show-error "$base_url/terraform_${version}_SHA256SUMS" --output "$tool_dir/SHA256SUMS"
+  expected=$(awk -v file="$archive" '$2 == file { print $1 }' "$tool_dir/SHA256SUMS")
+  actual=$(shasum -a 256 "$tool_dir/$archive" | awk '{ print $1 }')
+  if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+    echo "Terraform checksum verification failed" >&2
+    exit 1
+  fi
+  unzip -q "$tool_dir/$archive" -d "$tool_dir"
+fi
+
+exec "$binary" "$@"

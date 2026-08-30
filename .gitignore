@@ -1,4 +1,10 @@
 node_modules/
 .metis/
 *.log
-
+.tools/
+.build/
+infra/**/.terraform/
+infra/**/*.tfstate
+infra/**/*.tfstate.*
+infra/**/*.tfplan
+infra/**/crash.log

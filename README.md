@@ -50,6 +50,8 @@ See `docs/codex-dispatch-adapter.md` for the authenticated capability, task, ide
 
 The Worker updates issue labels/comments. Branch and PR permissions belong to the isolated coding dispatcher.
 
+Current inert staging endpoint: `https://metis-control-plane-staging.gr4gwzrfq2.workers.dev`. Its repository allowlist and Codex capacity remain disabled until a disposable test repository and required secrets are configured.
+
 ## Target repository contract
 
 Target repositories stay thin: `.metis.yml` declares verification and guardrails, `AGENTS.md` carries repository-specific instructions, and a shared GitHub App webhook supplies events centrally. There is no per-repository dispatch workflow or token.

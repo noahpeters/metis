@@ -9,7 +9,7 @@
     {
       "binding": "DB",
       "database_name": "metis-staging",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "fab80b33-f3d1-4fb6-bfa7-05ab613386c5",
       "migrations_dir": "migrations"
     }
   ],
@@ -20,7 +20,7 @@
   "triggers": { "crons": ["*/10 * * * *"] },
   "vars": {
     "ALLOWED_REPOSITORIES": "",
-    "PUBLIC_BASE_URL": "https://metis-control-plane-staging.REPLACE_WITH_SUBDOMAIN.workers.dev",
+    "PUBLIC_BASE_URL": "https://metis-control-plane-staging.gr4gwzrfq2.workers.dev",
     "METIS_POLICY_JSON": "{\"global\":{\"maxConcurrentTasks\":2,\"maxCostUnitsPerWindow\":20,\"maxTasksPerWindow\":4,\"maxRetries\":2},\"providers\":{\"paid_api\":{\"enabled\":false},\"perplexity\":{\"enabled\":false}}}"
   }
 }
