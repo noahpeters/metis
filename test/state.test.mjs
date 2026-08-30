@@ -18,3 +18,8 @@ test("budget-blocked is a first-class resumable state", () => {
   assert.doesNotThrow(() => assertTransition("metis:ready", "metis:budget-blocked"));
   assert.doesNotThrow(() => assertTransition("metis:budget-blocked", "metis:ready"));
 });
+
+test("awaiting PR creation is a first-class human checkpoint", () => {
+  assert.doesNotThrow(() => assertTransition("metis:implementing", "metis:awaiting-pr"));
+  assert.doesNotThrow(() => assertTransition("metis:awaiting-pr", "metis:pr-ready"));
+});

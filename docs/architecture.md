@@ -19,7 +19,9 @@
 5. Missing information enters `blocked`; approval-required or capacity-exhausted work enters `budget_blocked`.
 6. The scheduler checks provider availability, global and per-task limits, concurrency, and retries.
 7. D1 reserves a lease and cost units before Codex dispatch.
-8. The callback releases the lease, records usage, and moves GitHub to PR ready, blocked, or failed.
+8. A connector result releases the lease and moves GitHub to awaiting PR, blocked, or failed.
+9. For included Codex Cloud work, a human reviews the prepared diff and clicks Create PR.
+10. The signed pull-request webhook verifies the Metis task marker and moves GitHub to PR ready.
 
 ## Provider boundary
 

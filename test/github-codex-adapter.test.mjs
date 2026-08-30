@@ -44,6 +44,9 @@ test("GitHub Codex task comment is idempotently marked and preserves guardrails"
   assert.match(body, /@codex implement this issue/);
   assert.match(body, /Repository remote: https:\/\/github.com\/owner\/repo\.git/);
   assert.match(body, /Pull-request base branch: `main`/);
+  assert.match(body, /Metis-Task: owner\/repo#7/);
+  assert.match(body, /Do not run `git push`, use `gh`/);
+  assert.match(body, /READY_FOR_PR:/);
   assert.match(body, /Never merge, deploy, or mutate production/);
   assert.match(body, /BLOCKED:/);
 });

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blockedCodexFromWebhook, readyIssueFromWebhook } from "../src/index.mjs";
+import { blockedCodexFromWebhook, pullRequestForTaskFromWebhook, readyForPrCodexFromWebhook, readyIssueFromWebhook } from "../src/index.mjs";
 
 test("accepts only a metis:ready issue label event", () => {
   const payload = {
@@ -37,4 +37,48 @@ test("accepts BLOCKED results only from the Codex connector", () => {
   });
   assert.equal(blockedCodexFromWebhook("issue_comment", { ...payload, sender: { login: "someone-else" } }), null);
   assert.equal(blockedCodexFromWebhook("issues", payload), null);
+});
+
+test("accepts ready-for-PR results only from the Codex connector", () => {
+  const payload = {
+    action: "created",
+    repository: { full_name: "noahpeters/metis-sandbox" },
+    issue: { number: 4 },
+    comment: {
+      body: "READY_FOR_PR: Subtraction helper is verified.\n\n[View task →](https://chatgpt.com/s/cd_test)",
+      html_url: "https://github.com/noahpeters/metis-sandbox/issues/4#issuecomment-2",
+    },
+    sender: { login: "chatgpt-codex-connector" },
+  };
+  assert.deepEqual(readyForPrCodexFromWebhook("issue_comment", payload), {
+    repository: "noahpeters/metis-sandbox",
+    issue_number: 4,
+    summary: "Subtraction helper is verified.",
+    body: payload.comment.body,
+    comment_url: payload.comment.html_url,
+    task_url: "https://chatgpt.com/s/cd_test",
+  });
+  assert.equal(readyForPrCodexFromWebhook("issue_comment", { ...payload, sender: { login: "someone-else" } }), null);
+});
+
+test("maps a marked pull request to its awaiting Metis task", () => {
+  const payload = {
+    action: "opened",
+    repository: { full_name: "noahpeters/metis-sandbox" },
+    pull_request: {
+      number: 5,
+      html_url: "https://github.com/noahpeters/metis-sandbox/pull/5",
+      body: "Summary\n\nMetis-Task: noahpeters/metis-sandbox#4",
+    },
+  };
+  assert.deepEqual(pullRequestForTaskFromWebhook("pull_request", payload), {
+    repository: "noahpeters/metis-sandbox",
+    issue_number: 4,
+    pull_request_url: payload.pull_request.html_url,
+    pull_request_number: 5,
+  });
+  assert.equal(pullRequestForTaskFromWebhook("pull_request", {
+    ...payload,
+    pull_request: { ...payload.pull_request, body: "Metis-Task: other/repo#4" },
+  }), null);
 });

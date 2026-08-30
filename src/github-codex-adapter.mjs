@@ -18,16 +18,20 @@ export function buildGithubCodexComment(task, leaseId) {
   }
   return [
     `<!-- ${MARKER_PREFIX}:${leaseId} -->`,
-    "@codex implement this issue and open a pull request.",
+    "@codex implement this issue and prepare the completed change for the Codex Cloud Create PR handoff.",
     "",
     `Metis summary: ${task.summary}`,
     `Repository remote: https://github.com/${task.repository}.git`,
     "Pull-request base branch: `main`",
+    `Required pull-request body marker: \`Metis-Task: ${task.repository}#${task.issue_number}\``,
     "",
     "Execution guardrails:",
     `- Maximum normalized cost units: ${task.max_cost_units}`,
     "- Inspect the repository deeply; implement, debug, verify, and substantively review the change.",
     "- Follow the repository's AGENTS.md and .metis.yml instructions.",
+    "- Commit the verified change in the cloud task and prepare pull-request title/body metadata.",
+    "- Do not run `git push`, use `gh`, or try to create the pull request from the shell. A human will use Codex Cloud's Create PR button.",
+    "- When the change is ready for that button, begin the final response with `READY_FOR_PR:`.",
     "- Never merge, deploy, or mutate production systems or data.",
     "- If information or a decision is missing, stop and respond with `BLOCKED:` followed by one concrete question.",
   ].join("\n");

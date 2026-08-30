@@ -16,7 +16,7 @@ Workers AI: summarize, size, extract dependencies, classify readiness,
               ↓ admitted by capacity and budget policy
 Codex/cloud coding dispatcher: inspect, implement, debug, verify, review
               ↓
-GitHub branch + PR, or a first-class BLOCKED state
+Human Create PR checkpoint → GitHub PR, or a first-class BLOCKED state
 ```
 
 Perplexity is optional and research-only. It is disabled by default. Paid API fallback is also disabled by default and is not part of the coding path.
@@ -31,6 +31,7 @@ Perplexity is optional and research-only. It is disabled by default. Paid API fa
 - normalized task size classes and cost units;
 - global task, cost, concurrency, retry, and per-task limits;
 - hard `metis:budget-blocked` and human-decision `metis:blocked` stops;
+- first-class `metis:awaiting-pr` checkpoint that releases the coding lease;
 - a provider-neutral callback contract for included-capacity Codex/cloud execution;
 - no merge or deployment privileges.
 

@@ -1,4 +1,4 @@
-const STATE_LABELS = ["metis:ready", "metis:planning", "metis:implementing", "metis:reviewing", "metis:blocked", "metis:budget-blocked", "metis:pr-ready", "metis:failed"];
+const STATE_LABELS = ["metis:ready", "metis:planning", "metis:implementing", "metis:reviewing", "metis:awaiting-pr", "metis:blocked", "metis:budget-blocked", "metis:pr-ready", "metis:failed"];
 
 let installationTokenCache;
 

@@ -1,5 +1,5 @@
 import { analyzeIssue } from "./ai.mjs";
-import { blockTask, repositoryAllowed, setState } from "./github.mjs";
+import { blockTask, comment, repositoryAllowed, setState } from "./github.mjs";
 import { admissionDecision, claimTask } from "./scheduler.mjs";
 import { dispatchCodexTask } from "./codex-dispatch.mjs";
 
@@ -48,6 +48,38 @@ export function blockedCodexFromWebhook(event, payload) {
   };
 }
 
+export function readyForPrCodexFromWebhook(event, payload) {
+  const body = payload.comment?.body || "";
+  if (
+    event !== "issue_comment"
+    || payload.action !== "created"
+    || payload.sender?.login !== "chatgpt-codex-connector"
+    || !body.startsWith("READY_FOR_PR:")
+  ) return null;
+  const taskUrl = body.match(/https:\/\/chatgpt\.com\/(?:s\/[^)\s]+|codex\/cloud\/tasks\/[^)\s]+)/)?.[0] || null;
+  return {
+    repository: payload.repository?.full_name,
+    issue_number: payload.issue?.number,
+    summary: body.split("\n", 1)[0].slice("READY_FOR_PR:".length).trim() || "Codex prepared a change for PR creation.",
+    body,
+    comment_url: payload.comment?.html_url || null,
+    task_url: taskUrl,
+  };
+}
+
+export function pullRequestForTaskFromWebhook(event, payload) {
+  if (event !== "pull_request" || !["opened", "reopened"].includes(payload.action)) return null;
+  const repository = payload.repository?.full_name;
+  const marker = (payload.pull_request?.body || "").match(/Metis-Task:\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)/i);
+  if (!marker || marker[1].toLowerCase() !== repository?.toLowerCase()) return null;
+  return {
+    repository,
+    issue_number: Number(marker[2]),
+    pull_request_url: payload.pull_request?.html_url,
+    pull_request_number: payload.pull_request?.number,
+  };
+}
+
 async function receiveWebhook(request, env) {
   const body = await request.text();
   if (!await verifySignature(env.GITHUB_WEBHOOK_SECRET, request.headers.get("x-hub-signature-256"), body)) return json({ error: "invalid signature" }, 401);
@@ -57,8 +89,10 @@ async function receiveWebhook(request, env) {
   const payload = JSON.parse(body);
   const task = readyIssueFromWebhook(event, payload);
   const blocked = blockedCodexFromWebhook(event, payload);
-  if (!task && !blocked) return json({ accepted: false }, 202);
-  const repository = task?.repository || blocked.repository;
+  const readyForPr = readyForPrCodexFromWebhook(event, payload);
+  const pullRequest = pullRequestForTaskFromWebhook(event, payload);
+  if (!task && !blocked && !readyForPr && !pullRequest) return json({ accepted: false }, 202);
+  const repository = task?.repository || blocked?.repository || readyForPr?.repository || pullRequest.repository;
   if (!repositoryAllowed(env, repository)) return json({ error: "repository not allowed" }, 403);
   try {
     await env.DB.prepare("INSERT INTO webhook_deliveries (delivery_id, event_name, received_at) VALUES (?, ?, unixepoch())").bind(delivery, event).run();
@@ -78,6 +112,42 @@ async function receiveWebhook(request, env) {
     ]);
     await setState(env, blocked.repository, blocked.issue_number, "metis:blocked");
     return json({ accepted: true, task_id: id, state: "blocked" }, 202);
+  }
+  if (readyForPr) {
+    const id = `${readyForPr.repository}#${readyForPr.issue_number}`;
+    const existing = await env.DB.prepare("SELECT id, state FROM tasks WHERE id=?").bind(id).first();
+    if (!existing || existing.state !== "running") return json({ accepted: false, reason: "task is not running" }, 202);
+    const result = JSON.stringify({ status: "awaiting_pr_creation", summary: readyForPr.summary, comment_url: readyForPr.comment_url, task_url: readyForPr.task_url });
+    await env.DB.batch([
+      env.DB.prepare("UPDATE dispatches SET state='awaiting_pr_creation', result_json=?, updated_at=unixepoch() WHERE task_id=? AND state='running'").bind(result, id),
+      env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(id),
+      env.DB.prepare("UPDATE tasks SET state='awaiting_pr_creation', blocker_reason=NULL, updated_at=unixepoch() WHERE id=?").bind(id),
+      env.DB.prepare("INSERT INTO usage_events (task_id, provider, operation, cost_units, metadata_json, created_at) VALUES (?, 'codex_included', 'coding_prepared', 0, ?, unixepoch())").bind(id, result),
+    ]);
+    await setState(env, readyForPr.repository, readyForPr.issue_number, "metis:awaiting-pr");
+    await comment(env, readyForPr.repository, readyForPr.issue_number, [
+      "## Metis is awaiting PR creation",
+      "",
+      readyForPr.summary,
+      "",
+      readyForPr.task_url ? `[Review the Codex task and click **Create PR**](${readyForPr.task_url}).` : "Open the linked Codex task above and click **Create PR** after reviewing the diff.",
+      "",
+      "The coding lease has been released. Metis will detect the signed pull-request webhook and move this issue to `metis:pr-ready`.",
+    ].join("\n"));
+    return json({ accepted: true, task_id: id, state: "awaiting_pr_creation" }, 202);
+  }
+  if (pullRequest) {
+    const id = `${pullRequest.repository}#${pullRequest.issue_number}`;
+    const existing = await env.DB.prepare("SELECT id, state FROM tasks WHERE id=?").bind(id).first();
+    if (!existing || existing.state !== "awaiting_pr_creation") return json({ accepted: false, reason: "task is not awaiting PR creation" }, 202);
+    const result = JSON.stringify({ status: "completed", pull_request_url: pullRequest.pull_request_url, pull_request_number: pullRequest.pull_request_number });
+    await env.DB.batch([
+      env.DB.prepare("UPDATE dispatches SET state='completed', result_json=?, updated_at=unixepoch() WHERE task_id=? AND state='awaiting_pr_creation'").bind(result, id),
+      env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(id),
+      env.DB.prepare("UPDATE tasks SET state='pr_ready', pull_request_url=?, blocker_reason=NULL, updated_at=unixepoch() WHERE id=?").bind(pullRequest.pull_request_url, id),
+    ]);
+    await setState(env, pullRequest.repository, pullRequest.issue_number, "metis:pr-ready");
+    return json({ accepted: true, task_id: id, state: "pr_ready", pull_request_url: pullRequest.pull_request_url }, 202);
   }
   const id = `${task.repository}#${task.issue_number}`;
   await env.DB.prepare("INSERT INTO tasks (id, repository, issue_number, issue_node_id, title, body, state, actor, size_class, max_cost_units, budget_approved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?, ?, unixepoch(), unixepoch()) ON CONFLICT(id) DO UPDATE SET title=excluded.title, body=excluded.body, state='intake', actor=excluded.actor, size_class=excluded.size_class, max_cost_units=excluded.max_cost_units, budget_approved=excluded.budget_approved, updated_at=unixepoch()")
@@ -145,6 +215,9 @@ async function handleCallback(request, env) {
   if (result.status === "blocked") {
     await env.DB.prepare("UPDATE tasks SET state='blocked', blocker_reason=?, updated_at=unixepoch() WHERE id=?").bind(result.question || result.summary, task.id).run();
     await blockTask(env, task, result.summary, result.question || "What decision is needed to continue?");
+  } else if (result.status === "awaiting_pr_creation") {
+    await env.DB.prepare("UPDATE tasks SET state='awaiting_pr_creation', blocker_reason=NULL, updated_at=unixepoch() WHERE id=?").bind(task.id).run();
+    await setState(env, task.repository, task.issue_number, "metis:awaiting-pr");
   } else if (result.status === "completed" && result.pull_request_url) {
     await env.DB.prepare("UPDATE tasks SET state='pr_ready', pull_request_url=?, updated_at=unixepoch() WHERE id=?").bind(result.pull_request_url, task.id).run();
     await setState(env, task.repository, task.issue_number, "metis:pr-ready");
