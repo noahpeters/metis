@@ -1,32 +1,17 @@
 # States and labels
 
-GitHub labels are the visible state. Exactly one active Metis state label should be present.
+GitHub labels are visible task state; D1 stores finer runtime state.
 
-| State | Label | Entered when | Exit |
-|---|---|---|---|
-| Draft | none | Issue is being designed | Human adds `metis:ready` |
-| Ready | `metis:ready` | Human authorizes execution | Runner claims task |
-| Planning | `metis:planning` | Planner is reading the issue and repo | Implementing, blocked, or failed |
-| Implementing | `metis:implementing` | A bounded plan exists | Reviewing, blocked, or failed |
-| Reviewing | `metis:reviewing` | Change and verification evidence exist | PR ready, implementing once more, blocked, or failed |
-| Blocked | `metis:blocked` | A role needs information or a decision | Human comments and reapplies `metis:ready` |
-| PR ready | `metis:pr-ready` | Metis opened or updated a PR | Human owns the PR lifecycle |
-| Failed | `metis:failed` | Infrastructure or orchestration failed | Human diagnoses and reapplies `metis:ready` |
+| State | Label | Meaning |
+|---|---|---|
+| Draft | none | Human is defining work |
+| Ready | `metis:ready` | Human authorized scheduling |
+| Planning | `metis:planning` | Workers AI is deriving orchestration metadata |
+| Implementing | `metis:implementing` | A leased Codex/cloud execution is active |
+| Reviewing | `metis:reviewing` | Coding runner is performing substantive review |
+| Blocked | `metis:blocked` | Missing information or decision; not failure |
+| Budget blocked | `metis:budget-blocked` | A task/global/provider limit stopped work |
+| PR ready | `metis:pr-ready` | A PR awaits human review and target CI |
+| Failed | `metis:failed` | An operational failure requires diagnosis |
 
-## Blocked contract
-
-A blocker must include:
-
-- the phase that stopped;
-- what is known;
-- exactly what is missing;
-- one concrete question or decision request;
-- why continuing would be unsafe or likely wrong;
-- any partial evidence useful to the human.
-
-Blocked is not used for ordinary uncertainty that can be resolved safely from the repository. Once blocked, the runner makes no further code changes and opens no pull request unless a pre-existing branch needs to be preserved.
-
-## Idempotency
-
-The issue number identifies the task. The branch is `metis/<issue-number>-<slug>`. Re-delivery finds and updates the same branch/PR rather than creating duplicates. The proof of concept serializes runs per target repository and issue.
-
+`blocked` records known facts, exact missing information, one question, and why proceeding is unsafe. `budget-blocked` names the exhausted limit and stops before further capacity-consuming work. Both resume only after a human or capacity update and a new `metis:ready` event.

@@ -1,30 +1,18 @@
 # Event model
 
-The target adapter translates a GitHub issue label event into a versioned dispatch envelope:
+## GitHub intake
+
+Metis receives native GitHub App webhooks at `POST /webhooks/github`. It accepts only signed `issues.labeled` events whose label is `metis:ready` and repository is allowlisted. `X-GitHub-Delivery` is the idempotency key.
+
+## Internal Queue messages
 
 ```json
-{
-  "version": 1,
-  "event": "issue.ready",
-  "delivery_id": "github-run-id-attempt",
-  "source": {
-    "repository": "noahpeters/ftops",
-    "issue_number": 123,
-    "issue_node_id": "I_...",
-    "actor": "noahpeters",
-    "head_sha": "abc123"
-  }
-}
+{ "type": "intake", "taskId": "noahpeters/ftops#123" }
+{ "type": "dispatch", "taskId": "noahpeters/ftops#123" }
 ```
 
-Required validation:
+D1 is read on every delivery, so stale payload data cannot override scheduler state.
 
-- `version` is supported;
-- `event` is `issue.ready`;
-- repository is allowlisted;
-- issue number is a positive integer;
-- the live issue is open and still has `metis:ready`;
-- delivery is processed under a concurrency key for repository + issue.
+## Coding callback
 
-Future events may include `issue.unblocked`, `pull_request.feedback`, and `run.cancelled`. Adding them requires a versioned schema and explicit transition rules.
-
+The authenticated callback reports `completed` with a PR URL and usage, `blocked` with one concrete question, or `failed` with a bounded summary. Provider token data that is unavailable remains null rather than being inferred.

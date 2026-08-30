@@ -1,58 +1,66 @@
 # Metis
 
-Metis is a deliberately small orchestration layer for AI-assisted software development.
+Metis is a small, budget-aware control plane for AI-assisted software development. GitHub Issues and pull requests remain each repository's engineering system of record; Cloudflare holds only the operational state needed to decide what may run next.
 
-ChatGPT remains the design room. GitHub Issues remain each project's task system of record. When an issue receives the `metis:ready` label, a hosted GitHub Actions runner performs a sequential plan → implement → review loop and opens a pull request. If the implementer cannot safely continue, it stops, marks the issue `metis:blocked`, and asks one concrete question.
-
-Metis does not merge pull requests, deploy applications, or require a user-owned computer to remain online.
-
-## Status
-
-This repository contains the first proof of concept:
-
-- a documented issue state machine and event envelope;
-- a central `repository_dispatch` workflow;
-- a Node runner that coordinates GitHub and Codex CLI;
-- structured planner, implementer, reviewer, and blocker outputs;
-- a thin target-repository adapter and `.metis.yml` example;
-- tests for state transitions and event validation.
-
-The first live run is intentionally deferred until repository secrets and GitHub authentication are configured.
-
-## How it works
+## Architecture
 
 ```text
-ChatGPT design conversation
-          ↓
-Issue in target repository
-          ↓ add metis:ready
-Thin target workflow sends repository_dispatch
-          ↓
-Metis GitHub Actions runner
-          ↓
-plan → implement → verify → review
-          ├── blocked → issue question + metis:blocked
-          └── accepted → branch + pull request + metis:pr-ready
+GitHub issue labeled metis:ready
+              ↓ signed webhook
+Cloudflare Worker ──→ D1 task, lease, capacity, budget, usage state
+              ↓
+Cloudflare Queue (async dispatch and retry)
+              ↓
+Workers AI: summarize, size, extract dependencies, classify readiness,
+            prioritize, and prepare status summaries
+              ↓ admitted by capacity and budget policy
+Codex/cloud coding dispatcher: inspect, implement, debug, verify, review
+              ↓
+GitHub branch + PR, or a first-class BLOCKED state
 ```
 
-See [docs/architecture.md](docs/architecture.md), [docs/states-and-labels.md](docs/states-and-labels.md), and [docs/event-model.md](docs/event-model.md).
+Perplexity is optional and research-only. It is disabled by default. Paid API fallback is also disabled by default and is not part of the coding path.
+
+## What is implemented
+
+- signed and idempotent GitHub webhook ingestion;
+- allowlisted target repositories;
+- D1 task, dependency, dispatch, lease, provider-capacity, budget-window, and usage records;
+- Queue-backed intake, coding dispatch, retry, and expired-lease recovery;
+- Workers AI issue analysis for high-volume planning work;
+- normalized task size classes and cost units;
+- global task, cost, concurrency, retry, and per-task limits;
+- hard `metis:budget-blocked` and human-decision `metis:blocked` stops;
+- a provider-neutral callback contract for included-capacity Codex/cloud execution;
+- no merge or deployment privileges.
+
+`CODEX_DISPATCH_URL` is deliberately an adapter boundary. It must point to a supported cloud coding-task launcher that uses included capacity. Metis does not silently substitute a metered OpenAI API call when that adapter or its capacity is unavailable.
+
+See `docs/codex-dispatch-adapter.md` for the authenticated capability, task, idempotency, callback, and fail-closed contract.
+
+## Cloudflare setup
+
+1. Create the `metis` D1 database, `metis-dispatch` Queue, and `metis-dead-letter` Queue.
+2. Replace the D1 database ID and public Worker URL in `wrangler.jsonc`.
+3. Apply `migrations/0001_control_plane.sql`.
+4. Set Worker secrets: `GITHUB_WEBHOOK_SECRET`, `GITHUB_TOKEN`, `CODEX_DISPATCH_TOKEN`, and `CODEX_CALLBACK_TOKEN`.
+5. Set `CODEX_DISPATCH_URL` to the included-capacity coding dispatcher.
+6. Configure a GitHub App webhook to send issue events to `/webhooks/github` and install it only on registered repositories.
+7. Deploy only after reviewing provider capacity and budget values.
+
+The Worker updates issue labels/comments. Branch and PR permissions belong to the isolated coding dispatcher.
 
 ## Target repository contract
 
-Each target repository stays thin:
+Target repositories stay thin: `.metis.yml` declares verification and guardrails, `AGENTS.md` carries repository-specific instructions, and a shared GitHub App webhook supplies events centrally. There is no per-repository dispatch workflow or token.
 
-1. Copy `examples/target-repo/.github/workflows/metis.yml` into the target repository.
-2. Copy and edit `examples/target-repo/.metis.yml`.
-3. Add or refine `AGENTS.md` with repository-specific safety, verification, and deployment instructions.
-4. Add a target-repository secret named `METIS_DISPATCH_TOKEN` that can dispatch events to this repository.
-5. Add the labels listed in `config/labels.json`.
+## Budgets and capacity
 
-Metis itself requires:
+`METIS_POLICY_JSON` controls normalized cost-unit and execution envelopes. The conservative defaults allow two concurrent tasks, four starts and 20 cost units per daily UTC window, two dispatch attempts, automatic small/medium tasks, and approval-required large/unknown tasks.
 
-- `OPENAI_API_KEY` for Codex CLI;
-- `METIS_GITHUB_TOKEN` with read/write access to issues, contents, and pull requests in registered target repositories.
+D1's `provider_capacity` table is the live provider gate. Set `codex_included.available = 0` or reduce `remaining_units` to hard-stop new coding work. Exhausted global or per-task capacity enters `metis:budget-blocked`; Metis does not purchase overflow.
 
-For a production version, replace long-lived personal tokens with a narrowly installed GitHub App.
+Issue labels can explicitly set `metis:size-small`, `metis:size-medium`, `metis:size-large`, or `metis:size-unknown`; approve an otherwise approval-required envelope with `metis:budget-approved`; and cap a task with a repository-created `metis:max-cost-N` label. The configured size-class ceiling still wins over a larger per-task number.
 
 ## Local verification
 
@@ -62,10 +70,8 @@ npm run verify
 
 ## Guardrails
 
-- A human must add `metis:ready`.
-- The runner refuses unregistered repositories.
-- The implementer may edit only the checked-out target repository.
-- Metis never merges or deploys.
-- The target repository's own CI is authoritative.
-- A blocked task stops immediately and records the exact missing decision or information.
-
+- A human applies `metis:ready`.
+- Missing information or decisions enter `metis:blocked`, not failure.
+- Budget exhaustion stops work before dispatch or retry.
+- Metis never merges, deploys, or mutates production data.
+- Target CI and human PR review remain authoritative.

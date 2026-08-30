@@ -14,3 +14,7 @@ test("replaceState preserves non-Metis labels", () => {
   assert.deepEqual(replaceState(["bug", "metis:ready"], "metis:planning"), ["bug", "metis:planning"]);
 });
 
+test("budget-blocked is a first-class resumable state", () => {
+  assert.doesNotThrow(() => assertTransition("metis:ready", "metis:budget-blocked"));
+  assert.doesNotThrow(() => assertTransition("metis:budget-blocked", "metis:ready"));
+});

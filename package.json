@@ -7,9 +7,8 @@
     "node": ">=20 <25"
   },
   "scripts": {
-    "check": "node --check scripts/run-task.mjs && node --check scripts/lib/github.mjs && node --check scripts/lib/state.mjs",
+    "check": "node --check src/index.mjs && node --check src/ai.mjs && node --check src/codex-dispatch.mjs && node --check src/config.mjs && node --check src/github.mjs && node --check src/scheduler.mjs && node --check scripts/lib/state.mjs",
     "test": "node --test test/*.test.mjs",
     "verify": "npm run check && npm test"
   }
 }
-
