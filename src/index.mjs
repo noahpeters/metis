@@ -1,7 +1,8 @@
 import { analyzeIssue } from "./ai.mjs";
-import { blockTask, comment, enableAutoMerge, githubRequest, repositoryAllowed, setState } from "./github.mjs";
-import { admissionDecision, claimTask } from "./scheduler.mjs";
+import { blockTask, comment, enableAutoMerge, githubRequest, repositoryAllowed, setState, unresolvedReviewThreadCount } from "./github.mjs";
+import { admissionDecision, claimRevision, claimTask } from "./scheduler.mjs";
 import { dispatchCodexTask } from "./codex-dispatch.mjs";
+import { dispatchViaGithubCodexRevision } from "./github-codex-adapter.mjs";
 import { approvalCount, checksPassed, checkSuiteLifecycleFromWebhook, lifecyclePolicy, pullRequestLifecycleFromWebhook, reviewLifecycleFromWebhook, workflowRunFromWebhook } from "./lifecycle.mjs";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
@@ -73,6 +74,18 @@ export function readyForPrCodexFromWebhook(event, payload) {
     comment_url: payload.comment?.html_url || null,
     task_url: taskUrl,
   };
+}
+
+export function revisionCodexFromWebhook(event, payload) {
+  const body = payload.comment?.body || "";
+  if (event !== "issue_comment" || payload.action !== "created" || !isOfficialCodexConnector(payload)) return null;
+  const marker = body.match(/Metis-Task:\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)/i);
+  if (!marker || marker[1].toLowerCase() !== payload.repository?.full_name?.toLowerCase()) return null;
+  if (body.includes("REVISION_BLOCKED:")) {
+    return { repository: marker[1], issue_number: Number(marker[2]), status: "blocked", question: body.split("REVISION_BLOCKED:")[1].split("\n", 1)[0].trim(), body };
+  }
+  const ready = body.match(/REVISION_READY:\s*([0-9a-f]{40})/i);
+  return ready ? { repository: marker[1], issue_number: Number(marker[2]), status: "ready", head_sha: ready[1].toLowerCase(), body } : null;
 }
 
 export function pullRequestForTaskFromWebhook(event, payload) {
@@ -151,16 +164,17 @@ async function evaluateAutoMerge(env, task, lifecycle) {
   if (pullRequest.draft || pullRequest.state !== "open" || pullRequest.base?.ref !== pullRequest.base?.repo?.default_branch) {
     return { enabled: false, reason: "pull request is not an open, non-draft change to the default branch" };
   }
-  const [checks, reviews] = await Promise.all([
+  const [checks, reviews, unresolvedThreads] = await Promise.all([
     githubRequest(env, `/repos/${task.repository}/commits/${pullRequest.head.sha}/check-runs?per_page=100`),
     githubRequest(env, `/repos/${task.repository}/pulls/${lifecycle.pull_request_number}/reviews?per_page=100`),
+    unresolvedReviewThreadCount(env, task.repository, lifecycle.pull_request_number),
   ]);
   const checksReady = !policy.requiredChecks || checksPassed(checks.check_runs || []);
   const approvalsReady = approvalCount(reviews || []) >= policy.requiredApprovals;
-  if (!checksReady || !approvalsReady || pullRequest.mergeable !== true) {
+  if (!checksReady || !approvalsReady || unresolvedThreads > 0 || pullRequest.mergeable !== true) {
     await env.DB.prepare("UPDATE tasks SET state='reviewing', updated_at=unixepoch() WHERE id=? AND state IN ('pr_ready','reviewing','merge_ready')").bind(task.id).run();
     await setState(env, task.repository, task.issue_number, "metis:reviewing");
-    return { enabled: false, reason: `waiting for checks, approvals, or mergeability (${checksReady}/${approvalsReady}/${pullRequest.mergeable})` };
+    return { enabled: false, reason: `waiting for checks, approvals, resolved threads, or mergeability (${checksReady}/${approvalsReady}/${unresolvedThreads}/${pullRequest.mergeable})` };
   }
   await env.DB.prepare("UPDATE tasks SET state='merge_ready', updated_at=unixepoch() WHERE id=?").bind(task.id).run();
   await setState(env, task.repository, task.issue_number, "metis:merge-ready");
@@ -169,6 +183,52 @@ async function evaluateAutoMerge(env, task, lifecycle) {
   await setState(env, task.repository, task.issue_number, "metis:merging");
   await comment(env, task.repository, task.issue_number, "## Metis enabled guarded auto-merge\n\nRequired checks, approvals, mergeability, and repository health passed. GitHub native auto-merge now owns the merge gate; Metis will monitor the exact merge SHA through deployment.");
   return { enabled: true };
+}
+
+async function handleRevisionDispatch(env, message) {
+  const task = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(message.taskId).first();
+  if (!task || task.state !== "reviewing" || !task.pull_request_number) return;
+  const policy = lifecyclePolicy(env, task.repository);
+  const attempts = await env.DB.prepare("SELECT COUNT(*) AS count FROM revision_dispatches WHERE task_id=?").bind(task.id).first();
+  if ((attempts?.count || 0) >= policy.maxRevisionAttempts) {
+    await env.DB.prepare("UPDATE tasks SET state='blocked',blocker_reason='Review revision retry limit reached.',updated_at=unixepoch() WHERE id=?").bind(task.id).run();
+    return blockTask(env, task, "Codex exhausted the configured review-revision limit.", "Should Metis authorize another revision attempt or should a human take over?");
+  }
+  const pullRequest = await githubRequest(env, `/repos/${task.repository}/pulls/${task.pull_request_number}`);
+  const existing = await env.DB.prepare("SELECT id FROM revision_dispatches WHERE task_id=? AND base_head_sha=?").bind(task.id, pullRequest.head.sha).first();
+  if (existing) return;
+  const decision = await admissionDecision(env, task);
+  if (!decision.admitted) {
+    await env.DB.prepare("UPDATE tasks SET state='budget_blocked',blocker_reason=?,updated_at=unixepoch() WHERE id=?").bind(decision.reason, task.id).run();
+    return blockTask(env, task, decision.reason, "Should Metis increase revision capacity or wait for the next capacity window?", true);
+  }
+  const comments = await githubRequest(env, `/repos/${task.repository}/pulls/${task.pull_request_number}/comments?per_page=100`);
+  const feedback = comments.map((item) => ({ id: item.id, path: item.path, line: item.line || item.original_line, body: item.body, url: item.html_url }));
+  const leaseId = await claimRevision(env, task, decision);
+  try {
+    const dispatched = await dispatchViaGithubCodexRevision(env, task, { baseHeadSha: pullRequest.head.sha, feedback }, leaseId);
+    await env.DB.prepare("INSERT INTO revision_dispatches(task_id,pull_request_number,base_head_sha,lease_id,external_id,state,feedback_json,created_at,updated_at) VALUES(?,?,?,?,?,'running',?,unixepoch(),unixepoch())")
+      .bind(task.id, task.pull_request_number, pullRequest.head.sha, leaseId, dispatched.id, JSON.stringify(feedback)).run();
+    await setState(env, task.repository, task.issue_number, "metis:revising");
+    await comment(env, task.repository, task.issue_number, `## Metis dispatched a review revision\n\nCodex is addressing ${feedback.length} review comment(s) against exact head \`${pullRequest.head.sha}\`. The pull request remains blocked pending a new commit and renewed human approval.`);
+  } catch (error) {
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(task.id),
+      env.DB.prepare("UPDATE tasks SET state='reviewing',updated_at=unixepoch() WHERE id=?").bind(task.id),
+    ]);
+    throw error;
+  }
+}
+
+async function completeRevision(env, task, revision, headSha, result = {}) {
+  await env.DB.batch([
+    env.DB.prepare("UPDATE revision_dispatches SET state='completed',result_json=?,updated_at=unixepoch() WHERE id=?").bind(JSON.stringify({ ...result, head_sha: headSha }), revision.id),
+    env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(task.id),
+    env.DB.prepare("UPDATE tasks SET state='reviewing',blocker_reason=NULL,updated_at=unixepoch() WHERE id=?").bind(task.id),
+    env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,cost_units,metadata_json,created_at) VALUES(?,'codex_included','review_revision',0,?,unixepoch())").bind(task.id, JSON.stringify({ base_head_sha: revision.base_head_sha, head_sha: headSha })),
+  ]);
+  await setState(env, task.repository, task.issue_number, "metis:reviewing");
+  await comment(env, task.repository, task.issue_number, `## Metis received the revised PR head\n\nCodex updated the pull request from \`${revision.base_head_sha}\` to \`${headSha}\`. Human re-review and resolution of every review thread are still required.`);
 }
 
 async function beginRecovery(env, task, workflow) {
@@ -259,13 +319,14 @@ async function receiveWebhook(request, env) {
   const task = readyIssueFromWebhook(event, payload);
   const blocked = blockedCodexFromWebhook(event, payload);
   const readyForPr = readyForPrCodexFromWebhook(event, payload);
+  const revisionResult = revisionCodexFromWebhook(event, payload);
   const pullRequest = pullRequestForTaskFromWebhook(event, payload);
   const pullRequestLifecycle = pullRequestLifecycleFromWebhook(event, payload);
   const reviewLifecycle = reviewLifecycleFromWebhook(event, payload);
   const checkSuiteLifecycle = checkSuiteLifecycleFromWebhook(event, payload);
   const workflowRun = workflowRunFromWebhook(event, payload);
-  if (!task && !blocked && !readyForPr && !pullRequest && !pullRequestLifecycle && !reviewLifecycle && !checkSuiteLifecycle && !workflowRun) return json({ accepted: false }, 202);
-  const repository = task?.repository || blocked?.repository || readyForPr?.repository || pullRequest?.repository || pullRequestLifecycle?.repository || reviewLifecycle?.repository || checkSuiteLifecycle?.repository || workflowRun?.repository;
+  if (!task && !blocked && !readyForPr && !revisionResult && !pullRequest && !pullRequestLifecycle && !reviewLifecycle && !checkSuiteLifecycle && !workflowRun) return json({ accepted: false }, 202);
+  const repository = task?.repository || blocked?.repository || readyForPr?.repository || revisionResult?.repository || pullRequest?.repository || pullRequestLifecycle?.repository || reviewLifecycle?.repository || checkSuiteLifecycle?.repository || workflowRun?.repository;
   if (!repositoryAllowed(env, repository)) return json({ error: "repository not allowed" }, 403);
   try {
     await env.DB.prepare("INSERT INTO webhook_deliveries (delivery_id, event_name, received_at) VALUES (?, ?, unixepoch())").bind(delivery, event).run();
@@ -274,6 +335,27 @@ async function receiveWebhook(request, env) {
     throw error;
   }
   if (workflowRun) return json(await handleWorkflowCompletion(env, workflowRun), 202);
+  if (revisionResult) {
+    const id = `${revisionResult.repository}#${revisionResult.issue_number}`;
+    const taskForRevision = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(id).first();
+    const revision = await env.DB.prepare("SELECT * FROM revision_dispatches WHERE task_id=? AND state='running' ORDER BY id DESC LIMIT 1").bind(id).first();
+    if (!taskForRevision || !revision) return json({ accepted: false, reason: "no active revision" }, 202);
+    if (revisionResult.status === "blocked") {
+      await env.DB.batch([
+        env.DB.prepare("UPDATE revision_dispatches SET state='blocked',result_json=?,updated_at=unixepoch() WHERE id=?").bind(JSON.stringify(revisionResult), revision.id),
+        env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(id),
+        env.DB.prepare("UPDATE tasks SET state='blocked',blocker_reason=?,updated_at=unixepoch() WHERE id=?").bind(revisionResult.question || "Codex blocked during review revision.", id),
+      ]);
+      await setState(env, taskForRevision.repository, taskForRevision.issue_number, "metis:blocked");
+      return json({ accepted: true, task_id: id, state: "blocked" }, 202);
+    }
+    const currentPr = await githubRequest(env, `/repos/${taskForRevision.repository}/pulls/${taskForRevision.pull_request_number}`);
+    if (currentPr.head.sha === revision.base_head_sha || currentPr.head.sha.toLowerCase() !== revisionResult.head_sha) {
+      return json({ accepted: false, reason: "revision result does not match the current changed PR head" }, 202);
+    }
+    await completeRevision(env, taskForRevision, revision, currentPr.head.sha, revisionResult);
+    return json({ accepted: true, task_id: id, state: "reviewing", head_sha: currentPr.head.sha }, 202);
+  }
   if (pullRequestLifecycle) {
     const id = `${pullRequestLifecycle.repository}#${pullRequestLifecycle.issue_number}`;
     const existing = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(id).first();
@@ -312,6 +394,12 @@ async function receiveWebhook(request, env) {
     const effectivePullRequest = shouldReauthorPullRequest(env, existing, pullRequestLifecycle)
       ? await reauthorPullRequest(env, existing, pullRequestLifecycle)
       : pullRequestLifecycle;
+    if (effectivePullRequest.action === "synchronize") {
+      const revision = await env.DB.prepare("SELECT * FROM revision_dispatches WHERE task_id=? AND state='running' ORDER BY id DESC LIMIT 1").bind(id).first();
+      if (revision && revision.base_head_sha !== effectivePullRequest.head_sha) {
+        await completeRevision(env, existing, revision, effectivePullRequest.head_sha, { source: "pull_request.synchronize" });
+      }
+    }
     if (["opened", "reopened"].includes(effectivePullRequest.action)) {
       await env.DB.prepare("UPDATE dispatches SET state='completed', result_json=?, updated_at=unixepoch() WHERE task_id=? AND state='awaiting_pr_creation'")
         .bind(JSON.stringify({ status: "completed", pull_request_url: effectivePullRequest.pull_request_url, pull_request_number: effectivePullRequest.pull_request_number }), id).run();
@@ -328,6 +416,10 @@ async function receiveWebhook(request, env) {
     if (!taskForReview) return json({ accepted: false, reason: "unknown task" }, 202);
     if (!taskForReview.pull_request_number || taskForReview.pull_request_number !== reviewLifecycle.pull_request_number) {
       return json({ accepted: false, reason: "review is not for the task pull request" }, 202);
+    }
+    if (reviewLifecycle.review_state === "changes_requested") {
+      await env.DISPATCH_QUEUE.send({ type: "revision", taskId: taskForReview.id, reviewedHeadSha: reviewLifecycle.reviewed_head_sha });
+      return json({ accepted: true, task_id: taskForReview.id, state: "reviewing", revision_queued: true }, 202);
     }
     const result = await evaluateAutoMerge(env, taskForReview, reviewLifecycle);
     return json({ accepted: true, task_id: taskForReview.id, auto_merge: result }, 202);
@@ -467,6 +559,7 @@ export default {
       try {
         if (message.body.type === "intake") await handleIntake(env, message.body);
         else if (message.body.type === "dispatch") await handleDispatch(env, message.body);
+        else if (message.body.type === "revision") await handleRevisionDispatch(env, message.body);
         else throw new Error("Unknown queue message type");
         message.ack();
       } catch (error) {
@@ -476,8 +569,18 @@ export default {
     }
   },
   async scheduled(_controller, env) {
-    const expired = await env.DB.prepare("SELECT task_id FROM task_leases WHERE expires_at <= unixepoch()").all();
+    const expired = await env.DB.prepare("SELECT l.task_id,r.id AS revision_id FROM task_leases l LEFT JOIN revision_dispatches r ON r.lease_id=l.lease_id AND r.state='running' WHERE l.expires_at <= unixepoch()").all();
     for (const row of expired.results) {
+      if (row.revision_id) {
+        const task = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(row.task_id).first();
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(row.task_id),
+          env.DB.prepare("UPDATE revision_dispatches SET state='failed',result_json=?,updated_at=unixepoch() WHERE id=?").bind(JSON.stringify({ reason: "revision lease expired" }), row.revision_id),
+          env.DB.prepare("UPDATE tasks SET state='blocked',blocker_reason='Review revision lease expired.',updated_at=unixepoch() WHERE id=?").bind(row.task_id),
+        ]);
+        if (task) await setState(env, task.repository, task.issue_number, "metis:blocked");
+        continue;
+      }
       await env.DB.batch([
         env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(row.task_id),
         env.DB.prepare("UPDATE tasks SET state='retrying', updated_at=unixepoch() WHERE id=? AND state IN ('dispatching','running')").bind(row.task_id),

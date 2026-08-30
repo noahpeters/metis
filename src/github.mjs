@@ -1,4 +1,4 @@
-const STATE_LABELS = ["metis:ready", "metis:planning", "metis:implementing", "metis:reviewing", "metis:awaiting-pr", "metis:blocked", "metis:budget-blocked", "metis:pr-ready", "metis:merge-ready", "metis:merging", "metis:deploying", "metis:complete", "metis:recovery", "metis:recovery-blocked", "metis:failed"];
+const STATE_LABELS = ["metis:ready", "metis:planning", "metis:implementing", "metis:revising", "metis:reviewing", "metis:awaiting-pr", "metis:blocked", "metis:budget-blocked", "metis:pr-ready", "metis:merge-ready", "metis:merging", "metis:deploying", "metis:complete", "metis:recovery", "metis:recovery-blocked", "metis:failed"];
 
 let installationTokenCache;
 
@@ -86,6 +86,18 @@ export async function enableAutoMerge(env, pullRequestNodeId, mergeMethod = "SQU
       }
     }
   `, { pullRequestId: pullRequestNodeId, mergeMethod });
+}
+
+export async function unresolvedReviewThreadCount(env, repository, pullRequestNumber) {
+  const [owner, name] = repository.split("/");
+  const data = await githubGraphql(env, `
+    query MetisReviewThreads($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) { reviewThreads(first: 100) { nodes { isResolved } } }
+      }
+    }
+  `, { owner, name, number: pullRequestNumber });
+  return (data.repository?.pullRequest?.reviewThreads?.nodes || []).filter((thread) => !thread.isResolved).length;
 }
 
 async function authenticatedGithubRequest(token, path, init = {}) {

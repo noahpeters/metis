@@ -34,3 +34,14 @@ export async function claimTask(env, task, decision) {
   ]);
   return { leaseId, results: result };
 }
+
+export async function claimRevision(env, task, decision) {
+  const leaseId = crypto.randomUUID();
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO budget_windows (window_key, cost_units_used, tasks_started) VALUES (date('now'), ?, 1) ON CONFLICT(window_key) DO UPDATE SET cost_units_used = cost_units_used + excluded.cost_units_used, tasks_started = tasks_started + 1").bind(decision.estimate),
+    env.DB.prepare("INSERT INTO task_leases (task_id, lease_id, provider, cost_units_reserved, expires_at) VALUES (?, ?, 'codex_included', ?, unixepoch() + ?)").bind(task.id, leaseId, decision.estimate, decision.leaseSeconds),
+    env.DB.prepare("UPDATE tasks SET state='revising', attempt_count=attempt_count+1, updated_at=unixepoch() WHERE id=? AND state='reviewing'").bind(task.id),
+    env.DB.prepare("UPDATE provider_capacity SET remaining_units=CASE WHEN remaining_units IS NULL THEN NULL ELSE remaining_units-? END,updated_at=unixepoch() WHERE provider='codex_included'").bind(decision.estimate),
+  ]);
+  return leaseId;
+}

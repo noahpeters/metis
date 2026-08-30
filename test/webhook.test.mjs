@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blockedCodexFromWebhook, pullRequestForTaskFromWebhook, readyForPrCodexFromWebhook, readyIssueFromWebhook, shouldReauthorPullRequest } from "../src/index.mjs";
+import { blockedCodexFromWebhook, pullRequestForTaskFromWebhook, readyForPrCodexFromWebhook, readyIssueFromWebhook, revisionCodexFromWebhook, shouldReauthorPullRequest } from "../src/index.mjs";
 
 test("accepts only a metis:ready issue label event", () => {
   const payload = {
@@ -101,4 +101,11 @@ test("re-authors only an awaiting same-repository PR not already owned by the Ap
   assert.equal(shouldReauthorPullRequest(env, task, { ...lifecycle, author_login: env.GITHUB_APP_BOT_LOGIN }), false);
   assert.equal(shouldReauthorPullRequest(env, task, { ...lifecycle, head_repository: "fork/repo" }), false);
   assert.equal(shouldReauthorPullRequest(env, { state: "pr_ready" }, lifecycle), false);
+});
+
+test("accepts exact revision results only from the official Codex connector", () => {
+  const payload = { action: "created", repository: { full_name: "owner/repo" }, comment: { body: `REVISION_READY: ${"b".repeat(40)}\n\nMetis-Task: owner/repo#7`, performed_via_github_app: { id: 1144995, slug: "chatgpt-codex-connector" } }, sender: { login: "chatgpt-codex-connector[bot]", type: "Bot" } };
+  assert.deepEqual(revisionCodexFromWebhook("issue_comment", payload), { repository: "owner/repo", issue_number: 7, status: "ready", head_sha: "b".repeat(40), body: payload.comment.body });
+  assert.equal(revisionCodexFromWebhook("issue_comment", { ...payload, sender: { login: "lookalike", type: "Bot" } }), null);
+  assert.equal(revisionCodexFromWebhook("issue_comment", { ...payload, comment: { ...payload.comment, body: `REVISION_READY: ${"b".repeat(40)}\nMetis-Task: other/repo#7` } }), null);
 });

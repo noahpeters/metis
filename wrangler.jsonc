@@ -27,6 +27,6 @@
     "GITHUB_APP_INSTALLATION_ID": "157788676",
     "PUBLIC_BASE_URL": "https://metis-control-plane-staging.gr4gwzrfq2.workers.dev",
     "METIS_POLICY_JSON": "{\"global\":{\"maxConcurrentTasks\":1,\"maxCostUnitsPerWindow\":20,\"maxTasksPerWindow\":4,\"maxRetries\":2},\"providers\":{\"codex_included\":{\"enabled\":true},\"paid_api\":{\"enabled\":false},\"perplexity\":{\"enabled\":false}}}",
-    "METIS_LIFECYCLE_POLICY_JSON": "{\"defaults\":{\"autoMerge\":false,\"requiredApprovals\":1,\"requiredChecks\":true,\"deploymentWorkflows\":[],\"maxRecoveryAttempts\":2,\"mergeMethod\":\"SQUASH\"},\"repositories\":{\"noahpeters/metis-sandbox\":{\"autoMerge\":true,\"requiredChecks\":false,\"deploymentWorkflows\":[\"Sandbox Deployment\"]}}}"
+    "METIS_LIFECYCLE_POLICY_JSON": "{\"defaults\":{\"autoMerge\":false,\"requiredApprovals\":1,\"requiredChecks\":true,\"maxRevisionAttempts\":2,\"deploymentWorkflows\":[],\"maxRecoveryAttempts\":2,\"mergeMethod\":\"SQUASH\"},\"repositories\":{\"noahpeters/metis-sandbox\":{\"autoMerge\":true,\"requiredChecks\":false,\"deploymentWorkflows\":[\"Sandbox Deployment\"]}}}"
   }
 }

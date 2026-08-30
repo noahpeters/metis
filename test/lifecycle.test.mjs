@@ -6,7 +6,7 @@ test("lifecycle policy is fail-closed and repository scoped", () => {
   assert.equal(lifecyclePolicy({}, "owner/repo").autoMerge, false);
   const env = { METIS_LIFECYCLE_POLICY_JSON: JSON.stringify({ defaults: { requiredApprovals: 2 }, repositories: { "owner/repo": { autoMerge: true, deploymentWorkflows: ["Deploy"] } } }) };
   assert.deepEqual(lifecyclePolicy(env, "owner/repo"), {
-    autoMerge: true, requiredApprovals: 2, requiredChecks: true, deploymentWorkflows: ["Deploy"], maxRecoveryAttempts: 2, mergeMethod: "SQUASH",
+    autoMerge: true, requiredApprovals: 2, requiredChecks: true, maxRevisionAttempts: 2, deploymentWorkflows: ["Deploy"], maxRecoveryAttempts: 2, mergeMethod: "SQUASH",
   });
   assert.equal(lifecyclePolicy(env, "other/repo").autoMerge, false);
 });

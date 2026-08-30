@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { buildGithubCodexComment, githubCodexCapabilities } from "../src/github-codex-adapter.mjs";
+import { buildGithubCodexComment, buildGithubCodexRevisionComment, githubCodexCapabilities } from "../src/github-codex-adapter.mjs";
 import { createGithubAppJwt } from "../src/github.mjs";
 
 test("GitHub App JWT is signed with bounded timestamps", async () => {
@@ -49,4 +49,16 @@ test("GitHub Codex task comment is idempotently marked and preserves guardrails"
   assert.match(body, /READY_FOR_PR:/);
   assert.match(body, /Never merge, deploy, or mutate production/);
   assert.match(body, /BLOCKED:/);
+});
+
+test("GitHub Codex revision prompt is exact-head and existing-PR scoped", () => {
+  const body = buildGithubCodexRevisionComment({ repository: "owner/repo", issue_number: 7, pull_request_number: 12 }, {
+    baseHeadSha: "a".repeat(40), feedback: [{ path: "sum.mjs", line: 9, body: "Move this helper." }],
+  }, "revision-lease");
+  assert.match(body, /metis-codex-revision:revision-lease/);
+  assert.match(body, new RegExp("a{40}"));
+  assert.match(body, /sum\.mjs:9: Move this helper/);
+  assert.match(body, /do not create another pull request/);
+  assert.match(body, /REVISION_READY: <new-full-head-sha>/);
+  assert.match(body, /Metis-Task: owner\/repo#7/);
 });
