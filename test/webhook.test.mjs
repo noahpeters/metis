@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blockedCodexFromWebhook, pullRequestForTaskFromWebhook, readyForPrCodexFromWebhook, readyIssueFromWebhook, revisionCodexFromWebhook, shouldReauthorPullRequest } from "../src/index.mjs";
+import { blockedCodexFromWebhook, pullRequestForTaskFromWebhook, readyForPrCodexFromWebhook, readyIssueFromWebhook, revisionCodexFromWebhook, shouldReauthorPullRequest, unmarkedRevisionPullRequestFromWebhook } from "../src/index.mjs";
 
 test("accepts only a metis:ready issue label event", () => {
   const payload = {
@@ -109,4 +109,11 @@ test("accepts exact revision results only from the official Codex connector", ()
   assert.deepEqual(revisionCodexFromWebhook("issue_comment", payload), { repository: "owner/repo", issue_number: 7, status: "ready", head_sha: "b".repeat(40), body: payload.comment.body });
   assert.equal(revisionCodexFromWebhook("issue_comment", { ...payload, sender: { login: "lookalike", type: "Bot" } }), null);
   assert.equal(revisionCodexFromWebhook("issue_comment", { ...payload, comment: { ...payload.comment, body: `REVISION_READY: ${"b".repeat(40)}\nMetis-Task: other/repo#7` } }), null);
+});
+
+test("recognizes only same-repository unmarked Codex revision PR candidates", () => {
+  const payload = { action: "opened", repository: { full_name: "owner/repo" }, pull_request: { number: 16, node_id: "PR_16", html_url: "https://github.test/16", title: "Revision", body: "[Codex Task](https://chatgpt.com/codex/cloud/tasks/task_b_test)", user: { login: "owner", type: "User" }, head: { sha: "head", ref: "codex/revision", repo: { full_name: "owner/repo" } }, base: { ref: "main" }, draft: false } };
+  assert.equal(unmarkedRevisionPullRequestFromWebhook("pull_request", payload).pull_request_number, 16);
+  assert.equal(unmarkedRevisionPullRequestFromWebhook("pull_request", { ...payload, pull_request: { ...payload.pull_request, head: { ...payload.pull_request.head, repo: { full_name: "fork/repo" } } } }), null);
+  assert.equal(unmarkedRevisionPullRequestFromWebhook("pull_request", { ...payload, pull_request: { ...payload.pull_request, body: "No Codex link" } }), null);
 });

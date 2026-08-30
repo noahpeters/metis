@@ -88,6 +88,30 @@ export function revisionCodexFromWebhook(event, payload) {
   return ready ? { repository: marker[1], issue_number: Number(marker[2]), status: "ready", head_sha: ready[1].toLowerCase(), body } : null;
 }
 
+export function unmarkedRevisionPullRequestFromWebhook(event, payload) {
+  const pr = payload.pull_request;
+  if (event !== "pull_request" || !["opened", "reopened"].includes(payload.action) || !pr || /Metis-Task:/i.test(pr.body || "")) return null;
+  if (pr.user?.type === "Bot" || pr.head?.repo?.full_name !== payload.repository?.full_name || !pr.head?.ref?.startsWith("codex/")) return null;
+  if (!(pr.body || "").includes("chatgpt.com/codex/cloud/tasks/")) return null;
+  return {
+    repository: payload.repository.full_name,
+    action: payload.action,
+    pull_request_number: pr.number,
+    pull_request_node_id: pr.node_id,
+    pull_request_url: pr.html_url,
+    pull_request_title: pr.title || "",
+    pull_request_body: pr.body || "",
+    author_login: pr.user?.login || null,
+    head_sha: pr.head?.sha,
+    head_branch: pr.head?.ref,
+    head_repository: pr.head?.repo?.full_name,
+    base_branch: pr.base?.ref,
+    draft: Boolean(pr.draft),
+    merged: false,
+    merge_sha: null,
+  };
+}
+
 export function pullRequestForTaskFromWebhook(event, payload) {
   const lifecycle = pullRequestLifecycleFromWebhook(event, payload);
   if (!lifecycle || !["opened", "reopened"].includes(lifecycle.action)) return null;
@@ -105,7 +129,7 @@ async function taskForPullRequest(env, repository, pullRequestNumber) {
 }
 
 export function shouldReauthorPullRequest(env, task, lifecycle) {
-  return lifecycle.action === "opened"
+  return ["opened", "reopened"].includes(lifecycle.action)
     && ["awaiting_pr_creation", "awaiting_revision_pr"].includes(task.state)
     && Boolean(env.GITHUB_APP_BOT_LOGIN)
     && lifecycle.author_login !== env.GITHUB_APP_BOT_LOGIN
@@ -124,7 +148,7 @@ async function reauthorPullRequest(env, task, lifecycle) {
       method: "POST",
       body: JSON.stringify({
         title: lifecycle.pull_request_title,
-        body: lifecycle.pull_request_body,
+        body: /Metis-Task:/i.test(lifecycle.pull_request_body) ? lifecycle.pull_request_body : `${lifecycle.pull_request_body}\n\nMetis-Task: ${task.repository}#${task.issue_number}`,
         head: lifecycle.head_branch,
         base: lifecycle.base_branch,
         draft: lifecycle.draft,
@@ -329,18 +353,24 @@ async function receiveWebhook(request, env) {
   const readyForPr = readyForPrCodexFromWebhook(event, payload);
   const revisionResult = revisionCodexFromWebhook(event, payload);
   const pullRequest = pullRequestForTaskFromWebhook(event, payload);
-  const pullRequestLifecycle = pullRequestLifecycleFromWebhook(event, payload);
+  let pullRequestLifecycle = pullRequestLifecycleFromWebhook(event, payload);
+  const unmarkedRevisionPr = unmarkedRevisionPullRequestFromWebhook(event, payload);
   const reviewLifecycle = reviewLifecycleFromWebhook(event, payload);
   const checkSuiteLifecycle = checkSuiteLifecycleFromWebhook(event, payload);
   const workflowRun = workflowRunFromWebhook(event, payload);
-  if (!task && !blocked && !readyForPr && !revisionResult && !pullRequest && !pullRequestLifecycle && !reviewLifecycle && !checkSuiteLifecycle && !workflowRun) return json({ accepted: false }, 202);
-  const repository = task?.repository || blocked?.repository || readyForPr?.repository || revisionResult?.repository || pullRequest?.repository || pullRequestLifecycle?.repository || reviewLifecycle?.repository || checkSuiteLifecycle?.repository || workflowRun?.repository;
+  if (!task && !blocked && !readyForPr && !revisionResult && !pullRequest && !pullRequestLifecycle && !unmarkedRevisionPr && !reviewLifecycle && !checkSuiteLifecycle && !workflowRun) return json({ accepted: false }, 202);
+  const repository = task?.repository || blocked?.repository || readyForPr?.repository || revisionResult?.repository || pullRequest?.repository || pullRequestLifecycle?.repository || unmarkedRevisionPr?.repository || reviewLifecycle?.repository || checkSuiteLifecycle?.repository || workflowRun?.repository;
   if (!repositoryAllowed(env, repository)) return json({ error: "repository not allowed" }, 403);
   try {
     await env.DB.prepare("INSERT INTO webhook_deliveries (delivery_id, event_name, received_at) VALUES (?, ?, unixepoch())").bind(delivery, event).run();
   } catch (error) {
     if (String(error).includes("UNIQUE")) return json({ accepted: true, duplicate: true }, 202);
     throw error;
+  }
+  if (!pullRequestLifecycle && unmarkedRevisionPr) {
+    const candidates = await env.DB.prepare("SELECT t.id,t.issue_number FROM tasks t JOIN revision_dispatches r ON r.task_id=t.id AND r.state='awaiting_pr_creation' WHERE t.repository=? AND t.state='awaiting_revision_pr' AND r.updated_at >= unixepoch()-7200").bind(unmarkedRevisionPr.repository).all();
+    if (candidates.results.length !== 1) return json({ accepted: false, reason: "unmarked revision PR is ambiguous or has no active revision" }, 202);
+    pullRequestLifecycle = { ...unmarkedRevisionPr, issue_number: candidates.results[0].issue_number };
   }
   if (workflowRun) return json(await handleWorkflowCompletion(env, workflowRun), 202);
   if (revisionResult) {
@@ -368,7 +398,7 @@ async function receiveWebhook(request, env) {
     const id = `${pullRequestLifecycle.repository}#${pullRequestLifecycle.issue_number}`;
     const existing = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(id).first();
     if (!existing) return json({ accepted: false, reason: "unknown task" }, 202);
-    const replacingReviewedPr = pullRequestLifecycle.action === "opened" && existing.state === "awaiting_revision_pr" && existing.pull_request_number && existing.pull_request_number !== pullRequestLifecycle.pull_request_number;
+    const replacingReviewedPr = ["opened", "reopened"].includes(pullRequestLifecycle.action) && existing.state === "awaiting_revision_pr" && existing.pull_request_number && existing.pull_request_number !== pullRequestLifecycle.pull_request_number;
     if (existing.pull_request_number && existing.pull_request_number !== pullRequestLifecycle.pull_request_number && !replacingReviewedPr) {
       return json({ accepted: false, reason: "task is already bound to another pull request" }, 202);
     }
