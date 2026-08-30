@@ -30,22 +30,56 @@ export function readyIssueFromWebhook(event, payload) {
   };
 }
 
+export function blockedCodexFromWebhook(event, payload) {
+  const body = payload.comment?.body || "";
+  if (
+    event !== "issue_comment"
+    || payload.action !== "created"
+    || payload.sender?.login !== "chatgpt-codex-connector"
+    || !body.startsWith("BLOCKED:")
+  ) return null;
+  const question = body.split("\n", 1)[0].slice("BLOCKED:".length).trim();
+  return {
+    repository: payload.repository?.full_name,
+    issue_number: payload.issue?.number,
+    question: question || "Codex reported a blocker without a question.",
+    body,
+    comment_url: payload.comment?.html_url || null,
+  };
+}
+
 async function receiveWebhook(request, env) {
   const body = await request.text();
   if (!await verifySignature(env.GITHUB_WEBHOOK_SECRET, request.headers.get("x-hub-signature-256"), body)) return json({ error: "invalid signature" }, 401);
   const delivery = request.headers.get("x-github-delivery");
   const event = request.headers.get("x-github-event");
   if (event === "ping") return json({ ok: true });
-  const task = readyIssueFromWebhook(event, JSON.parse(body));
-  if (!task) return json({ accepted: false }, 202);
-  if (!repositoryAllowed(env, task.repository)) return json({ error: "repository not allowed" }, 403);
-  const id = `${task.repository}#${task.issue_number}`;
+  const payload = JSON.parse(body);
+  const task = readyIssueFromWebhook(event, payload);
+  const blocked = blockedCodexFromWebhook(event, payload);
+  if (!task && !blocked) return json({ accepted: false }, 202);
+  const repository = task?.repository || blocked.repository;
+  if (!repositoryAllowed(env, repository)) return json({ error: "repository not allowed" }, 403);
   try {
     await env.DB.prepare("INSERT INTO webhook_deliveries (delivery_id, event_name, received_at) VALUES (?, ?, unixepoch())").bind(delivery, event).run();
   } catch (error) {
     if (String(error).includes("UNIQUE")) return json({ accepted: true, duplicate: true }, 202);
     throw error;
   }
+  if (blocked) {
+    const id = `${blocked.repository}#${blocked.issue_number}`;
+    const existing = await env.DB.prepare("SELECT id FROM tasks WHERE id=?").bind(id).first();
+    if (!existing) return json({ accepted: false, reason: "unknown task" }, 202);
+    const result = JSON.stringify({ status: "blocked", question: blocked.question, comment_url: blocked.comment_url });
+    await env.DB.batch([
+      env.DB.prepare("UPDATE dispatches SET state='blocked', result_json=?, updated_at=unixepoch() WHERE task_id=? AND state='running'").bind(result, id),
+      env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(id),
+      env.DB.prepare("UPDATE tasks SET state='blocked', blocker_reason=?, updated_at=unixepoch() WHERE id=?").bind(blocked.question, id),
+    ]);
+    await setState(env, blocked.repository, blocked.issue_number, "metis:blocked");
+    return json({ accepted: true, task_id: id, state: "blocked" }, 202);
+  }
+  const id = `${task.repository}#${task.issue_number}`;
   await env.DB.prepare("INSERT INTO tasks (id, repository, issue_number, issue_node_id, title, body, state, actor, size_class, max_cost_units, budget_approved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?, ?, unixepoch(), unixepoch()) ON CONFLICT(id) DO UPDATE SET title=excluded.title, body=excluded.body, state='intake', actor=excluded.actor, size_class=excluded.size_class, max_cost_units=excluded.max_cost_units, budget_approved=excluded.budget_approved, updated_at=unixepoch()")
     .bind(id, task.repository, task.issue_number, task.issue_node_id, task.title, task.body, task.actor, task.size_class, task.max_cost_units, task.budget_approved).run();
   await env.DISPATCH_QUEUE.send({ type: "intake", taskId: id });

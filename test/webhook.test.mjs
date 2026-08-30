@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readyIssueFromWebhook } from "../src/index.mjs";
+import { blockedCodexFromWebhook, readyIssueFromWebhook } from "../src/index.mjs";
 
 test("accepts only a metis:ready issue label event", () => {
   const payload = {
@@ -15,4 +15,26 @@ test("accepts only a metis:ready issue label event", () => {
   });
   assert.equal(readyIssueFromWebhook("issues", { ...payload, label: { name: "bug" } }), null);
   assert.equal(readyIssueFromWebhook("pull_request", payload), null);
+});
+
+test("accepts BLOCKED results only from the Codex connector", () => {
+  const payload = {
+    action: "created",
+    repository: { full_name: "noahpeters/metis-sandbox" },
+    issue: { number: 1 },
+    comment: {
+      body: "BLOCKED: Which remote should I use?\n\nDetails",
+      html_url: "https://github.com/noahpeters/metis-sandbox/issues/1#issuecomment-1",
+    },
+    sender: { login: "chatgpt-codex-connector" },
+  };
+  assert.deepEqual(blockedCodexFromWebhook("issue_comment", payload), {
+    repository: "noahpeters/metis-sandbox",
+    issue_number: 1,
+    question: "Which remote should I use?",
+    body: payload.comment.body,
+    comment_url: payload.comment.html_url,
+  });
+  assert.equal(blockedCodexFromWebhook("issue_comment", { ...payload, sender: { login: "someone-else" } }), null);
+  assert.equal(blockedCodexFromWebhook("issues", payload), null);
 });

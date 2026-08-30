@@ -42,6 +42,8 @@ test("GitHub Codex task comment is idempotently marked and preserves guardrails"
   }, "lease-123");
   assert.match(body, /metis-codex-dispatch:lease-123/);
   assert.match(body, /@codex implement this issue/);
+  assert.match(body, /Repository remote: https:\/\/github.com\/owner\/repo\.git/);
+  assert.match(body, /Pull-request base branch: `main`/);
   assert.match(body, /Never merge, deploy, or mutate production/);
   assert.match(body, /BLOCKED:/);
 });

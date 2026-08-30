@@ -31,4 +31,4 @@ Dispatch requires a narrowly scoped fine-grained GitHub personal access token st
 
 The repository must also be present in `ALLOWED_REPOSITORIES`, and `codex_included` capacity must be enabled in both policy and D1. Missing credentials or capacity keep dispatch closed.
 
-Metis searches existing issue comments for the lease marker before posting, so a queue retry does not launch duplicate Codex work. The existing authenticated callback contract remains available for completion reconciliation; the GitHub driver currently owns launch only.
+Metis includes the explicit HTTPS repository remote and `main` base branch in every launch, then searches existing issue comments for the lease marker before posting so a queue retry does not launch duplicate Codex work. A `BLOCKED:` comment authored by the official `chatgpt-codex-connector` is reconciled into D1, releases the task lease, and moves the issue to `metis:blocked`. The existing authenticated callback contract remains available for other completion reconciliation.

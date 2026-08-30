@@ -21,6 +21,8 @@ export function buildGithubCodexComment(task, leaseId) {
     "@codex implement this issue and open a pull request.",
     "",
     `Metis summary: ${task.summary}`,
+    `Repository remote: https://github.com/${task.repository}.git`,
+    "Pull-request base branch: `main`",
     "",
     "Execution guardrails:",
     `- Maximum normalized cost units: ${task.max_cost_units}`,
