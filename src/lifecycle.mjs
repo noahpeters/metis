@@ -11,7 +11,7 @@ export function lifecyclePolicy(env, repository) {
   try {
     supplied = JSON.parse(env.METIS_LIFECYCLE_POLICY_JSON || "{}");
   } catch {
-    return { autoMerge: false, requiredApprovals: 1, requiredChecks: true, maxRevisionAttempts: 2, deploymentWorkflows: [], maxRecoveryAttempts: 2, mergeMethod: "SQUASH" };
+    return { requiredApprovals: 1, requiredChecks: true, maxRevisionAttempts: 2, deploymentWorkflows: [], maxRecoveryAttempts: 2 };
   }
   const defaults = supplied.defaults || {};
   const selected = supplied.repositories?.[repository] || {};
@@ -21,10 +21,8 @@ export function lifecyclePolicy(env, repository) {
     maxRevisionAttempts: 2,
     deploymentWorkflows: [],
     maxRecoveryAttempts: 2,
-    mergeMethod: "SQUASH",
     ...defaults,
     ...selected,
-    autoMerge: selected.autoMerge === true,
   };
 }
 

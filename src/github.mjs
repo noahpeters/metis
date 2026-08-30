@@ -78,16 +78,6 @@ export async function githubGraphql(env, query, variables) {
   return result.data;
 }
 
-export async function enableAutoMerge(env, pullRequestNodeId, mergeMethod = "SQUASH") {
-  return githubGraphql(env, `
-    mutation EnableMetisAutoMerge($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
-      enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId, mergeMethod: $mergeMethod}) {
-        pullRequest { number autoMergeRequest { enabledAt } }
-      }
-    }
-  `, { pullRequestId: pullRequestNodeId, mergeMethod });
-}
-
 export async function unresolvedReviewThreadCount(env, repository, pullRequestNumber) {
   const [owner, name] = repository.split("/");
   const data = await githubGraphql(env, `

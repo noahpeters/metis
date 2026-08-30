@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { approvalCount, checksPassed, lifecyclePolicy, pullRequestLifecycleFromWebhook, workflowRunFromWebhook } from "../src/lifecycle.mjs";
 
 test("lifecycle policy is fail-closed and repository scoped", () => {
-  assert.equal(lifecyclePolicy({}, "owner/repo").autoMerge, false);
-  const env = { METIS_LIFECYCLE_POLICY_JSON: JSON.stringify({ defaults: { requiredApprovals: 2 }, repositories: { "owner/repo": { autoMerge: true, deploymentWorkflows: ["Deploy"] } } }) };
+  const env = { METIS_LIFECYCLE_POLICY_JSON: JSON.stringify({ defaults: { requiredApprovals: 2 }, repositories: { "owner/repo": { deploymentWorkflows: ["Deploy"] } } }) };
   assert.deepEqual(lifecyclePolicy(env, "owner/repo"), {
-    autoMerge: true, requiredApprovals: 2, requiredChecks: true, maxRevisionAttempts: 2, deploymentWorkflows: ["Deploy"], maxRecoveryAttempts: 2, mergeMethod: "SQUASH",
+    requiredApprovals: 2, requiredChecks: true, maxRevisionAttempts: 2, deploymentWorkflows: ["Deploy"], maxRecoveryAttempts: 2,
   });
-  assert.equal(lifecyclePolicy(env, "other/repo").autoMerge, false);
+  assert.deepEqual(lifecyclePolicy({}, "other/repo"), {
+    requiredApprovals: 1, requiredChecks: true, maxRevisionAttempts: 2, deploymentWorkflows: [], maxRecoveryAttempts: 2,
+  });
 });
 
 test("pull request lifecycle requires a repository-bound task marker", () => {
