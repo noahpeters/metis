@@ -1,7 +1,8 @@
 {
   "repositories": [
     "noahpeters/ftops",
-    "noahpeters/msgstats"
+    "noahpeters/msgstats",
+    "noahpeters/metis-sandbox",
+    "noahpeters/metis"
   ]
 }
-
