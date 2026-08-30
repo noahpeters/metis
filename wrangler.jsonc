@@ -1,26 +1,26 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "metis-control-plane",
+  "name": "metis-control-plane-staging",
   "main": "src/index.mjs",
   "compatibility_date": "2026-08-30",
-  "workers_dev": false,
+  "workers_dev": true,
   "ai": { "binding": "AI" },
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "metis",
+      "database_name": "metis-staging",
       "database_id": "REPLACE_WITH_D1_DATABASE_ID",
       "migrations_dir": "migrations"
     }
   ],
   "queues": {
-    "producers": [{ "binding": "DISPATCH_QUEUE", "queue": "metis-dispatch" }],
-    "consumers": [{ "queue": "metis-dispatch", "max_batch_size": 5, "max_retries": 3, "dead_letter_queue": "metis-dead-letter" }]
+    "producers": [{ "binding": "DISPATCH_QUEUE", "queue": "metis-dispatch-staging" }],
+    "consumers": [{ "queue": "metis-dispatch-staging", "max_batch_size": 5, "max_retries": 3, "dead_letter_queue": "metis-dead-letter-staging" }]
   },
   "triggers": { "crons": ["*/10 * * * *"] },
   "vars": {
-    "ALLOWED_REPOSITORIES": "noahpeters/ftops,noahpeters/msgstats",
-    "PUBLIC_BASE_URL": "https://metis.example.com",
+    "ALLOWED_REPOSITORIES": "",
+    "PUBLIC_BASE_URL": "https://metis-control-plane-staging.REPLACE_WITH_SUBDOMAIN.workers.dev",
     "METIS_POLICY_JSON": "{\"global\":{\"maxConcurrentTasks\":2,\"maxCostUnitsPerWindow\":20,\"maxTasksPerWindow\":4,\"maxRetries\":2},\"providers\":{\"paid_api\":{\"enabled\":false},\"perplexity\":{\"enabled\":false}}}"
   }
 }

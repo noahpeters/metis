@@ -10,5 +10,8 @@
     "check": "node --check src/index.mjs && node --check src/ai.mjs && node --check src/codex-dispatch.mjs && node --check src/config.mjs && node --check src/github.mjs && node --check src/scheduler.mjs && node --check scripts/lib/state.mjs",
     "test": "node --test test/*.test.mjs",
     "verify": "npm run check && npm test"
+  },
+  "devDependencies": {
+    "wrangler": "^4.127.1"
   }
 }

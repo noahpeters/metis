@@ -40,7 +40,7 @@ See `docs/codex-dispatch-adapter.md` for the authenticated capability, task, ide
 
 ## Cloudflare setup
 
-1. Create the `metis` D1 database, `metis-dispatch` Queue, and `metis-dead-letter` Queue.
+1. Create the staging `metis-staging` D1 database, `metis-dispatch-staging` Queue, and `metis-dead-letter-staging` Queue.
 2. Replace the D1 database ID and public Worker URL in `wrangler.jsonc`.
 3. Apply `migrations/0001_control_plane.sql`.
 4. Set Worker secrets: `GITHUB_WEBHOOK_SECRET`, `GITHUB_TOKEN`, `CODEX_DISPATCH_TOKEN`, and `CODEX_CALLBACK_TOKEN`.

@@ -63,7 +63,7 @@ CREATE TABLE provider_capacity (
 
 INSERT INTO provider_capacity(provider, role, available, remaining_units, updated_at) VALUES
   ('workers_ai', 'orchestration', 1, NULL, unixepoch()),
-  ('codex_included', 'coding', 1, 20, unixepoch()),
+  ('codex_included', 'coding', 0, 0, unixepoch()),
   ('perplexity', 'research_only', 0, 0, unixepoch()),
   ('paid_api', 'fallback_disabled', 0, 0, unixepoch());
 
