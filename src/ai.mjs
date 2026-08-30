@@ -8,8 +8,11 @@ export async function analyzeIssue(env, task) {
     messages: [{ role: "user", content: prompt }],
     response_format: { type: "json_object" },
   });
-  const raw = typeof result === "string" ? result : result.response;
-  const parsed = JSON.parse(raw);
+  const raw = typeof result === "string" ? result : result?.response ?? result;
+  const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Workers AI returned an invalid issue-analysis payload");
+  }
   if (!TASK_SIZES.includes(parsed.size)) parsed.size = "unknown";
   parsed.confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
   parsed.estimated_cost_units = Math.max(1, Math.round(Number(parsed.estimated_cost_units) || 8));
