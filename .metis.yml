@@ -1,0 +1,11 @@
+version: 1
+size_override: null
+max_cost_units: null
+requires_budget_approval: true
+verify: npm run verify
+protected_paths:
+  - .github/workflows/
+  - infra/
+  - migrations/
+deployment: forbidden
+notes: Follow AGENTS.md. Pull-request merges are human-only. Never deploy Metis from a coding task; GitHub Actions owns staging deployment after a human merge.

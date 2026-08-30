@@ -56,6 +56,8 @@ Current staging endpoint: `https://metis-control-plane-staging.gr4gwzrfq2.worker
 
 Target repositories stay thin: `.metis.yml` declares verification and guardrails, `AGENTS.md` carries repository-specific instructions, and a shared GitHub App webhook supplies events centrally. There is no per-repository dispatch workflow or token.
 
+Metis is itself an allowlisted target. Its `.metis.yml` requires explicit budget approval, treats workflows, Terraform, and migrations as protected paths, forbids coding-task deployment, and delegates staging deployment exclusively to the `CI` workflow after a human merge. `metis-sandbox` remains the disposable integration target.
+
 ## Budgets and capacity
 
 `METIS_POLICY_JSON` controls normalized cost-unit and execution envelopes. The conservative defaults allow two concurrent tasks, four starts and 20 cost units per daily UTC window, two dispatch attempts, automatic small/medium tasks, and approval-required large/unknown tasks.
