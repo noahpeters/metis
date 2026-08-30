@@ -19,12 +19,12 @@
   },
   "triggers": { "crons": ["*/10 * * * *"] },
   "vars": {
-    "ALLOWED_REPOSITORIES": "",
-    "CODEX_DISPATCH_MODE": "disabled",
-    "CODEX_GITHUB_INTEGRATION_ENABLED": "false",
-    "GITHUB_APP_ID": "",
-    "GITHUB_APP_INSTALLATION_ID": "",
+    "ALLOWED_REPOSITORIES": "noahpeters/metis-sandbox",
+    "CODEX_DISPATCH_MODE": "github_integration",
+    "CODEX_GITHUB_INTEGRATION_ENABLED": "true",
+    "GITHUB_APP_ID": "4772921",
+    "GITHUB_APP_INSTALLATION_ID": "157788676",
     "PUBLIC_BASE_URL": "https://metis-control-plane-staging.gr4gwzrfq2.workers.dev",
-    "METIS_POLICY_JSON": "{\"global\":{\"maxConcurrentTasks\":2,\"maxCostUnitsPerWindow\":20,\"maxTasksPerWindow\":4,\"maxRetries\":2},\"providers\":{\"paid_api\":{\"enabled\":false},\"perplexity\":{\"enabled\":false}}}"
+    "METIS_POLICY_JSON": "{\"global\":{\"maxConcurrentTasks\":1,\"maxCostUnitsPerWindow\":4,\"maxTasksPerWindow\":1,\"maxRetries\":1},\"providers\":{\"codex_included\":{\"enabled\":true},\"paid_api\":{\"enabled\":false},\"perplexity\":{\"enabled\":false}}}"
   }
 }

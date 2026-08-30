@@ -39,19 +39,15 @@ Metis can launch included-capacity Codex cloud work through the supported GitHub
 
 See `docs/codex-dispatch-adapter.md` for the authenticated capability, task, idempotency, callback, and fail-closed contract.
 
-## Cloudflare setup
+## Deployment
 
-1. Create the staging `metis-staging` D1 database, `metis-dispatch-staging` Queue, and `metis-dead-letter-staging` Queue.
-2. Replace the D1 database ID and public Worker URL in `wrangler.jsonc`.
-3. Apply `migrations/0001_control_plane.sql`.
-4. Set Worker secrets: `GITHUB_WEBHOOK_SECRET`, `GITHUB_TOKEN`, `CODEX_DISPATCH_TOKEN`, and `CODEX_CALLBACK_TOKEN`.
-5. Set `CODEX_DISPATCH_URL` to the included-capacity coding dispatcher.
-6. Configure a GitHub App webhook to send issue events to `/webhooks/github` and install it only on registered repositories.
-7. Deploy only after reviewing provider capacity and budget values.
+Metis deploys only from GitHub Actions after verification succeeds on `main`. The workflow applies D1 migrations and deploys the Worker using `wrangler.jsonc`. Configure the repository's `staging` environment with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; keep GitHub App and dispatch credentials as encrypted Worker secrets.
+
+Local `wrangler deploy`, D1 migration, and `terraform apply` operations are not accepted deployment paths. The repository deployment scripts enforce the GitHub Actions boundary. Terraform remains the infrastructure definition and may be formatted, validated, or planned locally without applying changes.
 
 The Worker updates issue labels/comments. Branch and PR permissions belong to the isolated coding dispatcher.
 
-Current inert staging endpoint: `https://metis-control-plane-staging.gr4gwzrfq2.workers.dev`. Its repository allowlist and Codex capacity remain disabled until a disposable test repository and required secrets are configured.
+Current staging endpoint: `https://metis-control-plane-staging.gr4gwzrfq2.workers.dev`. It is restricted to the disposable `noahpeters/metis-sandbox` repository and included Codex capacity; paid API and Perplexity fallback remain disabled.
 
 ## Target repository contract
 
