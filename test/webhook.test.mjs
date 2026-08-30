@@ -101,6 +101,7 @@ test("re-authors only an awaiting same-repository PR not already owned by the Ap
   assert.equal(shouldReauthorPullRequest(env, task, { ...lifecycle, author_login: env.GITHUB_APP_BOT_LOGIN }), false);
   assert.equal(shouldReauthorPullRequest(env, task, { ...lifecycle, head_repository: "fork/repo" }), false);
   assert.equal(shouldReauthorPullRequest(env, { state: "pr_ready" }, lifecycle), false);
+  assert.equal(shouldReauthorPullRequest(env, { state: "awaiting_revision_pr" }, lifecycle), true);
 });
 
 test("accepts exact revision results only from the official Codex connector", () => {

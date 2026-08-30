@@ -106,7 +106,7 @@ async function taskForPullRequest(env, repository, pullRequestNumber) {
 
 export function shouldReauthorPullRequest(env, task, lifecycle) {
   return lifecycle.action === "opened"
-    && task.state === "awaiting_pr_creation"
+    && ["awaiting_pr_creation", "awaiting_revision_pr"].includes(task.state)
     && Boolean(env.GITHUB_APP_BOT_LOGIN)
     && lifecycle.author_login !== env.GITHUB_APP_BOT_LOGIN
     && lifecycle.head_repository === lifecycle.repository
@@ -368,11 +368,17 @@ async function receiveWebhook(request, env) {
     const id = `${pullRequestLifecycle.repository}#${pullRequestLifecycle.issue_number}`;
     const existing = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(id).first();
     if (!existing) return json({ accepted: false, reason: "unknown task" }, 202);
-    if (existing.pull_request_number && existing.pull_request_number !== pullRequestLifecycle.pull_request_number) {
+    const replacingReviewedPr = pullRequestLifecycle.action === "opened" && existing.state === "awaiting_revision_pr" && existing.pull_request_number && existing.pull_request_number !== pullRequestLifecycle.pull_request_number;
+    if (existing.pull_request_number && existing.pull_request_number !== pullRequestLifecycle.pull_request_number && !replacingReviewedPr) {
       return json({ accepted: false, reason: "task is already bound to another pull request" }, 202);
     }
+    if (replacingReviewedPr) {
+      await githubRequest(env, `/repos/${existing.repository}/pulls/${existing.pull_request_number}`, { method: "PATCH", body: JSON.stringify({ state: "closed" }) });
+      await comment(env, existing.repository, existing.issue_number, `## Metis superseded pull request #${existing.pull_request_number}\n\nCodex prepared a replacement revision. The superseded PR was closed without merging; Metis will reauthor and bind the new exact head for fresh human review.`);
+      existing.pull_request_number = null;
+    }
     if (["opened", "reopened"].includes(pullRequestLifecycle.action)
-      && !["awaiting_pr_creation", "pr_ready", "reviewing", "merge_ready", "merging"].includes(existing.state)) {
+      && !["awaiting_pr_creation", "awaiting_revision_pr", "pr_ready", "reviewing", "merge_ready", "merging"].includes(existing.state)) {
       return json({ accepted: false, reason: "task is not in a pull-request lifecycle state" }, 202);
     }
     if (["synchronize", "closed"].includes(pullRequestLifecycle.action) && !existing.pull_request_number) {
@@ -414,6 +420,11 @@ async function receiveWebhook(request, env) {
       await env.DB.prepare("UPDATE tasks SET state='pr_ready', pull_request_url=?, pull_request_number=?, blocker_reason=NULL, updated_at=unixepoch() WHERE id=?")
         .bind(effectivePullRequest.pull_request_url, effectivePullRequest.pull_request_number, id).run();
       await setState(env, existing.repository, existing.issue_number, "metis:pr-ready");
+      const awaitingRevision = await env.DB.prepare("SELECT * FROM revision_dispatches WHERE task_id=? AND state='awaiting_pr_creation' ORDER BY id DESC LIMIT 1").bind(id).first();
+      if (awaitingRevision) {
+        await env.DB.prepare("UPDATE revision_dispatches SET state='completed',result_json=?,updated_at=unixepoch() WHERE id=?")
+          .bind(JSON.stringify({ replacement_pull_request_number: effectivePullRequest.pull_request_number, head_sha: effectivePullRequest.head_sha }), awaitingRevision.id).run();
+      }
     }
     const current = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(id).first();
     const result = await evaluateAutoMerge(env, current, effectivePullRequest);
@@ -454,6 +465,20 @@ async function receiveWebhook(request, env) {
   if (readyForPr) {
     const id = `${readyForPr.repository}#${readyForPr.issue_number}`;
     const existing = await env.DB.prepare("SELECT id, state FROM tasks WHERE id=?").bind(id).first();
+    if (existing?.state === "revising") {
+      const revision = await env.DB.prepare("SELECT * FROM revision_dispatches WHERE task_id=? AND state='running' ORDER BY id DESC LIMIT 1").bind(id).first();
+      if (!revision) return json({ accepted: false, reason: "no active revision" }, 202);
+      const result = JSON.stringify({ status: "awaiting_pr_creation", summary: readyForPr.summary, task_url: readyForPr.task_url, supersedes_pull_request: revision.pull_request_number });
+      await env.DB.batch([
+        env.DB.prepare("UPDATE revision_dispatches SET state='awaiting_pr_creation',result_json=?,updated_at=unixepoch() WHERE id=?").bind(result, revision.id),
+        env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(id),
+        env.DB.prepare("UPDATE tasks SET state='awaiting_revision_pr',blocker_reason=NULL,updated_at=unixepoch() WHERE id=?").bind(id),
+        env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,cost_units,metadata_json,created_at) VALUES(?,'codex_included','review_revision_prepared',0,?,unixepoch())").bind(id, result),
+      ]);
+      await setState(env, readyForPr.repository, readyForPr.issue_number, "metis:awaiting-pr");
+      await comment(env, readyForPr.repository, readyForPr.issue_number, ["## Metis is awaiting the revised PR handoff", "", readyForPr.summary, "", readyForPr.task_url ? `[Review the Codex revision and click **Create PR**](${readyForPr.task_url}).` : "Open the linked Codex revision and click **Create PR**.", "", `Metis will close superseded PR #${revision.pull_request_number}, reauthor the replacement as the App, and require fresh human review.`].join("\n"));
+      return json({ accepted: true, task_id: id, state: "awaiting_revision_pr" }, 202);
+    }
     if (!existing || existing.state !== "running") return json({ accepted: false, reason: "task is not running" }, 202);
     const result = JSON.stringify({ status: "awaiting_pr_creation", summary: readyForPr.summary, comment_url: readyForPr.comment_url, task_url: readyForPr.task_url });
     await env.DB.batch([

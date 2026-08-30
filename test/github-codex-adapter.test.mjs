@@ -58,7 +58,8 @@ test("GitHub Codex revision prompt is exact-head and existing-PR scoped", () => 
   assert.match(body, /metis-codex-revision:revision-lease/);
   assert.match(body, new RegExp("a{40}"));
   assert.match(body, /sum\.mjs:9: Move this helper/);
-  assert.match(body, /do not create another pull request/);
-  assert.match(body, /REVISION_READY: <new-full-head-sha>/);
+  assert.match(body, /prepare a replacement pull request/);
+  assert.match(body, /Do not run `git push`, use `gh`/);
+  assert.match(body, /READY_FOR_PR:/);
   assert.match(body, /Metis-Task: owner\/repo#7/);
 });
