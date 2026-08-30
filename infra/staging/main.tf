@@ -41,7 +41,6 @@ resource "cloudflare_workers_script" "metis" {
     { name = "DISPATCH_QUEUE", type = "queue", queue_name = cloudflare_queue.dispatch.queue_name },
     { name = "METIS_POLICY_JSON", type = "plain_text", text = var.metis_policy_json },
     { name = "METIS_LIFECYCLE_POLICY_JSON", type = "plain_text", text = var.metis_lifecycle_policy_json },
-    { name = "GITHUB_APP_BOT_LOGIN", type = "plain_text", text = var.github_app_bot_login },
     { name = "PUBLIC_BASE_URL", type = "plain_text", text = local.worker_url },
   ]
 }

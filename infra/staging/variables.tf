@@ -25,13 +25,7 @@ variable "metis_policy_json" {
 variable "metis_lifecycle_policy_json" {
   description = "Fail-closed repository merge, deployment, and recovery policy. Repositories must explicitly opt in."
   type        = string
-  default     = "{\"defaults\":{\"autoMerge\":false,\"requiredApprovals\":1,\"requiredChecks\":true,\"maxRevisionAttempts\":2,\"deploymentWorkflows\":[],\"maxRecoveryAttempts\":2,\"mergeMethod\":\"SQUASH\"},\"repositories\":{}}"
-}
-
-variable "github_app_bot_login" {
-  description = "Exact GitHub bot login used to verify App-authored pull requests."
-  type        = string
-  default     = "metis-control-plane-noah[bot]"
+  default     = "{\"defaults\":{\"requiredApprovals\":1,\"requiredChecks\":true,\"maxRevisionAttempts\":2,\"deploymentWorkflows\":[],\"maxRecoveryAttempts\":2},\"repositories\":{}}"
 }
 
 variable "codex_dispatch_mode" {
