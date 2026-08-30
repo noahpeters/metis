@@ -1,0 +1,8 @@
+version: 1
+verify: npm run verify
+protected_paths:
+  - .github/workflows/
+  - migrations/
+deployment: forbidden
+notes: Follow AGENTS.md. Never deploy or mutate production data.
+

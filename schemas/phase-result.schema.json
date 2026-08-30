@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "question", "details"],
+  "properties": {
+    "status": { "type": "string", "enum": ["READY", "COMPLETED", "ACCEPTED", "REPAIR", "BLOCKED"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "question": { "type": ["string", "null"] },
+    "details": { "type": "array", "items": { "type": "string" } }
+  }
+}
+

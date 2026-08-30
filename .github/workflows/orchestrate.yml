@@ -1,0 +1,52 @@
+name: Orchestrate
+
+on:
+  repository_dispatch:
+    types: [metis.issue.ready]
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Target repository, for example noahpeters/ftops
+        required: true
+        type: string
+      issue_number:
+        description: Open issue number carrying metis:ready
+        required: true
+        type: number
+      dry_run:
+        description: Validate and plan without editing the target repository
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: metis-${{ github.event.client_payload.source.repository || inputs.repository }}-${{ github.event.client_payload.source.issue_number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.METIS_GITHUB_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      METIS_REPOSITORY: ${{ github.repository }}
+      METIS_EVENT_PATH: ${{ github.event_path }}
+      METIS_MANUAL_REPOSITORY: ${{ inputs.repository }}
+      METIS_MANUAL_ISSUE_NUMBER: ${{ inputs.issue_number }}
+      METIS_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Verify orchestrator
+        run: npm run verify
+      - name: Install Codex CLI
+        run: npm install --global @openai/codex
+      - name: Run task
+        run: node scripts/run-task.mjs
+

@@ -1,0 +1,10 @@
+[
+  { "name": "metis:ready", "color": "0E8A16", "description": "Approved for Metis to begin work" },
+  { "name": "metis:planning", "color": "1D76DB", "description": "Metis is preparing an implementation plan" },
+  { "name": "metis:implementing", "color": "5319E7", "description": "Metis is implementing the approved issue" },
+  { "name": "metis:reviewing", "color": "FBCA04", "description": "Metis is reviewing the implementation" },
+  { "name": "metis:blocked", "color": "D93F0B", "description": "Metis needs information or a decision" },
+  { "name": "metis:pr-ready", "color": "0E8A16", "description": "Metis opened a pull request for human review" },
+  { "name": "metis:failed", "color": "B60205", "description": "Metis encountered an operational failure" }
+]
+

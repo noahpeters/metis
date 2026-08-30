@@ -1,0 +1,15 @@
+{
+  "name": "metis",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20 <25"
+  },
+  "scripts": {
+    "check": "node --check scripts/run-task.mjs && node --check scripts/lib/github.mjs && node --check scripts/lib/state.mjs",
+    "test": "node --test test/*.test.mjs",
+    "verify": "npm run check && npm test"
+  }
+}
+

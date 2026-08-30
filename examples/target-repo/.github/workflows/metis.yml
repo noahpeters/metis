@@ -1,0 +1,35 @@
+name: Metis
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  dispatch:
+    if: github.event.label.name == 'metis:ready'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Dispatch ready issue to Metis
+        env:
+          GH_TOKEN: ${{ secrets.METIS_DISPATCH_TOKEN }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NODE_ID: ${{ github.event.issue.node_id }}
+          ACTOR: ${{ github.actor }}
+          HEAD_SHA: ${{ github.sha }}
+          DELIVERY_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          gh api --method POST repos/noahpeters/metis/dispatches \
+            -f event_type='metis.issue.ready' \
+            -F client_payload[version]=1 \
+            -f client_payload[event]='issue.ready' \
+            -f client_payload[delivery_id]="$DELIVERY_ID" \
+            -f client_payload[source][repository]="$TARGET_REPOSITORY" \
+            -F client_payload[source][issue_number]="$ISSUE_NUMBER" \
+            -f client_payload[source][issue_node_id]="$ISSUE_NODE_ID" \
+            -f client_payload[source][actor]="$ACTOR" \
+            -f client_payload[source][head_sha]="$HEAD_SHA"
+
