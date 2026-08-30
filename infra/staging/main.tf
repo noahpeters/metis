@@ -4,9 +4,11 @@ locals {
 }
 
 resource "cloudflare_d1_database" "metis" {
-  account_id            = var.cloudflare_account_id
-  name                  = "metis-staging"
-  primary_location_hint = "wnam"
+  account_id = var.cloudflare_account_id
+  name       = "metis-staging"
+  read_replication = {
+    mode = "disabled"
+  }
 }
 
 resource "cloudflare_queue" "dispatch" {
@@ -30,11 +32,11 @@ resource "cloudflare_workers_script" "metis" {
 
   bindings = [
     { name = "AI", type = "ai" },
+    { name = "ALLOWED_REPOSITORIES", type = "plain_text", text = var.allowed_repositories },
     { name = "DB", type = "d1", database_id = cloudflare_d1_database.metis.id },
     { name = "DISPATCH_QUEUE", type = "queue", queue_name = cloudflare_queue.dispatch.queue_name },
-    { name = "ALLOWED_REPOSITORIES", type = "plain_text", text = var.allowed_repositories },
-    { name = "PUBLIC_BASE_URL", type = "plain_text", text = local.worker_url },
     { name = "METIS_POLICY_JSON", type = "plain_text", text = var.metis_policy_json },
+    { name = "PUBLIC_BASE_URL", type = "plain_text", text = local.worker_url },
   ]
 }
 
