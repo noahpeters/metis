@@ -28,6 +28,12 @@ variable "metis_lifecycle_policy_json" {
   default     = "{\"defaults\":{\"autoMerge\":false,\"requiredApprovals\":1,\"deploymentWorkflows\":[],\"maxRecoveryAttempts\":2,\"mergeMethod\":\"SQUASH\"},\"repositories\":{}}"
 }
 
+variable "github_app_bot_login" {
+  description = "Exact GitHub bot login used to verify App-authored pull requests."
+  type        = string
+  default     = "metis-control-plane-noah[bot]"
+}
+
 variable "codex_dispatch_mode" {
   description = "Codex launch driver. Keep disabled until the GitHub Codex integration is connected and tested."
   type        = string

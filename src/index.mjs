@@ -91,6 +91,56 @@ async function taskForPullRequest(env, repository, pullRequestNumber) {
     .bind(repository, pullRequestNumber).first();
 }
 
+export function shouldReauthorPullRequest(env, task, lifecycle) {
+  return lifecycle.action === "opened"
+    && task.state === "awaiting_pr_creation"
+    && Boolean(env.GITHUB_APP_BOT_LOGIN)
+    && lifecycle.author_login !== env.GITHUB_APP_BOT_LOGIN
+    && lifecycle.head_repository === lifecycle.repository
+    && Boolean(lifecycle.head_branch)
+    && Boolean(lifecycle.base_branch);
+}
+
+async function reauthorPullRequest(env, task, lifecycle) {
+  await githubRequest(env, `/repos/${task.repository}/pulls/${lifecycle.pull_request_number}`, {
+    method: "PATCH",
+    body: JSON.stringify({ state: "closed" }),
+  });
+  try {
+    const replacement = await githubRequest(env, `/repos/${task.repository}/pulls`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: lifecycle.pull_request_title,
+        body: lifecycle.pull_request_body,
+        head: lifecycle.head_branch,
+        base: lifecycle.base_branch,
+        draft: lifecycle.draft,
+      }),
+    });
+    await comment(env, task.repository, task.issue_number, [
+      "## Metis created the protected pull request",
+      "",
+      `Codex prepared branch \`${lifecycle.head_branch}\` at \`${lifecycle.head_sha}\`. Metis closed the user-authored handoff PR and recreated it as the GitHub App so the task owner can provide the required human review.`,
+      "",
+      `[Review pull request #${replacement.number}](${replacement.html_url})`,
+    ].join("\n"));
+    return {
+      ...lifecycle,
+      pull_request_number: replacement.number,
+      pull_request_node_id: replacement.node_id,
+      pull_request_url: replacement.html_url,
+      author_login: replacement.user?.login || env.GITHUB_APP_BOT_LOGIN,
+      head_sha: replacement.head?.sha || lifecycle.head_sha,
+    };
+  } catch (error) {
+    await env.DB.prepare("UPDATE tasks SET state='blocked', blocker_reason=?, updated_at=unixepoch() WHERE id=?")
+      .bind(`Metis could not recreate the pull request as the GitHub App: ${error.message}`, task.id).run();
+    await setState(env, task.repository, task.issue_number, "metis:blocked");
+    await comment(env, task.repository, task.issue_number, `BLOCKED: Metis closed the handoff PR but could not recreate it as the GitHub App. The branch \`${lifecycle.head_branch}\` remains intact. Error: ${error.message}`);
+    throw error;
+  }
+}
+
 async function evaluateAutoMerge(env, task, lifecycle) {
   const policy = lifecyclePolicy(env, task.repository);
   if (!policy.autoMerge || task.is_recovery && policy.autoMergeRecovery === false) return { enabled: false, reason: "auto-merge disabled" };
@@ -259,15 +309,18 @@ async function receiveWebhook(request, env) {
       await setState(env, existing.repository, existing.issue_number, "metis:deploying");
       return json({ accepted: true, task_id: id, state: "deploying", merge_sha: pullRequestLifecycle.merge_sha }, 202);
     }
-    if (["opened", "reopened"].includes(pullRequestLifecycle.action)) {
+    const effectivePullRequest = shouldReauthorPullRequest(env, existing, pullRequestLifecycle)
+      ? await reauthorPullRequest(env, existing, pullRequestLifecycle)
+      : pullRequestLifecycle;
+    if (["opened", "reopened"].includes(effectivePullRequest.action)) {
       await env.DB.prepare("UPDATE dispatches SET state='completed', result_json=?, updated_at=unixepoch() WHERE task_id=? AND state='awaiting_pr_creation'")
-        .bind(JSON.stringify({ status: "completed", pull_request_url: pullRequestLifecycle.pull_request_url, pull_request_number: pullRequestLifecycle.pull_request_number }), id).run();
+        .bind(JSON.stringify({ status: "completed", pull_request_url: effectivePullRequest.pull_request_url, pull_request_number: effectivePullRequest.pull_request_number }), id).run();
       await env.DB.prepare("UPDATE tasks SET state='pr_ready', pull_request_url=?, pull_request_number=?, blocker_reason=NULL, updated_at=unixepoch() WHERE id=?")
-        .bind(pullRequestLifecycle.pull_request_url, pullRequestLifecycle.pull_request_number, id).run();
+        .bind(effectivePullRequest.pull_request_url, effectivePullRequest.pull_request_number, id).run();
       await setState(env, existing.repository, existing.issue_number, "metis:pr-ready");
     }
     const current = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(id).first();
-    const result = await evaluateAutoMerge(env, current, pullRequestLifecycle);
+    const result = await evaluateAutoMerge(env, current, effectivePullRequest);
     return json({ accepted: true, task_id: id, state: result.enabled ? "merging" : current.state, auto_merge: result }, 202);
   }
   if (reviewLifecycle) {

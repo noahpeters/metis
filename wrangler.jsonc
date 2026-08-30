@@ -22,6 +22,7 @@
     "ALLOWED_REPOSITORIES": "noahpeters/metis-sandbox",
     "CODEX_DISPATCH_MODE": "github_integration",
     "CODEX_GITHUB_INTEGRATION_ENABLED": "true",
+    "GITHUB_APP_BOT_LOGIN": "metis-control-plane-noah[bot]",
     "GITHUB_APP_ID": "4772921",
     "GITHUB_APP_INSTALLATION_ID": "157788676",
     "PUBLIC_BASE_URL": "https://metis-control-plane-staging.gr4gwzrfq2.workers.dev",

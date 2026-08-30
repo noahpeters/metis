@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blockedCodexFromWebhook, pullRequestForTaskFromWebhook, readyForPrCodexFromWebhook, readyIssueFromWebhook } from "../src/index.mjs";
+import { blockedCodexFromWebhook, pullRequestForTaskFromWebhook, readyForPrCodexFromWebhook, readyIssueFromWebhook, shouldReauthorPullRequest } from "../src/index.mjs";
 
 test("accepts only a metis:ready issue label event", () => {
   const payload = {
@@ -91,4 +91,14 @@ test("maps a marked pull request to its awaiting Metis task", () => {
     ...payload,
     pull_request: { ...payload.pull_request, body: "Metis-Task: other/repo#4" },
   }), null);
+});
+
+test("re-authors only an awaiting same-repository PR not already owned by the App", () => {
+  const env = { GITHUB_APP_BOT_LOGIN: "metis-control-plane-noah[bot]" };
+  const task = { state: "awaiting_pr_creation" };
+  const lifecycle = { action: "opened", repository: "noahpeters/metis-sandbox", author_login: "noahpeters", head_repository: "noahpeters/metis-sandbox", head_branch: "work", base_branch: "main" };
+  assert.equal(shouldReauthorPullRequest(env, task, lifecycle), true);
+  assert.equal(shouldReauthorPullRequest(env, task, { ...lifecycle, author_login: env.GITHUB_APP_BOT_LOGIN }), false);
+  assert.equal(shouldReauthorPullRequest(env, task, { ...lifecycle, head_repository: "fork/repo" }), false);
+  assert.equal(shouldReauthorPullRequest(env, { state: "pr_ready" }, lifecycle), false);
 });

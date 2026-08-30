@@ -17,7 +17,7 @@ D1 is read on every delivery, so stale payload data cannot override scheduler st
 
 An official `chatgpt-codex-connector` issue comment beginning with `READY_FOR_PR:` moves the task to `awaiting_pr_creation`, releases its lease, and prompts a human to review the linked Codex task and click **Create PR**. A comment beginning with `BLOCKED:` releases the lease and preserves the concrete blocker.
 
-The prepared pull-request body must include `Metis-Task: owner/repository#issue`. A signed `pull_request.opened` or `pull_request.reopened` webhook with that exact repository marker advances only an `awaiting_pr_creation` task to `pr_ready`.
+The prepared pull-request body must include `Metis-Task: owner/repository#issue`. A signed `pull_request.opened` webhook with that exact marker advances only an `awaiting_pr_creation` task. If Codex Cloud opens the handoff PR under the task owner's identity, Metis closes it before task binding and recreates the same-repository branch as the GitHub App. The App-authored PR then advances to `pr_ready`, preserving the ruleset's independent human-review gate.
 
 ## Merge and deployment lifecycle
 

@@ -15,9 +15,12 @@ test("pull request lifecycle requires a repository-bound task marker", () => {
   const payload = {
     action: "closed",
     repository: { full_name: "owner/repo" },
-    pull_request: { number: 7, node_id: "PR_7", html_url: "https://github.com/owner/repo/pull/7", body: "Metis-Task: owner/repo#12", head: { sha: "head" }, base: { ref: "main" }, merged: true, merge_commit_sha: "merge" },
+    pull_request: { number: 7, node_id: "PR_7", html_url: "https://github.com/owner/repo/pull/7", title: "Change", body: "Metis-Task: owner/repo#12", user: { login: "author" }, head: { sha: "head", ref: "work", repo: { full_name: "owner/repo" } }, base: { ref: "main" }, merged: true, merge_commit_sha: "merge" },
   };
-  assert.equal(pullRequestLifecycleFromWebhook("pull_request", payload).merge_sha, "merge");
+  const lifecycle = pullRequestLifecycleFromWebhook("pull_request", payload);
+  assert.equal(lifecycle.merge_sha, "merge");
+  assert.equal(lifecycle.author_login, "author");
+  assert.equal(lifecycle.head_branch, "work");
   assert.equal(pullRequestLifecycleFromWebhook("pull_request", { ...payload, pull_request: { ...payload.pull_request, body: "Metis-Task: other/repo#12" } }), null);
 });
 
