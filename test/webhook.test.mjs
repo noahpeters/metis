@@ -25,8 +25,9 @@ test("accepts BLOCKED results only from the Codex connector", () => {
     comment: {
       body: "BLOCKED: Which remote should I use?\n\nDetails",
       html_url: "https://github.com/noahpeters/metis-sandbox/issues/1#issuecomment-1",
+      performed_via_github_app: { id: 1144995, slug: "chatgpt-codex-connector" },
     },
-    sender: { login: "chatgpt-codex-connector" },
+    sender: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
   };
   assert.deepEqual(blockedCodexFromWebhook("issue_comment", payload), {
     repository: "noahpeters/metis-sandbox",
@@ -36,6 +37,10 @@ test("accepts BLOCKED results only from the Codex connector", () => {
     comment_url: payload.comment.html_url,
   });
   assert.equal(blockedCodexFromWebhook("issue_comment", { ...payload, sender: { login: "someone-else" } }), null);
+  assert.equal(blockedCodexFromWebhook("issue_comment", {
+    ...payload,
+    comment: { ...payload.comment, performed_via_github_app: { id: 999, slug: "chatgpt-codex-connector" } },
+  }), null);
   assert.equal(blockedCodexFromWebhook("issues", payload), null);
 });
 
@@ -47,8 +52,9 @@ test("accepts ready-for-PR results only from the Codex connector", () => {
     comment: {
       body: "READY_FOR_PR: Subtraction helper is verified.\n\n[View task →](https://chatgpt.com/s/cd_test)",
       html_url: "https://github.com/noahpeters/metis-sandbox/issues/4#issuecomment-2",
+      performed_via_github_app: { id: 1144995, slug: "chatgpt-codex-connector" },
     },
-    sender: { login: "chatgpt-codex-connector" },
+    sender: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
   };
   assert.deepEqual(readyForPrCodexFromWebhook("issue_comment", payload), {
     repository: "noahpeters/metis-sandbox",
@@ -59,6 +65,10 @@ test("accepts ready-for-PR results only from the Codex connector", () => {
     task_url: "https://chatgpt.com/s/cd_test",
   });
   assert.equal(readyForPrCodexFromWebhook("issue_comment", { ...payload, sender: { login: "someone-else" } }), null);
+  assert.equal(readyForPrCodexFromWebhook("issue_comment", {
+    ...payload,
+    comment: { ...payload.comment, performed_via_github_app: { id: 1144995, slug: "lookalike" } },
+  }), null);
 });
 
 test("maps a marked pull request to its awaiting Metis task", () => {

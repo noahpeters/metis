@@ -30,12 +30,19 @@ export function readyIssueFromWebhook(event, payload) {
   };
 }
 
+function isOfficialCodexConnector(payload) {
+  return payload.sender?.login === "chatgpt-codex-connector[bot]"
+    && payload.sender?.type === "Bot"
+    && payload.comment?.performed_via_github_app?.id === 1144995
+    && payload.comment?.performed_via_github_app?.slug === "chatgpt-codex-connector";
+}
+
 export function blockedCodexFromWebhook(event, payload) {
   const body = payload.comment?.body || "";
   if (
     event !== "issue_comment"
     || payload.action !== "created"
-    || payload.sender?.login !== "chatgpt-codex-connector"
+    || !isOfficialCodexConnector(payload)
     || !body.startsWith("BLOCKED:")
   ) return null;
   const question = body.split("\n", 1)[0].slice("BLOCKED:".length).trim();
@@ -53,7 +60,7 @@ export function readyForPrCodexFromWebhook(event, payload) {
   if (
     event !== "issue_comment"
     || payload.action !== "created"
-    || payload.sender?.login !== "chatgpt-codex-connector"
+    || !isOfficialCodexConnector(payload)
     || !body.startsWith("READY_FOR_PR:")
   ) return null;
   const taskUrl = body.match(/https:\/\/chatgpt\.com\/(?:s\/[^)\s]+|codex\/cloud\/tasks\/[^)\s]+)/)?.[0] || null;
