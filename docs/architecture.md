@@ -12,11 +12,11 @@
 
 ## Scheduling path
 
-1. GitHub signs an `issues.labeled` webhook.
-2. The Worker verifies signature, repository allowlist, delivery idempotency, and `metis:ready`.
-3. D1 upserts the task snapshot and Queue receives intake work.
+1. A scheduled reconciliation reads every page of Metis Main Project in position order and validates the configured field and option IDs.
+2. Only open, accessible, non-archived, allowlisted issues with `Execution owner=Metis` and `Status=Ready` are eligible; removed or changed items are not admitted.
+3. D1 records each reconciliation, its page checkpoint, outcome, and a redacted operator-visible failure reason before an eligible issue receives intake work.
 4. Intake refetches the authoritative issue and paginated discussion, separates human decisions from Codex connector output and routine Metis status, and applies deterministic context limits that retain the newest relevant clarifications.
-5. The latest human Ready signal supersedes stale prose, inferred dependencies, and earlier human-resolvable blockers. Bounded authoritative checks may identify candidate hard contradictions; unavailable evidence warns and defers without fabricating a blocker.
+5. Project Ready is the human authority signal. Running work remains D1-authoritative: later Project edits or removal do not implicitly cancel it. Bounded authoritative checks may identify candidate hard contradictions; unavailable evidence warns and defers without fabricating a blocker.
 6. Workers AI produces structured planning metadata.
 7. Only evidence-backed task contradictions enter `blocked`; task-specific approval requirements may enter `budget_blocked`. A closed provider gate and pacing exhaustion remain scheduler deferrals.
 8. The scheduler checks the explicit provider gate, operator pacing, per-task limits, concurrency, and retries.

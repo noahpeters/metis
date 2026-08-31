@@ -55,13 +55,18 @@ test("scheduler scans are bounded without changing authoritative Project order",
   assert.deepEqual(boundedEligibleItems(queue, 2).map(({ id }) => id), ["highest", "second"]);
 });
 
-test("Project queue fails closed for schema drift, duplicates, and disallowed content", async () => {
+test("Project queue fails closed for schema drift and duplicates but skips ineligible content", async () => {
   await assert.rejects(() => readProjectQueue(env, async () => {
     const value = page([item("one", 1)]); value.node.fields.nodes[1].options[0].name = "Not ready"; return value;
   }), /Project Status option/);
   await assert.rejects(() => readProjectQueue(env, async () => page([item("one", 1), item("two", 1)])), /duplicate issue/);
-  await assert.rejects(() => readProjectQueue(env, async () => page([item("one", 1, "metis-option", "ready-option", "outside/repo")])), /disallowed repository/);
-  await assert.rejects(() => readProjectQueue(env, async () => page([{ ...item("one", 1), content: { __typename: "PullRequest" } }])), /not an accessible issue/);
+  assert.deepEqual(await readProjectQueue(env, async () => page([item("one", 1, "metis-option", "ready-option", "outside/repo")])), []);
+  assert.deepEqual(await readProjectQueue(env, async () => page([{ ...item("one", 1), content: { __typename: "PullRequest" } }])), []);
+  assert.deepEqual(await readProjectQueue(env, async () => page([{ ...item("one", 1), isArchived: true }])), []);
+});
+
+test("Project pagination rejects a repeated cursor", async () => {
+  await assert.rejects(() => readProjectQueue(env, async () => page([], true, "same")), /repeated an end cursor/);
 });
 
 test("Project credential and exact ID policy are mandatory", async () => {

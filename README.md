@@ -5,8 +5,8 @@ Metis is a small, pacing-aware control plane for AI-assisted software developmen
 ## Architecture
 
 ```text
-GitHub issue labeled metis:ready
-              ↓ signed webhook
+GitHub issue in Metis Main Project (Execution owner=Metis, Status=Ready)
+              ↓ ordered reconciliation
 Cloudflare Worker ──→ D1 task, lease, capacity-gate, pacing, and event state
               ↓
 Cloudflare Queue (async dispatch and retry)
@@ -23,7 +23,8 @@ Perplexity is optional and research-only. It is disabled by default. Paid API fa
 
 ## What is implemented
 
-- signed and idempotent GitHub webhook ingestion;
+- signed and idempotent GitHub lifecycle webhook ingestion;
+- Project-only, position-ordered normal admission with durable reconciliation audit records;
 - allowlisted target repositories;
 - D1 task, dependency, dispatch, lease, provider-capacity-gate, pacing-window, and event records;
 - Queue-backed intake, coding dispatch, retry, and expired-lease recovery;
@@ -76,7 +77,8 @@ npm run verify
 
 ## Guardrails
 
-- A human applies `metis:ready`; that attestation supersedes stale planning prose, inferred dependencies, and earlier human-resolvable blocker questions.
+- Only an open, allowlisted issue in Metis Main Project with `Execution owner=Metis` and `Status=Ready` can enter normal intake. Labels are lifecycle visibility only and never authorize admission.
+- Project credential, schema, pagination, or availability failures are recorded and pause new admission; active D1 tasks and exact-SHA merge/deployment monitoring continue.
 - Missing information or decisions enter `metis:blocked`, not failure.
 - Pacing exhaustion defers work before dispatch or retry without changing its Ready state.
 - Metis never pushes directly to a default branch, forces a merge, manually deploys, or mutates production data.
