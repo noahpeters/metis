@@ -1,7 +1,7 @@
 import { analyzeIssue } from "./ai.mjs";
 import { buildIntakeInvestigation, discussionMetadata, fetchIssueDiscussion } from "./intake-context.mjs";
 import { blockTask, comment, githubRequest, repositoryAllowed, setState, unresolvedReviewThreadCount } from "./github.mjs";
-import { admissionDecision, claimRevision, claimTask } from "./scheduler.mjs";
+import { admissionDecision, claimRevision, claimTask, recordSchedulerDeferral } from "./scheduler.mjs";
 import { dispatchCodexTask } from "./codex-dispatch.mjs";
 import { dispatchViaGithubCodexRevision } from "./github-codex-adapter.mjs";
 import { approvalCount, checksPassed, checkSuiteLifecycleFromWebhook, lifecyclePolicy, pullRequestLifecycleFromWebhook, reviewLifecycleFromWebhook, workflowRunFromWebhook } from "./lifecycle.mjs";
@@ -171,6 +171,10 @@ async function handleRevisionDispatch(env, message) {
   if (existing) return;
   const decision = await admissionDecision(env, task);
   if (!decision.admitted) {
+    if (decision.defer) {
+      if (decision.scheduler) await recordSchedulerDeferral(env, decision);
+      return;
+    }
     await env.DB.prepare("UPDATE tasks SET state='budget_blocked',blocker_reason=?,updated_at=unixepoch() WHERE id=?").bind(decision.reason, task.id).run();
     return blockTask(env, task, decision.reason, "Should Metis increase revision capacity or wait for the next capacity window?", true);
   }
@@ -476,7 +480,7 @@ async function receiveWebhook(request, env) {
     return json({ accepted: true, task_id: id, state: "awaiting_pr_creation" }, 202);
   }
   const id = `${task.repository}#${task.issue_number}`;
-  await env.DB.prepare("INSERT INTO tasks (id, repository, issue_number, issue_node_id, title, body, state, actor, size_class, max_cost_units, budget_approved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?, ?, unixepoch(), unixepoch()) ON CONFLICT(id) DO UPDATE SET title=excluded.title, body=excluded.body, state='intake', actor=excluded.actor, size_class=excluded.size_class, max_cost_units=excluded.max_cost_units, budget_approved=excluded.budget_approved, updated_at=unixepoch()")
+  await env.DB.prepare("INSERT INTO tasks (id, repository, issue_number, issue_node_id, title, body, state, actor, size_class, max_cost_units, budget_approved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?, ?, unixepoch(), unixepoch()) ON CONFLICT(id) DO UPDATE SET title=excluded.title, body=excluded.body, state='intake', actor=excluded.actor, size_class=excluded.size_class, max_cost_units=excluded.max_cost_units, budget_approved=excluded.budget_approved, blocker_reason=NULL, updated_at=unixepoch()")
     .bind(id, task.repository, task.issue_number, task.issue_node_id, task.title, task.body, task.actor, task.size_class, task.max_cost_units, task.budget_approved).run();
   await env.DISPATCH_QUEUE.send({ type: "intake", taskId: id });
   return json({ accepted: true, task_id: id }, 202);
@@ -491,19 +495,21 @@ async function handleIntake(env, message) {
     discussion = await fetchIssueDiscussion(env, task.repository, task.issue_number);
   } catch (error) {
     const reason = `Authoritative issue discussion fetch failed: ${error.message}`;
-    await env.DB.prepare("UPDATE tasks SET state='blocked', blocker_reason=?, updated_at=unixepoch() WHERE id=?").bind(reason, task.id).run();
-    return blockTask(env, task, `${reason}. Metis failed closed and did not analyze or dispatch with incomplete context.`, "Can an operator restore the GitHub App's issue read access or availability, then reapply `metis:ready`?");
+    await env.DB.prepare("UPDATE tasks SET state='ready', blocker_reason=NULL, updated_at=unixepoch() WHERE id=?").bind(task.id).run();
+    await comment(env, task.repository, task.issue_number, `## Metis deferred intake\n\n${reason}. The human Ready attestation remains authoritative. Metis will retry when evidence is available; no blocker or attempt was recorded.`);
+    return;
   }
   const investigation = buildIntakeInvestigation(task, discussion, env.METIS_PROJECT_POLICY_JSON);
   const analysis = await analyzeIssue(env, task, discussion, investigation);
   await env.DB.prepare("UPDATE tasks SET summary=?, size_class=?, size_confidence=?, estimated_cost_units=?, dependencies_json=?, priority_score=?, state=?, blocker_reason=?, updated_at=unixepoch() WHERE id=?")
-    .bind(analysis.summary, task.size_class || analysis.size, analysis.confidence, analysis.estimated_cost_units, JSON.stringify(analysis.dependencies), analysis.priority_score, analysis.readiness, analysis.blocker_question, task.id).run();
+    .bind(analysis.summary, task.size_class || analysis.size, analysis.confidence, analysis.estimated_cost_units, JSON.stringify(analysis.dependencies), analysis.priority_score, "ready", null, task.id).run();
   await env.DB.prepare("DELETE FROM dependencies WHERE task_id=?").bind(task.id).run();
   if (analysis.dependencies.length) {
     await env.DB.batch(analysis.dependencies.map((dependency) => env.DB.prepare("INSERT INTO dependencies (task_id, dependency_ref, state) VALUES (?, ?, 'unverified')").bind(task.id, dependency)));
   }
   await env.DB.prepare("INSERT INTO usage_events (task_id, provider, operation, cost_units, metadata_json, created_at) VALUES (?, 'workers_ai', 'issue_analysis', 0, ?, unixepoch())").bind(task.id, JSON.stringify({ model: "workers-ai", size: analysis.size, discussion: discussionMetadata(discussion), investigation_sources: Object.keys(investigation) })).run();
-  if (analysis.readiness === "blocked") return blockTask(env, task, analysis.status_summary || analysis.summary, analysis.blocker_question || "What information is needed to make this issue executable?");
+  // Human-applied Ready is the authority boundary. Model readiness and prose-only
+  // dependencies are advisory and cannot demote the task.
   await env.DISPATCH_QUEUE.send({ type: "dispatch", taskId: task.id });
 }
 
@@ -514,8 +520,9 @@ async function handleDispatch(env, message) {
   if (!decision.admitted) {
     if (decision.defer) {
       await env.DB.prepare("UPDATE tasks SET state='ready', updated_at=unixepoch() WHERE id=?").bind(task.id).run();
+      if (decision.scheduler) await recordSchedulerDeferral(env, decision);
       if (decision.repositoryLocked) return;
-      throw new Error(decision.reason);
+      return;
     }
     await env.DB.prepare("UPDATE tasks SET state='budget_blocked', blocker_reason=?, updated_at=unixepoch() WHERE id=?").bind(decision.reason, task.id).run();
     return blockTask(env, task, decision.reason, "Should Metis increase this task's budget/capacity or wait for the next capacity window?", true);
