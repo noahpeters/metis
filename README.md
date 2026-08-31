@@ -66,6 +66,8 @@ D1's `provider_capacity.available` flag is an explicit operator gate. Set `codex
 
 Issue labels can explicitly set `metis:size-small`, `metis:size-medium`, `metis:size-large`, or `metis:size-unknown`; approve an otherwise approval-required envelope with `metis:budget-approved`; and cap a task with the legacy `metis:max-cost-N` label. Existing policy keys, labels, and migrated records using “cost units” remain readable only as legacy estimated workload—not provider accounting. The configured size-class ceiling still wins over a larger per-task number.
 
+Provider reporting is intentionally separate from local pacing. The supported-signal, privacy, and ledger boundary is documented in [`docs/chatgpt-codex-analytics-audit.md`](docs/chatgpt-codex-analytics-audit.md).
+
 ## Local verification
 
 ```sh
