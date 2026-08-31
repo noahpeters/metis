@@ -15,15 +15,17 @@
 1. GitHub signs an `issues.labeled` webhook.
 2. The Worker verifies signature, repository allowlist, delivery idempotency, and `metis:ready`.
 3. D1 upserts the task snapshot and Queue receives intake work.
-4. Workers AI produces structured planning metadata.
-5. Missing information enters `blocked`; approval-required or capacity-exhausted work enters `budget_blocked`.
-6. The scheduler checks provider availability, global and per-task limits, concurrency, and retries.
-7. D1 reserves a lease and cost units before Codex dispatch.
-8. A connector result releases the lease and moves GitHub to awaiting PR, blocked, or failed.
-9. For included Codex Cloud work, a human reviews the prepared diff and clicks Create PR.
-10. Repository-scoped policy marks a PR ready after checks, approvals, mergeability, and health pass; only a human may merge it.
-11. Metis monitors required deployment workflows for the exact merge SHA; a failure freezes normal work and creates a bounded corrective PR chain.
-10. The signed pull-request webhook verifies the Metis task marker and moves GitHub to PR ready.
+4. Intake refetches the authoritative issue and paginated discussion, separates human decisions from Codex connector output and routine Metis status, and applies deterministic context limits that retain the newest relevant clarifications.
+5. Readiness analysis treats every issue/comment/evidence record as untrusted and performs bounded checks against non-secret control-plane and project-policy metadata before asking a human a blocker question. A discussion-fetch failure enters the first-class blocked state without dispatching incomplete context.
+6. Workers AI produces structured planning metadata.
+7. Missing information enters `blocked`; approval-required or capacity-exhausted work enters `budget_blocked`.
+8. The scheduler checks provider availability, global and per-task limits, concurrency, and retries.
+9. D1 reserves a lease and cost units before Codex dispatch.
+10. A connector result releases the lease and moves GitHub to awaiting PR, blocked, or failed.
+11. For included Codex Cloud work, a human reviews the prepared diff and clicks Create PR.
+12. The signed pull-request webhook verifies the Metis task marker and moves GitHub to PR ready.
+13. Repository-scoped policy marks a PR ready after checks, approvals, mergeability, and health pass; only a human may merge it.
+14. Metis monitors required deployment workflows for the exact merge SHA; a failure freezes normal work and creates a bounded corrective PR chain.
 
 ## Provider boundary
 

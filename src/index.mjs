@@ -1,4 +1,5 @@
 import { analyzeIssue } from "./ai.mjs";
+import { buildIntakeInvestigation, discussionMetadata, fetchIssueDiscussion } from "./intake-context.mjs";
 import { blockTask, comment, githubRequest, repositoryAllowed, setState, unresolvedReviewThreadCount } from "./github.mjs";
 import { admissionDecision, claimRevision, claimTask } from "./scheduler.mjs";
 import { dispatchCodexTask } from "./codex-dispatch.mjs";
@@ -485,14 +486,23 @@ async function handleIntake(env, message) {
   const task = await env.DB.prepare("SELECT * FROM tasks WHERE id = ?").bind(message.taskId).first();
   if (!task) return;
   await setState(env, task.repository, task.issue_number, "metis:planning");
-  const analysis = await analyzeIssue(env, task);
+  let discussion;
+  try {
+    discussion = await fetchIssueDiscussion(env, task.repository, task.issue_number);
+  } catch (error) {
+    const reason = `Authoritative issue discussion fetch failed: ${error.message}`;
+    await env.DB.prepare("UPDATE tasks SET state='blocked', blocker_reason=?, updated_at=unixepoch() WHERE id=?").bind(reason, task.id).run();
+    return blockTask(env, task, `${reason}. Metis failed closed and did not analyze or dispatch with incomplete context.`, "Can an operator restore the GitHub App's issue read access or availability, then reapply `metis:ready`?");
+  }
+  const investigation = buildIntakeInvestigation(task, discussion, env.METIS_PROJECT_POLICY_JSON);
+  const analysis = await analyzeIssue(env, task, discussion, investigation);
   await env.DB.prepare("UPDATE tasks SET summary=?, size_class=?, size_confidence=?, estimated_cost_units=?, dependencies_json=?, priority_score=?, state=?, blocker_reason=?, updated_at=unixepoch() WHERE id=?")
     .bind(analysis.summary, task.size_class || analysis.size, analysis.confidence, analysis.estimated_cost_units, JSON.stringify(analysis.dependencies), analysis.priority_score, analysis.readiness, analysis.blocker_question, task.id).run();
   await env.DB.prepare("DELETE FROM dependencies WHERE task_id=?").bind(task.id).run();
   if (analysis.dependencies.length) {
     await env.DB.batch(analysis.dependencies.map((dependency) => env.DB.prepare("INSERT INTO dependencies (task_id, dependency_ref, state) VALUES (?, ?, 'unverified')").bind(task.id, dependency)));
   }
-  await env.DB.prepare("INSERT INTO usage_events (task_id, provider, operation, cost_units, metadata_json, created_at) VALUES (?, 'workers_ai', 'issue_analysis', 0, ?, unixepoch())").bind(task.id, JSON.stringify({ model: "workers-ai", size: analysis.size })).run();
+  await env.DB.prepare("INSERT INTO usage_events (task_id, provider, operation, cost_units, metadata_json, created_at) VALUES (?, 'workers_ai', 'issue_analysis', 0, ?, unixepoch())").bind(task.id, JSON.stringify({ model: "workers-ai", size: analysis.size, discussion: discussionMetadata(discussion), investigation_sources: Object.keys(investigation) })).run();
   if (analysis.readiness === "blocked") return blockTask(env, task, analysis.status_summary || analysis.summary, analysis.blocker_question || "What information is needed to make this issue executable?");
   await env.DISPATCH_QUEUE.send({ type: "dispatch", taskId: task.id });
 }
