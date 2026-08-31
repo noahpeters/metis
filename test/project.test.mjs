@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PROJECT_STATUS_NAMES, ProjectAdmissionError, loadProjectPolicy, planProjectStatusSchema, projectStatusForState, readProjectQueue, reconcileProjectStatuses } from "../src/project.mjs";
+import { PROJECT_STATUS_NAMES, ProjectAdmissionError, boundedEligibleItems, loadProjectPolicy, planProjectStatusSchema, projectStatusForState, readProjectQueue, reconcileProjectStatuses } from "../src/project.mjs";
 
 const policy = {
   projectId: "PVT_kwHOAA6eJM4Bh81k",
@@ -43,6 +43,16 @@ test("Project pages retain connection POSITION order and eligibility", async () 
     { projectItemId: "item-1", orderIndex: 2, eligible: false },
     { projectItemId: "item-4", orderIndex: 3, eligible: true },
   ]);
+});
+
+test("scheduler scans are bounded without changing authoritative Project order", () => {
+  const queue = [
+    { id: "blocked-owner", eligible: false },
+    { id: "highest", eligible: true },
+    { id: "second", eligible: true },
+    { id: "outside-bound", eligible: true },
+  ];
+  assert.deepEqual(boundedEligibleItems(queue, 2).map(({ id }) => id), ["highest", "second"]);
 });
 
 test("Project queue fails closed for schema drift, duplicates, and disallowed content", async () => {

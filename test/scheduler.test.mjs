@@ -71,6 +71,9 @@ test("a successful claim clears resolved signals for the current window", async 
       async batch(queries) { return queries; },
     },
   };
-  await claimTask(env, { id: "owner/repo#15" }, { estimatedWorkloadUnits: 2, leaseSeconds: 60 });
-  assert.ok(statements.includes("DELETE FROM scheduler_signals WHERE window_key = date('now')"));
+  await claimTask(env, { id: "owner/repo#15" }, { estimatedWorkloadUnits: 2, leaseSeconds: 60, maxConcurrentTasks: 1, maxTasksPerWindow: 10, maxEstimatedWorkloadUnitsPerWindow: 20 });
+  assert.match(statements[0], /t\.state IN \('ready','retrying'\)/);
+  assert.match(statements[0], /COUNT\(\*\) FROM task_leases/);
+  assert.match(statements[0], /tasks_started/);
+  assert.ok(statements.some((sql) => sql.startsWith("DELETE FROM scheduler_signals WHERE window_key = date('now')")));
 });

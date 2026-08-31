@@ -10,6 +10,16 @@ import { dependencyDecision, recordDependencyEvent } from "./dependencies.mjs";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
+async function resumeReadyBacklog(env) {
+  try {
+    return await reconcileProject(env);
+  } catch (error) {
+    // Admission fails closed when the authoritative Project cannot be read.
+    console.error("Project admission paused", { error: String(error) });
+    return null;
+  }
+}
+
 async function verifySignature(secret, signature, body) {
   if (!secret || !signature?.startsWith("sha256=")) return false;
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
@@ -327,7 +337,11 @@ async function receiveWebhook(request, env) {
     if (candidates.results.length !== 1) return json({ accepted: false, reason: "unmarked revision PR is ambiguous or has no active revision" }, 202);
     pullRequestLifecycle = { ...unmarkedRevisionPr, issue_number: candidates.results[0].issue_number };
   }
-  if (workflowRun) return json(await handleWorkflowCompletion(env, workflowRun), 202);
+  if (workflowRun) {
+    const result = await handleWorkflowCompletion(env, workflowRun);
+    if (result.state === "complete") await resumeReadyBacklog(env);
+    return json(result, 202);
+  }
   if (revisionResult) {
     const id = `${revisionResult.repository}#${revisionResult.issue_number}`;
     const taskForRevision = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(id).first();
@@ -340,6 +354,7 @@ async function receiveWebhook(request, env) {
         env.DB.prepare("UPDATE tasks SET state='blocked',blocker_reason=?,updated_at=unixepoch() WHERE id=?").bind(revisionResult.question || "Codex blocked during review revision.", id),
       ]);
       await setState(env, taskForRevision.repository, taskForRevision.issue_number, "metis:blocked");
+      await resumeReadyBacklog(env);
       return json({ accepted: true, task_id: id, state: "blocked" }, 202);
     }
     const currentPr = await githubRequest(env, `/repos/${taskForRevision.repository}/pulls/${taskForRevision.pull_request_number}`);
@@ -347,6 +362,7 @@ async function receiveWebhook(request, env) {
       return json({ accepted: false, reason: "revision result does not match the current changed PR head" }, 202);
     }
     await completeRevision(env, taskForRevision, revision, currentPr.head.sha, revisionResult);
+    await resumeReadyBacklog(env);
     return json({ accepted: true, task_id: id, state: "reviewing", head_sha: currentPr.head.sha }, 202);
   }
   if (pullRequestLifecycle) {
@@ -443,6 +459,7 @@ async function receiveWebhook(request, env) {
       env.DB.prepare("UPDATE tasks SET state='blocked', blocker_reason=?, updated_at=unixepoch() WHERE id=?").bind(blocked.question, id),
     ]);
     await setState(env, blocked.repository, blocked.issue_number, "metis:blocked");
+    await resumeReadyBacklog(env);
     return json({ accepted: true, task_id: id, state: "blocked" }, 202);
   }
   if (readyForPr) {
@@ -460,6 +477,7 @@ async function receiveWebhook(request, env) {
       ]);
       await setState(env, readyForPr.repository, readyForPr.issue_number, "metis:awaiting-pr");
       await comment(env, readyForPr.repository, readyForPr.issue_number, ["## Metis is awaiting the revised PR handoff", "", readyForPr.summary, "", readyForPr.task_url ? `[Review the Codex revision and click **Create PR**](${readyForPr.task_url}).` : "Open the linked Codex revision and click **Create PR**.", "", `Metis will close superseded PR #${revision.pull_request_number}, bind the replacement, and require fresh human review and a human merge.`].join("\n"));
+      await resumeReadyBacklog(env);
       return json({ accepted: true, task_id: id, state: "awaiting_revision_pr" }, 202);
     }
     if (!existing || existing.state !== "running") return json({ accepted: false, reason: "task is not running" }, 202);
@@ -480,6 +498,7 @@ async function receiveWebhook(request, env) {
       "",
       "The coding lease has been released. Metis will detect the signed pull-request webhook and move this issue to `metis:pr-ready`.",
     ].join("\n"));
+    await resumeReadyBacklog(env);
     return json({ accepted: true, task_id: id, state: "awaiting_pr_creation" }, 202);
   }
   const id = `${task.repository}#${task.issue_number}`;
@@ -546,6 +565,11 @@ async function handleDispatch(env, message) {
     return blockTask(env, task, decision.reason, "Should this task receive the required task-specific approval?", true);
   }
   const { leaseId } = await claimTask(env, task, decision);
+  if (!leaseId) {
+    // Another delivery won the task lease or the last scheduler slot. Leave the
+    // Ready task authoritative; the backlog scan will revisit it after release.
+    return;
+  }
   await setState(env, task.repository, task.issue_number, "metis:implementing");
   try {
     const dispatch = await dispatchCodexTask(env, { ...task, max_workload_units: task.max_workload_units || decision.estimatedWorkloadUnits }, leaseId);
@@ -586,6 +610,7 @@ async function handleCallback(request, env) {
     await env.DB.prepare("UPDATE tasks SET state='failed', blocker_reason=?, updated_at=unixepoch() WHERE id=?").bind(result.summary || "Coding execution failed", task.id).run();
     await setState(env, task.repository, task.issue_number, "metis:failed");
   }
+  await resumeReadyBacklog(env);
   return json({ accepted: true });
 }
 
@@ -631,11 +656,6 @@ export default {
       ]);
       await env.DISPATCH_QUEUE.send({ type: "dispatch", taskId: row.task_id });
     }
-    try {
-      await reconcileProject(env);
-    } catch (error) {
-      // Project admission fails closed, but lease/deployment recovery above remains independent.
-      console.error("Project admission paused", { error: String(error) });
-    }
+    await resumeReadyBacklog(env);
   },
 };
