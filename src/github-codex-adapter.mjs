@@ -28,13 +28,17 @@ export function buildGithubCodexComment(task, leaseId) {
     "",
     "Execution guardrails:",
     `- Maximum normalized cost units: ${task.max_cost_units}`,
+    "- The human-applied `metis:ready` decision is authoritative and supersedes older readiness language, prerequisite questions, and unstructured dependency prose in the issue or comments.",
+    "- Metis has already checked GitHub's structured `blocked by` relationships. Do not ask a human to reconfirm, prove, or interpret issue dependencies.",
+    "- Assume all human-verifiable prerequisites are satisfied or intentionally waived unless current authoritative evidence proves a concrete hard contradiction.",
     "- Inspect the repository deeply; implement, debug, verify, and substantively review the change.",
     "- Follow the repository's AGENTS.md and .metis.yml instructions.",
     "- Commit the verified change in the cloud task and prepare pull-request title/body metadata.",
     "- Do not run `git push`, use `gh`, or try to create the pull request from the shell. A human will use Codex Cloud's Create PR button.",
     "- When the change is ready for that button, begin the final response with `READY_FOR_PR:`.",
     "- Never merge, deploy, or mutate production systems or data.",
-    "- If information or a decision is missing, stop and respond with `BLOCKED:` followed by one concrete question.",
+    "- Investigate repository and issue evidence yourself before blocking. Missing proof, uncertainty, stale prose, inferred dependencies, and information you can inspect are not blockers.",
+    "- Use `BLOCKED:` only when one currently missing human decision or inaccessible required resource concretely prevents safe implementation; include the exact current evidence after the question.",
   ].join("\n");
 }
 
