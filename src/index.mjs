@@ -33,7 +33,7 @@ export function readyIssueFromWebhook(event, payload) {
     body: payload.issue?.body || "",
     actor: payload.sender?.login || "unknown",
     size_class: sizeLabel?.slice("metis:size-".length) || null,
-    max_cost_units: maxCostLabel ? Number(maxCostLabel.slice("metis:max-cost-".length)) : null,
+    max_workload_units: maxCostLabel ? Number(maxCostLabel.slice("metis:max-cost-".length)) : null,
     budget_approved: labels.includes("metis:budget-approved") ? 1 : 0,
   };
 }
@@ -180,7 +180,7 @@ async function handleRevisionDispatch(env, message) {
       return;
     }
     await env.DB.prepare("UPDATE tasks SET state='budget_blocked',blocker_reason=?,updated_at=unixepoch() WHERE id=?").bind(decision.reason, task.id).run();
-    return blockTask(env, task, decision.reason, "Should Metis increase revision capacity or wait for the next capacity window?", true);
+    return blockTask(env, task, decision.reason, "Should this revision receive the required task-specific approval?", true);
   }
   const comments = await githubRequest(env, `/repos/${task.repository}/pulls/${task.pull_request_number}/comments?per_page=100`);
   const feedback = comments.map((item) => ({ id: item.id, path: item.path, line: item.line || item.original_line, body: item.body, url: item.html_url }));
@@ -194,8 +194,7 @@ async function handleRevisionDispatch(env, message) {
   } catch (error) {
     await env.DB.batch([
       env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(task.id),
-      env.DB.prepare("UPDATE budget_windows SET cost_units_used=MAX(0,cost_units_used-?),tasks_started=MAX(0,tasks_started-1) WHERE window_key=date('now')").bind(decision.estimate),
-      env.DB.prepare("UPDATE provider_capacity SET remaining_units=CASE WHEN remaining_units IS NULL THEN NULL ELSE remaining_units+? END,updated_at=unixepoch() WHERE provider='codex_included'").bind(decision.estimate),
+      env.DB.prepare("UPDATE pacing_windows SET estimated_workload_units_used=MAX(0,estimated_workload_units_used-?),tasks_started=MAX(0,tasks_started-1) WHERE window_key=date('now')").bind(decision.estimatedWorkloadUnits),
       env.DB.prepare("UPDATE tasks SET state=?,attempt_count=MAX(0,attempt_count-1),blocker_reason=?,updated_at=unixepoch() WHERE id=?")
         .bind([401, 403].includes(error.status) ? "blocked" : "reviewing", [401, 403].includes(error.status) ? "GitHub revision dispatch credential lacks pull-request comment permission." : null, task.id),
     ]);
@@ -213,7 +212,7 @@ async function completeRevision(env, task, revision, headSha, result = {}) {
     env.DB.prepare("UPDATE revision_dispatches SET state='completed',result_json=?,updated_at=unixepoch() WHERE id=?").bind(JSON.stringify({ ...result, head_sha: headSha }), revision.id),
     env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(task.id),
     env.DB.prepare("UPDATE tasks SET state='reviewing',blocker_reason=NULL,updated_at=unixepoch() WHERE id=?").bind(task.id),
-    env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,cost_units,metadata_json,created_at) VALUES(?,'codex_included','review_revision',0,?,unixepoch())").bind(task.id, JSON.stringify({ base_head_sha: revision.base_head_sha, head_sha: headSha })),
+    env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,legacy_estimated_workload_units,metadata_json,created_at) VALUES(?,'codex_included','review_revision',0,?,unixepoch())").bind(task.id, JSON.stringify({ base_head_sha: revision.base_head_sha, head_sha: headSha })),
   ]);
   await setState(env, task.repository, task.issue_number, "metis:reviewing");
   await comment(env, task.repository, task.issue_number, `## Metis received the revised PR head\n\nCodex updated the pull request from \`${revision.base_head_sha}\` to \`${headSha}\`. Human re-review and resolution of every review thread are still required.`);
@@ -457,7 +456,7 @@ async function receiveWebhook(request, env) {
         env.DB.prepare("UPDATE revision_dispatches SET state='awaiting_pr_creation',result_json=?,updated_at=unixepoch() WHERE id=?").bind(result, revision.id),
         env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(id),
         env.DB.prepare("UPDATE tasks SET state='awaiting_revision_pr',blocker_reason=NULL,updated_at=unixepoch() WHERE id=?").bind(id),
-        env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,cost_units,metadata_json,created_at) VALUES(?,'codex_included','review_revision_prepared',0,?,unixepoch())").bind(id, result),
+        env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,legacy_estimated_workload_units,metadata_json,created_at) VALUES(?,'codex_included','review_revision_prepared',0,?,unixepoch())").bind(id, result),
       ]);
       await setState(env, readyForPr.repository, readyForPr.issue_number, "metis:awaiting-pr");
       await comment(env, readyForPr.repository, readyForPr.issue_number, ["## Metis is awaiting the revised PR handoff", "", readyForPr.summary, "", readyForPr.task_url ? `[Review the Codex revision and click **Create PR**](${readyForPr.task_url}).` : "Open the linked Codex revision and click **Create PR**.", "", `Metis will close superseded PR #${revision.pull_request_number}, bind the replacement, and require fresh human review and a human merge.`].join("\n"));
@@ -469,7 +468,7 @@ async function receiveWebhook(request, env) {
       env.DB.prepare("UPDATE dispatches SET state='awaiting_pr_creation', result_json=?, updated_at=unixepoch() WHERE task_id=? AND state='running'").bind(result, id),
       env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(id),
       env.DB.prepare("UPDATE tasks SET state='awaiting_pr_creation', blocker_reason=NULL, updated_at=unixepoch() WHERE id=?").bind(id),
-      env.DB.prepare("INSERT INTO usage_events (task_id, provider, operation, cost_units, metadata_json, created_at) VALUES (?, 'codex_included', 'coding_prepared', 0, ?, unixepoch())").bind(id, result),
+      env.DB.prepare("INSERT INTO usage_events (task_id, provider, operation, legacy_estimated_workload_units, metadata_json, created_at) VALUES (?, 'codex_included', 'coding_prepared', 0, ?, unixepoch())").bind(id, result),
     ]);
     await setState(env, readyForPr.repository, readyForPr.issue_number, "metis:awaiting-pr");
     await comment(env, readyForPr.repository, readyForPr.issue_number, [
@@ -484,8 +483,8 @@ async function receiveWebhook(request, env) {
     return json({ accepted: true, task_id: id, state: "awaiting_pr_creation" }, 202);
   }
   const id = `${task.repository}#${task.issue_number}`;
-  await env.DB.prepare("INSERT INTO tasks (id, repository, issue_number, issue_node_id, title, body, state, actor, size_class, max_cost_units, budget_approved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?, ?, unixepoch(), unixepoch()) ON CONFLICT(id) DO UPDATE SET title=excluded.title, body=excluded.body, state='intake', actor=excluded.actor, size_class=excluded.size_class, max_cost_units=excluded.max_cost_units, budget_approved=excluded.budget_approved, blocker_reason=NULL, updated_at=unixepoch()")
-    .bind(id, task.repository, task.issue_number, task.issue_node_id, task.title, task.body, task.actor, task.size_class, task.max_cost_units, task.budget_approved).run();
+  await env.DB.prepare("INSERT INTO tasks (id, repository, issue_number, issue_node_id, title, body, state, actor, size_class, max_workload_units, budget_approved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?, ?, unixepoch(), unixepoch()) ON CONFLICT(id) DO UPDATE SET title=excluded.title, body=excluded.body, state='intake', actor=excluded.actor, size_class=excluded.size_class, max_workload_units=excluded.max_workload_units, budget_approved=excluded.budget_approved, blocker_reason=NULL, updated_at=unixepoch()")
+    .bind(id, task.repository, task.issue_number, task.issue_node_id, task.title, task.body, task.actor, task.size_class, task.max_workload_units, task.budget_approved).run();
   await env.DISPATCH_QUEUE.send({ type: "intake", taskId: id });
   return json({ accepted: true, task_id: id }, 202);
 }
@@ -506,13 +505,13 @@ async function handleIntake(env, message) {
   }
   const investigation = buildIntakeInvestigation(task, discussion, env.METIS_PROJECT_POLICY_JSON);
   const analysis = await analyzeIssue(env, task, discussion, investigation);
-  await env.DB.prepare("UPDATE tasks SET summary=?, size_class=?, size_confidence=?, estimated_cost_units=?, dependencies_json=?, priority_score=?, state=?, blocker_reason=?, updated_at=unixepoch() WHERE id=?")
-    .bind(analysis.summary, task.size_class || analysis.size, analysis.confidence, analysis.estimated_cost_units, JSON.stringify(analysis.dependencies), analysis.priority_score, "ready", null, task.id).run();
+  await env.DB.prepare("UPDATE tasks SET summary=?, size_class=?, size_confidence=?, estimated_workload_units=?, dependencies_json=?, priority_score=?, state=?, blocker_reason=?, updated_at=unixepoch() WHERE id=?")
+    .bind(analysis.summary, task.size_class || analysis.size, analysis.confidence, analysis.estimated_workload_units, JSON.stringify(analysis.dependencies), analysis.priority_score, "ready", null, task.id).run();
   await env.DB.prepare("DELETE FROM dependencies WHERE task_id=?").bind(task.id).run();
   if (analysis.dependencies.length) {
     await env.DB.batch(analysis.dependencies.map((dependency) => env.DB.prepare("INSERT INTO dependencies (task_id, dependency_ref, state) VALUES (?, ?, 'unverified')").bind(task.id, dependency)));
   }
-  await env.DB.prepare("INSERT INTO usage_events (task_id, provider, operation, cost_units, metadata_json, created_at) VALUES (?, 'workers_ai', 'issue_analysis', 0, ?, unixepoch())").bind(task.id, JSON.stringify({ model: "workers-ai", size: analysis.size, discussion: discussionMetadata(discussion), investigation_sources: Object.keys(investigation) })).run();
+  await env.DB.prepare("INSERT INTO usage_events (task_id, provider, operation, legacy_estimated_workload_units, metadata_json, created_at) VALUES (?, 'workers_ai', 'issue_analysis', 0, ?, unixepoch())").bind(task.id, JSON.stringify({ model: "workers-ai", size: analysis.size, discussion: discussionMetadata(discussion), investigation_sources: Object.keys(investigation) })).run();
   // Human-applied Ready is the authority boundary. Model readiness and prose-only
   // dependencies are advisory and cannot demote the task.
   await env.DISPATCH_QUEUE.send({ type: "dispatch", taskId: task.id });
@@ -544,12 +543,12 @@ async function handleDispatch(env, message) {
       return;
     }
     await env.DB.prepare("UPDATE tasks SET state='budget_blocked', blocker_reason=?, updated_at=unixepoch() WHERE id=?").bind(decision.reason, task.id).run();
-    return blockTask(env, task, decision.reason, "Should Metis increase this task's budget/capacity or wait for the next capacity window?", true);
+    return blockTask(env, task, decision.reason, "Should this task receive the required task-specific approval?", true);
   }
   const { leaseId } = await claimTask(env, task, decision);
   await setState(env, task.repository, task.issue_number, "metis:implementing");
   try {
-    const dispatch = await dispatchCodexTask(env, { ...task, max_cost_units: task.max_cost_units || decision.estimate }, leaseId);
+    const dispatch = await dispatchCodexTask(env, { ...task, max_workload_units: task.max_workload_units || decision.estimatedWorkloadUnits }, leaseId);
     await env.DB.prepare("INSERT INTO dispatches (task_id, lease_id, provider, external_id, state, created_at, updated_at) VALUES (?, ?, 'codex_included', ?, 'running', unixepoch(), unixepoch())").bind(task.id, leaseId, dispatch.id).run();
     await env.DB.prepare("UPDATE tasks SET state='running', updated_at=unixepoch() WHERE id=?").bind(task.id).run();
   } catch (error) {
@@ -572,7 +571,7 @@ async function handleCallback(request, env) {
   await env.DB.batch([
     env.DB.prepare("UPDATE dispatches SET state=?, result_json=?, updated_at=unixepoch() WHERE id=?").bind(result.status, JSON.stringify(result), dispatch.id),
     env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(task.id),
-    env.DB.prepare("INSERT INTO usage_events (task_id, provider, operation, input_tokens, output_tokens, cost_units, metadata_json, created_at) VALUES (?, 'codex_included', 'coding', ?, ?, ?, ?, unixepoch())").bind(task.id, result.usage?.input_tokens || null, result.usage?.output_tokens || null, result.usage?.cost_units || 0, JSON.stringify(result.usage || {})),
+    env.DB.prepare("INSERT INTO usage_events (task_id, provider, operation, input_tokens, output_tokens, legacy_estimated_workload_units, metadata_json, created_at) VALUES (?, 'codex_included', 'coding', ?, ?, ?, ?, unixepoch())").bind(task.id, result.usage?.input_tokens || null, result.usage?.output_tokens || null, 0, JSON.stringify(result.usage || {})),
   ]);
   if (result.status === "blocked") {
     await env.DB.prepare("UPDATE tasks SET state='blocked', blocker_reason=?, updated_at=unixepoch() WHERE id=?").bind(result.question || result.summary, task.id).run();

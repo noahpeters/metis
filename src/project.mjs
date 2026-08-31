@@ -220,7 +220,7 @@ export async function reconcileProject(env, options = {}) {
     const labels = labelsOf(issue);
     const size = labels.find((label) => /^metis:size-(small|medium|large|unknown)$/.test(label));
     const cost = labels.find((label) => /^metis:max-cost-\d+$/.test(label));
-    await env.DB.prepare("INSERT INTO tasks (id,repository,issue_number,issue_node_id,title,body,state,actor,size_class,max_cost_units,budget_approved,created_at,updated_at) VALUES (?,?,?,?,?,?,'intake','metis-project',?,?,?,unixepoch(),unixepoch()) ON CONFLICT(id) DO NOTHING")
+    await env.DB.prepare("INSERT INTO tasks (id,repository,issue_number,issue_node_id,title,body,state,actor,size_class,max_workload_units,budget_approved,created_at,updated_at) VALUES (?,?,?,?,?,?,'intake','metis-project',?,?,?,unixepoch(),unixepoch()) ON CONFLICT(id) DO NOTHING")
       .bind(id, item.repository, item.issueNumber, issue.node_id, issue.title || "", issue.body || "", size?.slice(11) || null, cost ? Number(cost.slice(15)) : null, labels.includes("metis:budget-approved") ? 1 : 0).run();
     await env.DISPATCH_QUEUE.send({ type: "intake", taskId: id });
     admitted += 1;

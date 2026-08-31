@@ -9,9 +9,9 @@ test("accepts only cloud Codex with included subscription billing", () => {
 });
 
 test("task envelope forbids merge, deployment, and production mutation", () => {
-  const task = buildCodexTask({ id: "owner/repo#1", repository: "owner/repo", issue_number: 1, summary: "work", max_cost_units: 4 }, "lease-1", "https://metis.example/callback");
+  const task = buildCodexTask({ id: "owner/repo#1", repository: "owner/repo", issue_number: 1, summary: "work", max_workload_units: 4 }, "lease-1", "https://metis.example/callback");
   assert.equal(task.execution_envelope.merge, "forbidden");
   assert.equal(task.execution_envelope.deployment, "forbidden");
   assert.equal(task.execution_envelope.production_mutation, "forbidden");
-  assert.equal(task.execution_envelope.max_cost_units, 4);
+  assert.equal(task.execution_envelope.max_workload_units, 4);
 });

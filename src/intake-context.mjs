@@ -92,6 +92,6 @@ export function buildIntakeInvestigation(task, discussion, rawProjectPolicy) {
       human_mentioned_ids: mentionedProjectIds,
       evidence: conflictingProjectIds.length > 1 ? "conflicting" : conflictingProjectIds.length === 1 ? "consistent" : "not_found",
     },
-    control_plane_task: { id: task.id, issue_node_id: task.issue_node_id, size_class: task.size_class, max_cost_units: task.max_cost_units },
+    control_plane_task: { id: task.id, issue_node_id: task.issue_node_id, size_class: task.size_class, max_workload_units: task.max_workload_units },
   };
 }

@@ -4,7 +4,7 @@
   { "name": "metis:implementing", "color": "5319E7", "description": "Metis is implementing the approved issue" },
   { "name": "metis:reviewing", "color": "FBCA04", "description": "Metis is reviewing the implementation" },
   { "name": "metis:blocked", "color": "D93F0B", "description": "Metis needs information or a decision" },
-  { "name": "metis:budget-blocked", "color": "B60205", "description": "Metis stopped because task or provider capacity is exhausted" },
+  { "name": "metis:budget-blocked", "color": "B60205", "description": "A task-specific approval or hard envelope stopped Metis" },
   { "name": "metis:pr-ready", "color": "0E8A16", "description": "Metis opened a pull request for human review" },
   { "name": "metis:failed", "color": "B60205", "description": "Metis encountered an operational failure" }
   ,{ "name": "metis:size-small", "color": "C2E0C6", "description": "Override task size to small" }

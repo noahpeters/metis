@@ -45,7 +45,7 @@ export function buildCodexTask(task, leaseId, callbackUrl) {
     issue_number: task.issue_number,
     summary: task.summary,
     execution_envelope: {
-      max_cost_units: task.max_cost_units,
+      max_workload_units: task.max_workload_units,
       merge: "forbidden",
       deployment: "forbidden",
       production_mutation: "forbidden",

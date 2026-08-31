@@ -3,16 +3,16 @@ export const TASK_SIZES = ["small", "medium", "large", "unknown"];
 export const DEFAULT_POLICY = Object.freeze({
   global: {
     maxConcurrentTasks: 2,
-    maxCostUnitsPerWindow: 20,
+    maxEstimatedWorkloadUnitsPerWindow: 20,
     maxTasksPerWindow: 4,
     maxRetries: 2,
     leaseSeconds: 3600,
   },
   taskSizes: {
-    small: { estimatedCostUnits: 2, maxCostUnits: 4, dispatch: "automatic" },
-    medium: { estimatedCostUnits: 5, maxCostUnits: 8, dispatch: "automatic" },
-    large: { estimatedCostUnits: 12, maxCostUnits: 16, dispatch: "approval_required" },
-    unknown: { estimatedCostUnits: 8, maxCostUnits: 8, dispatch: "approval_required" },
+    small: { estimatedWorkloadUnits: 2, maxWorkloadUnits: 4, dispatch: "automatic" },
+    medium: { estimatedWorkloadUnits: 5, maxWorkloadUnits: 8, dispatch: "automatic" },
+    large: { estimatedWorkloadUnits: 12, maxWorkloadUnits: 16, dispatch: "approval_required" },
+    unknown: { estimatedWorkloadUnits: 8, maxWorkloadUnits: 8, dispatch: "approval_required" },
   },
   providers: {
     workers_ai: { enabled: true, role: "orchestration", priority: 1 },
@@ -25,11 +25,16 @@ export const DEFAULT_POLICY = Object.freeze({
 export function loadPolicy(raw) {
   if (!raw) return structuredClone(DEFAULT_POLICY);
   const supplied = typeof raw === "string" ? JSON.parse(raw) : raw;
+  const global = { ...supplied.global };
+  if (global.maxEstimatedWorkloadUnitsPerWindow == null && global.maxCostUnitsPerWindow != null) {
+    global.maxEstimatedWorkloadUnitsPerWindow = global.maxCostUnitsPerWindow;
+  }
+  delete global.maxCostUnitsPerWindow;
   return {
-    global: { ...DEFAULT_POLICY.global, ...supplied.global },
+    global: { ...DEFAULT_POLICY.global, ...global },
     taskSizes: Object.fromEntries(TASK_SIZES.map((size) => [
       size,
-      { ...DEFAULT_POLICY.taskSizes[size], ...supplied.taskSizes?.[size] },
+      { ...DEFAULT_POLICY.taskSizes[size], ...legacyTaskSizePolicy(supplied.taskSizes?.[size]) },
     ])),
     providers: Object.fromEntries(Object.entries(DEFAULT_POLICY.providers).map(([name, value]) => [
       name,
@@ -38,7 +43,16 @@ export function loadPolicy(raw) {
   };
 }
 
-export function taskBudget(policy, size, override) {
+export function taskWorkloadLimit(policy, size, override) {
   const selected = policy.taskSizes[TASK_SIZES.includes(size) ? size : "unknown"];
-  return override == null ? selected.maxCostUnits : Math.min(override, selected.maxCostUnits);
+  return override == null ? selected.maxWorkloadUnits : Math.min(override, selected.maxWorkloadUnits);
+}
+
+function legacyTaskSizePolicy(value = {}) {
+  const normalized = { ...value };
+  if (normalized.estimatedWorkloadUnits == null && normalized.estimatedCostUnits != null) normalized.estimatedWorkloadUnits = normalized.estimatedCostUnits;
+  if (normalized.maxWorkloadUnits == null && normalized.maxCostUnits != null) normalized.maxWorkloadUnits = normalized.maxCostUnits;
+  delete normalized.estimatedCostUnits;
+  delete normalized.maxCostUnits;
+  return normalized;
 }

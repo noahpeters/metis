@@ -1,19 +1,19 @@
 # Metis
 
-Metis is a small, budget-aware control plane for AI-assisted software development. GitHub Issues and pull requests remain each repository's engineering system of record; Cloudflare holds only the operational state needed to decide what may run next.
+Metis is a small, pacing-aware control plane for AI-assisted software development. GitHub Issues and pull requests remain each repository's engineering system of record; Cloudflare holds only the operational state needed to decide what may run next.
 
 ## Architecture
 
 ```text
 GitHub issue labeled metis:ready
               ↓ signed webhook
-Cloudflare Worker ──→ D1 task, lease, capacity, budget, usage state
+Cloudflare Worker ──→ D1 task, lease, capacity-gate, pacing, and event state
               ↓
 Cloudflare Queue (async dispatch and retry)
               ↓
 Workers AI: summarize, size, extract dependencies, classify readiness,
             prioritize, and prepare status summaries
-              ↓ admitted by capacity and budget policy
+              ↓ admitted by capacity-gate and pacing policy
 Codex/cloud coding dispatcher: inspect, implement, debug, verify, review
               ↓
 Human Create PR checkpoint → GitHub PR, or a first-class BLOCKED state
@@ -25,11 +25,11 @@ Perplexity is optional and research-only. It is disabled by default. Paid API fa
 
 - signed and idempotent GitHub webhook ingestion;
 - allowlisted target repositories;
-- D1 task, dependency, dispatch, lease, provider-capacity, budget-window, and usage records;
+- D1 task, dependency, dispatch, lease, provider-capacity-gate, pacing-window, and event records;
 - Queue-backed intake, coding dispatch, retry, and expired-lease recovery;
 - Workers AI issue analysis for high-volume planning work;
-- normalized task size classes and cost units;
-- global task, cost, concurrency, retry, and per-task limits;
+- task size classes and legacy estimated workload units;
+- global task-start, estimated-workload, concurrency, retry, and per-task limits;
 - task-specific `metis:budget-blocked`, evidence-backed `metis:blocked`, and scheduler-level capacity deferrals;
 - first-class `metis:awaiting-pr` checkpoint that releases the coding lease;
 - explicit human-only merge readiness with exact-SHA post-merge monitoring;
@@ -58,13 +58,13 @@ Target repositories stay thin: `.metis.yml` declares verification and guardrails
 
 Metis is itself an allowlisted target. Its `.metis.yml` requires explicit budget approval, treats workflows, Terraform, and migrations as protected paths, forbids coding-task deployment, and delegates staging deployment exclusively to the `CI` workflow after a human merge. `metis-sandbox` remains the disposable integration target.
 
-## Budgets and capacity
+## Pacing and provider capacity
 
-`METIS_POLICY_JSON` controls normalized cost-unit and execution envelopes. The conservative defaults allow two concurrent tasks, four starts and 20 cost units per daily UTC window, two dispatch attempts, automatic small/medium tasks, and approval-required large/unknown tasks.
+`METIS_POLICY_JSON` controls operator pacing and execution envelopes. The conservative defaults allow two concurrent tasks, four starts and 20 estimated workload units per daily UTC window, two dispatch attempts, automatic small/medium tasks, and approval-required large/unknown tasks. `maxTasksPerWindow` is optional operator pacing, not evidence about a provider account.
 
-D1's `provider_capacity` table is the live provider gate. Set `codex_included.available = 0` or reduce `remaining_units` to hard-stop new coding work. Global or provider exhaustion leaves tasks Ready and records one scheduler-level deferral signal for the current window; it never creates a task attempt, lease, blocker label, or human question. Task-specific approval and cost ceilings remain enforced, and Metis does not purchase overflow.
+D1's `provider_capacity.available` flag is an explicit operator gate. Set `codex_included.available = 0` to stop new coding work. Metis treats actual provider capacity as unknown unless the provider reports it; local workload estimates never establish or consume provider capacity. A closed gate or exhausted pacing window leaves tasks Ready and records one scheduler-level deferral signal; it never creates a task attempt, lease, blocker label, or human question. Task-specific approval and workload ceilings remain enforced, and paid API or purchased-credit fallback stays disabled.
 
-Issue labels can explicitly set `metis:size-small`, `metis:size-medium`, `metis:size-large`, or `metis:size-unknown`; approve an otherwise approval-required envelope with `metis:budget-approved`; and cap a task with a repository-created `metis:max-cost-N` label. The configured size-class ceiling still wins over a larger per-task number.
+Issue labels can explicitly set `metis:size-small`, `metis:size-medium`, `metis:size-large`, or `metis:size-unknown`; approve an otherwise approval-required envelope with `metis:budget-approved`; and cap a task with the legacy `metis:max-cost-N` label. Existing policy keys, labels, and migrated records using “cost units” remain readable only as legacy estimated workload—not provider accounting. The configured size-class ceiling still wins over a larger per-task number.
 
 ## Local verification
 
@@ -76,7 +76,7 @@ npm run verify
 
 - A human applies `metis:ready`; that attestation supersedes stale planning prose, inferred dependencies, and earlier human-resolvable blocker questions.
 - Missing information or decisions enter `metis:blocked`, not failure.
-- Budget exhaustion stops work before dispatch or retry.
+- Pacing exhaustion defers work before dispatch or retry without changing its Ready state.
 - Metis never pushes directly to a default branch, forces a merge, manually deploys, or mutates production data.
 - Pull-request merges are human-only. Metis never enables auto-merge or calls a merge endpoint; it observes the signed merged webhook and monitors the exact merge SHA through deployment.
 - A merge is incomplete until every configured deployment workflow succeeds for the exact merge SHA.
