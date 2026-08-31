@@ -40,5 +40,12 @@ jobs:
       - run: npm ci
       - name: Apply D1 migrations
         run: npm run db:migrate:staging
+      - name: Install Project credential binding
+        env:
+          METIS_PROJECT_USER_TOKEN: ${{ secrets.METIS_PROJECT_USER_TOKEN }}
+        run: |
+          test -n "$METIS_PROJECT_USER_TOKEN"
+          printf '%s' "$METIS_PROJECT_USER_TOKEN" | npx wrangler secret put METIS_PROJECT_USER_TOKEN
+          echo "Project credential binding installed"
       - name: Deploy Metis Worker
         run: npm run deploy:staging

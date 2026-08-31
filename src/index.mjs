@@ -4,6 +4,7 @@ import { admissionDecision, claimRevision, claimTask } from "./scheduler.mjs";
 import { dispatchCodexTask } from "./codex-dispatch.mjs";
 import { dispatchViaGithubCodexRevision } from "./github-codex-adapter.mjs";
 import { approvalCount, checksPassed, checkSuiteLifecycleFromWebhook, lifecyclePolicy, pullRequestLifecycleFromWebhook, reviewLifecycleFromWebhook, workflowRunFromWebhook } from "./lifecycle.mjs";
+import { reconcileProject } from "./project.mjs";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
@@ -294,7 +295,7 @@ async function receiveWebhook(request, env) {
   const event = request.headers.get("x-github-event");
   if (event === "ping") return json({ ok: true });
   const payload = JSON.parse(body);
-  const task = readyIssueFromWebhook(event, payload);
+  const task = env.METIS_READY_LABEL_COMPATIBILITY === "true" ? readyIssueFromWebhook(event, payload) : null;
   const blocked = blockedCodexFromWebhook(event, payload);
   const readyForPr = readyForPrCodexFromWebhook(event, payload);
   const revisionResult = revisionCodexFromWebhook(event, payload);
@@ -593,6 +594,12 @@ export default {
         env.DB.prepare("UPDATE tasks SET state='retrying', updated_at=unixepoch() WHERE id=? AND state IN ('dispatching','running')").bind(row.task_id),
       ]);
       await env.DISPATCH_QUEUE.send({ type: "dispatch", taskId: row.task_id });
+    }
+    try {
+      await reconcileProject(env);
+    } catch (error) {
+      // Project admission fails closed, but lease/deployment recovery above remains independent.
+      console.error("Project admission paused", { error: String(error) });
     }
   },
 };
