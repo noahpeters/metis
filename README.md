@@ -44,7 +44,7 @@ See `docs/codex-dispatch-adapter.md` for the authenticated capability, task, ide
 
 ## Deployment
 
-Metis deploys only from GitHub Actions after verification succeeds on `main`. The workflow applies D1 migrations and deploys the Worker using `wrangler.jsonc`. Configure the repository's `staging` environment with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; keep GitHub App and dispatch credentials as encrypted Worker secrets.
+Metis deploys only from GitHub Actions after verification succeeds on `main`. The workflow applies D1 migrations and deploys the Worker using `wrangler.jsonc`. Configure the repository's `staging` environment with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; keep GitHub App, Project, and dispatch credentials as encrypted Worker secrets. Provision or rotate Worker secrets separately from routine deployment so an unchanged deploy never rewrites credentials or creates an extra Worker version.
 
 Local `wrangler deploy`, D1 migration, and `terraform apply` operations are not accepted deployment paths. The repository deployment scripts enforce the GitHub Actions boundary. Terraform remains the infrastructure definition and may be formatted, validated, or planned locally without applying changes.
 
