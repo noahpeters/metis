@@ -64,7 +64,11 @@ async function projectGraphql(env, query, variables) {
     headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${env.METIS_PROJECT_USER_TOKEN}`, "Content-Type": "application/json", "User-Agent": "metis-control-plane" },
     body: JSON.stringify({ query, variables }),
   });
-  if (!response.ok) throw new ProjectAdmissionError(`Project GraphQL request failed (${response.status})`);
+  if (!response.ok) {
+    const reset = response.headers.get("x-ratelimit-reset");
+    const suffix = response.status === 403 && reset ? `; rate limit resets at ${reset}` : "";
+    throw new ProjectAdmissionError(`Project GraphQL request failed (${response.status}${suffix})`);
+  }
   const result = await response.json();
   if (result.errors?.length) throw new ProjectAdmissionError(`Project GraphQL rejected the request: ${result.errors[0].message}`);
   return result.data;
@@ -132,10 +136,11 @@ export async function reconcileProjectStatuses(env, queue, options = {}) {
   return { repaired };
 }
 
-export async function readProjectQueue(env, graphql = projectGraphql) {
+export async function readProjectQueue(env, graphql = projectGraphql, onPage = null) {
   const policy = loadProjectPolicy(env.METIS_PROJECT_POLICY_JSON);
   const ordered = [];
   let cursor = null;
+  const seenCursors = new Set();
   do {
     const data = await graphql(env, ITEMS_QUERY, { project: policy.projectId, cursor });
     const project = data?.node;
@@ -145,6 +150,9 @@ export async function readProjectQueue(env, graphql = projectGraphql) {
     if (!connection?.nodes || !connection.pageInfo) throw new ProjectAdmissionError("Project item pagination response is incomplete");
     ordered.push(...connection.nodes);
     if (connection.pageInfo.hasNextPage && !connection.pageInfo.endCursor) throw new ProjectAdmissionError("Project pagination did not return an end cursor");
+    if (connection.pageInfo.hasNextPage && seenCursors.has(connection.pageInfo.endCursor)) throw new ProjectAdmissionError("Project pagination repeated an end cursor");
+    if (connection.pageInfo.endCursor) seenCursors.add(connection.pageInfo.endCursor);
+    await onPage?.({ cursor: connection.pageInfo.endCursor, itemsObserved: ordered.length });
     cursor = connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
   } while (cursor);
 
@@ -153,10 +161,9 @@ export async function readProjectQueue(env, graphql = projectGraphql) {
   return ordered.map((item, orderIndex) => {
     if (!item?.id || seenItems.has(item.id)) throw new ProjectAdmissionError("Project contains a duplicate item");
     seenItems.add(item.id);
-    if (item.isArchived) return null;
-    if (item.content?.__typename !== "Issue") throw new ProjectAdmissionError(`Project item ${item.id} is not an accessible issue`);
+    if (item.isArchived || item.content?.__typename !== "Issue") return null;
     const repository = item.content.repository?.nameWithOwner;
-    if (!repositoryAllowed(env, repository)) throw new ProjectAdmissionError(`Project item ${item.id} belongs to a disallowed repository`);
+    if (!repositoryAllowed(env, repository)) return null;
     const issueKey = `${repository}#${item.content.number}`;
     if (seenIssues.has(issueKey)) throw new ProjectAdmissionError(`Project contains duplicate issue ${issueKey}`);
     seenIssues.add(issueKey);
@@ -171,8 +178,30 @@ export function boundedEligibleItems(queue, limit = 25) {
   return queue.filter((item) => item.eligible).slice(0, Math.max(0, Number(limit) || 0));
 }
 
+async function enqueueOnce(env, type, taskId) {
+  const result = await env.DB.prepare("INSERT INTO project_queue_signals(task_id,message_type,created_at) VALUES(?,?,unixepoch()) ON CONFLICT(task_id,message_type) DO NOTHING").bind(taskId, type).run();
+  if (!Boolean(result?.meta?.changes ?? result?.changes)) return false;
+  try {
+    await env.DISPATCH_QUEUE.send({ type, taskId });
+    return true;
+  } catch (error) {
+    await env.DB.prepare("DELETE FROM project_queue_signals WHERE task_id=? AND message_type=?").bind(taskId, type).run();
+    throw error;
+  }
+}
+
 export async function reconcileProject(env, options = {}) {
-  const queue = await readProjectQueue(env, options.graphql);
+  const policy = loadProjectPolicy(env.METIS_PROJECT_POLICY_JSON);
+  const runId = crypto.randomUUID();
+  let pagesRead = 0;
+  let lastCursor = null;
+  await env.DB.prepare("INSERT INTO project_reconciliation_runs(id,state,started_at) VALUES(?,'running',unixepoch())").bind(runId).run();
+  try {
+  const queue = await readProjectQueue(env, options.graphql, async (page) => {
+    pagesRead += 1;
+    lastCursor = page.cursor;
+    await env.DB.prepare("UPDATE project_reconciliation_runs SET pages_read=?,items_observed=?,last_cursor=? WHERE id=?").bind(pagesRead, page.itemsObserved, lastCursor, runId).run();
+  });
   const status = await reconcileProjectStatuses(env, queue, options);
   const active = await env.DB.prepare("SELECT COUNT(*) AS count FROM task_leases WHERE expires_at > unixepoch()").first();
   const max = Number(options.maxConcurrentTasks ?? JSON.parse(env.METIS_POLICY_JSON || "{}").global?.maxConcurrentTasks ?? 2);
@@ -214,9 +243,10 @@ export async function reconcileProject(env, options = {}) {
           continue;
         }
         await recordDependencyEvent(env, id, "satisfied", { observed_at: observation.dependencies[0]?.observedAt }, `satisfied:${id}:${observation.dependencies[0]?.observedAt || "none"}`);
-        await env.DISPATCH_QUEUE.send({ type: "dispatch", taskId: id });
-        admitted += 1;
-        available -= 1;
+        if (await enqueueOnce(env, "dispatch", id)) {
+          admitted += 1;
+          available -= 1;
+        }
       }
       continue;
     }
@@ -227,9 +257,20 @@ export async function reconcileProject(env, options = {}) {
     const cost = labels.find((label) => /^metis:max-cost-\d+$/.test(label));
     await env.DB.prepare("INSERT INTO tasks (id,repository,issue_number,issue_node_id,title,body,state,actor,size_class,max_workload_units,budget_approved,created_at,updated_at) VALUES (?,?,?,?,?,?,'intake','metis-project',?,?,?,unixepoch(),unixepoch()) ON CONFLICT(id) DO NOTHING")
       .bind(id, item.repository, item.issueNumber, issue.node_id, issue.title || "", issue.body || "", size?.slice(11) || null, cost ? Number(cost.slice(15)) : null, labels.includes("metis:budget-approved") ? 1 : 0).run();
-    await env.DISPATCH_QUEUE.send({ type: "intake", taskId: id });
-    admitted += 1;
-    available -= 1;
+    if (await enqueueOnce(env, "intake", id)) {
+      admitted += 1;
+      available -= 1;
+    }
   }
-  return { observed: queue.length, scanned: candidates.length, admitted, statusRepaired: status.repaired };
+  await env.DB.batch([
+    env.DB.prepare("UPDATE project_reconciliation_runs SET state='succeeded',completed_at=unixepoch(),items_observed=?,items_admitted=?,last_cursor=? WHERE id=?").bind(queue.length, admitted, lastCursor, runId),
+    env.DB.prepare("INSERT INTO project_reconciliation_checkpoint(project_id,last_successful_run_id,last_successful_at,last_cursor,updated_at) VALUES(?,?,unixepoch(),?,unixepoch()) ON CONFLICT(project_id) DO UPDATE SET last_successful_run_id=excluded.last_successful_run_id,last_successful_at=excluded.last_successful_at,last_cursor=excluded.last_cursor,updated_at=excluded.updated_at").bind(policy.projectId, runId, lastCursor),
+  ]);
+  return { runId, observed: queue.length, scanned: candidates.length, admitted, statusRepaired: status.repaired };
+  } catch (error) {
+    const reason = String(error?.message || error).slice(0, 1000);
+    const kind = /401|403|token|credential/i.test(reason) ? "credential" : /schema|field|option/i.test(reason) ? "schema" : /pagination|cursor/i.test(reason) ? "pagination" : "project";
+    await env.DB.prepare("UPDATE project_reconciliation_runs SET state='failed',completed_at=unixepoch(),pages_read=?,last_cursor=?,failure_kind=?,failure_reason=? WHERE id=?").bind(pagesRead, lastCursor, kind, reason, runId).run();
+    throw error;
+  }
 }
