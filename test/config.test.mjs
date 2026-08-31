@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadPolicy, taskBudget } from "../src/config.mjs";
+import { loadPolicy, taskWorkloadLimit } from "../src/config.mjs";
 
 test("paid API and Perplexity are disabled by default", () => {
   const policy = loadPolicy();
@@ -10,13 +10,20 @@ test("paid API and Perplexity are disabled by default", () => {
 });
 
 test("policy overrides preserve hard task-size defaults", () => {
-  const policy = loadPolicy({ global: { maxConcurrentTasks: 1 }, taskSizes: { small: { maxCostUnits: 3 } } });
+  const policy = loadPolicy({ global: { maxConcurrentTasks: 1 }, taskSizes: { small: { maxWorkloadUnits: 3 } } });
   assert.equal(policy.global.maxConcurrentTasks, 1);
-  assert.equal(policy.taskSizes.small.maxCostUnits, 3);
+  assert.equal(policy.taskSizes.small.maxWorkloadUnits, 3);
   assert.equal(policy.taskSizes.small.dispatch, "automatic");
   assert.equal(policy.taskSizes.large.dispatch, "approval_required");
 });
 
-test("a per-task override cannot exceed its size-class ceiling", () => {
-  assert.equal(taskBudget(loadPolicy(), "small", 99), 4);
+test("legacy policy names remain interpretable as workload estimates", () => {
+  const policy = loadPolicy({ global: { maxCostUnitsPerWindow: 9 }, taskSizes: { small: { estimatedCostUnits: 3, maxCostUnits: 5 } } });
+  assert.equal(policy.global.maxEstimatedWorkloadUnitsPerWindow, 9);
+  assert.equal(policy.taskSizes.small.estimatedWorkloadUnits, 3);
+  assert.equal(policy.taskSizes.small.maxWorkloadUnits, 5);
+});
+
+test("a per-task override cannot exceed its size-class workload ceiling", () => {
+  assert.equal(taskWorkloadLimit(loadPolicy(), "small", 99), 4);
 });

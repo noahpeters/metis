@@ -17,9 +17,9 @@ variable "allowed_repositories" {
 }
 
 variable "metis_policy_json" {
-  description = "Fail-closed staging capacity and budget policy."
+  description = "Fail-closed staging provider-gate and pacing policy."
   type        = string
-  default     = "{\"global\":{\"maxConcurrentTasks\":2,\"maxCostUnitsPerWindow\":20,\"maxTasksPerWindow\":4,\"maxRetries\":2},\"providers\":{\"codex_included\":{\"enabled\":false},\"paid_api\":{\"enabled\":false},\"perplexity\":{\"enabled\":false}}}"
+  default     = "{\"global\":{\"maxConcurrentTasks\":2,\"maxEstimatedWorkloadUnitsPerWindow\":20,\"maxTasksPerWindow\":4,\"maxRetries\":2},\"providers\":{\"codex_included\":{\"enabled\":false},\"paid_api\":{\"enabled\":false},\"perplexity\":{\"enabled\":false}}}"
 }
 
 variable "metis_lifecycle_policy_json" {

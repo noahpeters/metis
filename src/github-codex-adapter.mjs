@@ -27,7 +27,7 @@ export function buildGithubCodexComment(task, leaseId) {
     `Required pull-request body marker: \`Metis-Task: ${task.repository}#${task.issue_number}\``,
     "",
     "Execution guardrails:",
-    `- Maximum normalized cost units: ${task.max_cost_units}`,
+    `- Maximum estimated workload units: ${task.max_workload_units}`,
     "- The human-applied `metis:ready` decision is authoritative and supersedes older readiness language, prerequisite questions, and unstructured dependency prose in the issue or comments.",
     "- Metis has already checked GitHub's structured `blocked by` relationships. Do not ask a human to reconfirm, prove, or interpret issue dependencies.",
     "- Assume all human-verifiable prerequisites are satisfied or intentionally waived unless current authoritative evidence proves a concrete hard contradiction.",

@@ -38,13 +38,15 @@ test("GitHub Codex task comment is idempotently marked and preserves guardrails"
     repository: "owner/repo",
     issue_number: 7,
     summary: "Fix the retry edge case",
-    max_cost_units: 4,
+    max_workload_units: 4,
   }, "lease-123");
   assert.match(body, /metis-codex-dispatch:lease-123/);
   assert.match(body, /@codex implement this issue/);
   assert.match(body, /Repository remote: https:\/\/github.com\/owner\/repo\.git/);
   assert.match(body, /Pull-request base branch: `main`/);
   assert.match(body, /Metis-Task: owner\/repo#7/);
+  assert.match(body, /Maximum estimated workload units: 4/);
+  assert.doesNotMatch(body, /normalized cost units/i);
   assert.match(body, /human-applied `metis:ready` decision is authoritative/);
   assert.match(body, /already checked GitHub's structured `blocked by` relationships/);
   assert.match(body, /Missing proof, uncertainty, stale prose, inferred dependencies/);

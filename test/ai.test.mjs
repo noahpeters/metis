@@ -7,7 +7,7 @@ const analysis = {
   summary: "Add a helper and tests.",
   size: "small",
   confidence: 0.9,
-  estimated_cost_units: 2,
+  estimated_workload_units: 2,
   dependencies: [],
   readiness: "ready",
   blocker_question: null,

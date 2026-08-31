@@ -163,14 +163,14 @@ export async function blockTask(env, task, reason, question, budget = false) {
   const state = budget ? "metis:budget-blocked" : "metis:blocked";
   await setState(env, task.repository, task.issue_number, state);
   await comment(env, task.repository, task.issue_number, [
-    `## Metis is ${budget ? "blocked on budget or capacity" : "blocked"}`,
+    `## Metis is ${budget ? "blocked on task approval" : "blocked"}`,
     "",
     reason,
     "",
     `**Decision or information needed:** ${question}`,
     "",
     budget
-      ? "Metis stopped before starting or retrying coding work. Increase capacity, change the task budget, or reapply `metis:ready` after capacity resets."
+      ? "Metis stopped before starting or retrying coding work. Approve or reduce the task-specific execution envelope, then reapply `metis:ready`."
       : "Reply with the missing information, then reapply `metis:ready` when the task should continue.",
   ].join("\n"));
 }
