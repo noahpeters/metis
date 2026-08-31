@@ -72,7 +72,7 @@ test("Project credential and exact ID policy are mandatory", async () => {
 test("every lifecycle state maps to its concise Project summary", () => {
   assert.equal(projectStatusForState("intake"), "Backlog");
   assert.equal(projectStatusForState("ready"), "Ready");
-  for (const state of ["dispatching", "running", "revising"]) assert.equal(projectStatusForState(state), "In progress");
+  for (const state of ["dispatching", "pending_connector_ack", "running", "revising"]) assert.equal(projectStatusForState(state), "In progress");
   for (const state of ["awaiting_pr_creation", "pr_ready", "reviewing", "merge_ready"]) assert.equal(projectStatusForState(state), "Awaiting human");
   for (const state of ["blocked", "budget_blocked", "failed", "recovery_blocked"]) assert.equal(projectStatusForState(state), "Blocked");
   for (const state of ["deploying", "recovery"]) assert.equal(projectStatusForState(state), "Deploying");

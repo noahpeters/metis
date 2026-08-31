@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blockedCodexFromWebhook, pullRequestForTaskFromWebhook, readyForPrCodexFromWebhook, readyIssueFromWebhook, revisionCodexFromWebhook, unmarkedRevisionPullRequestFromWebhook } from "../src/index.mjs";
+import { blockedCodexFromWebhook, connectorAcknowledgmentFromWebhook, pullRequestForTaskFromWebhook, readyForPrCodexFromWebhook, readyIssueFromWebhook, revisionCodexFromWebhook, unmarkedRevisionPullRequestFromWebhook } from "../src/index.mjs";
 
 test("accepts only a metis:ready issue label event", () => {
   const payload = {
@@ -70,6 +70,34 @@ test("accepts ready-for-PR results only from the Codex connector", () => {
     ...payload,
     comment: { ...payload.comment, performed_via_github_app: { id: 1144995, slug: "lookalike" } },
   }), null);
+});
+
+test("requires official connector evidence for pending dispatch acknowledgment", () => {
+  const payload = {
+    action: "created", repository: { full_name: "owner/repo" }, issue: { number: 13 },
+    comment: { body: "Codex accepted this request. [Open task](https://chatgpt.com/codex/cloud/tasks/task_123)", html_url: "https://github.test/comment/1", performed_via_github_app: { id: 1144995, slug: "chatgpt-codex-connector" } },
+    sender: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
+  };
+  assert.deepEqual(connectorAcknowledgmentFromWebhook("issue_comment", payload), {
+    repository: "owner/repo", issue_number: 13, status: "accepted", lease_id: null,
+    task_url: "https://chatgpt.com/codex/cloud/tasks/task_123", setup_url: null,
+    reason: "Codex accepted this request. [Open task](https://chatgpt.com/codex/cloud/tasks/task_123)", comment_url: "https://github.test/comment/1",
+  });
+  assert.equal(connectorAcknowledgmentFromWebhook("issue_comment", { ...payload, sender: { login: "lookalike", type: "Bot" } }), null);
+  assert.equal(connectorAcknowledgmentFromWebhook("issue_comment", { ...payload, comment: { ...payload.comment, body: "Thanks for the mention" } }), null);
+  assert.equal(connectorAcknowledgmentFromWebhook("issue_comment", { ...payload, comment: { ...payload.comment, body: "READY_FOR_PR: done https://chatgpt.com/codex/cloud/tasks/task_123" } }), null);
+});
+
+test("recognizes environment and generic pre-creation connector rejections", () => {
+  const base = { action: "created", repository: { full_name: "owner/repo" }, issue: { number: 13 }, sender: { login: "chatgpt-codex-connector[bot]", type: "Bot" } };
+  const app = { id: 1144995, slug: "chatgpt-codex-connector" };
+  const environment = connectorAcknowledgmentFromWebhook("issue_comment", { ...base, comment: { body: "This repository requires a Codex environment. Create one at https://chatgpt.com/codex/settings/environments", performed_via_github_app: app } });
+  assert.equal(environment.status, "rejected");
+  assert.equal(environment.setup_url, "https://chatgpt.com/codex/settings/environments");
+  assert.match(environment.reason, /configured cloud environment/);
+  const generic = connectorAcknowledgmentFromWebhook("issue_comment", { ...base, comment: { body: "Unable to create a task for this request.", performed_via_github_app: app } });
+  assert.equal(generic.status, "rejected");
+  assert.equal(generic.setup_url, null);
 });
 
 test("maps a marked pull request to its awaiting Metis task", () => {
