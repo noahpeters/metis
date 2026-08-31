@@ -167,6 +167,10 @@ export async function readProjectQueue(env, graphql = projectGraphql) {
 
 function labelsOf(issue) { return (issue.labels || []).map((label) => typeof label === "string" ? label : label.name); }
 
+export function boundedEligibleItems(queue, limit = 25) {
+  return queue.filter((item) => item.eligible).slice(0, Math.max(0, Number(limit) || 0));
+}
+
 export async function reconcileProject(env, options = {}) {
   const queue = await readProjectQueue(env, options.graphql);
   const status = await reconcileProjectStatuses(env, queue, options);
@@ -174,10 +178,11 @@ export async function reconcileProject(env, options = {}) {
   const max = Number(options.maxConcurrentTasks ?? JSON.parse(env.METIS_POLICY_JSON || "{}").global?.maxConcurrentTasks ?? 2);
   let available = Math.max(0, max - (active?.count || 0));
   let admitted = 0;
+  const scanLimit = Number(options.scanLimit ?? 25);
+  const candidates = boundedEligibleItems(queue, scanLimit);
   const ready = [];
   const dependencyGraph = new Map();
-  for (const item of queue) {
-    if (!item.eligible) continue;
+  for (const item of candidates) {
     const id = `${item.repository}#${item.issueNumber}`;
     const existing = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(id).first();
     if (existing?.state !== "ready") continue;
@@ -195,8 +200,8 @@ export async function reconcileProject(env, options = {}) {
   const cycle = findDependencyCycle(dependencyGraph);
   const cycleMembers = new Set(cycle || []);
   if (cycle) await recordDependencyEvent(env, cycle[0], "cycle", { chain: cycle }, `cycle:${cycle.join("->")}`);
-  for (const item of queue) {
-    if (!item.eligible || available === 0) continue;
+  for (const item of candidates) {
+    if (available === 0) break;
     const id = `${item.repository}#${item.issueNumber}`;
     const existing = await env.DB.prepare("SELECT id,state FROM tasks WHERE id=?").bind(id).first();
     if (existing) {
@@ -226,5 +231,5 @@ export async function reconcileProject(env, options = {}) {
     admitted += 1;
     available -= 1;
   }
-  return { observed: queue.length, admitted, statusRepaired: status.repaired };
+  return { observed: queue.length, scanned: candidates.length, admitted, statusRepaired: status.repaired };
 }

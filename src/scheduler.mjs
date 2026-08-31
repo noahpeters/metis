@@ -20,7 +20,15 @@ export async function admissionDecision(env, task) {
   if ((active?.count || 0) >= policy.global.maxConcurrentTasks) return schedulerDeferral("concurrency", "Maximum concurrent tasks reached.");
   if (policy.global.maxTasksPerWindow != null && (window?.tasks_started || 0) >= policy.global.maxTasksPerWindow) return schedulerDeferral("task-start-pacing", "Operator task-start pacing limit reached.");
   if ((window?.estimated_workload_units_used || 0) + estimatedWorkloadUnits > policy.global.maxEstimatedWorkloadUnitsPerWindow) return schedulerDeferral("workload-pacing", "Operator estimated-workload pacing limit reached.");
-  return { admitted: true, estimatedWorkloadUnits, maxRetries: policy.global.maxRetries, leaseSeconds: policy.global.leaseSeconds };
+  return {
+    admitted: true,
+    estimatedWorkloadUnits,
+    maxRetries: policy.global.maxRetries,
+    leaseSeconds: policy.global.leaseSeconds,
+    maxConcurrentTasks: policy.global.maxConcurrentTasks,
+    maxTasksPerWindow: policy.global.maxTasksPerWindow,
+    maxEstimatedWorkloadUnitsPerWindow: policy.global.maxEstimatedWorkloadUnitsPerWindow,
+  };
 }
 
 export function schedulerDeferral(kind, reason) {
@@ -41,12 +49,17 @@ export async function pruneSchedulerSignals(env) {
 export async function claimTask(env, task, decision) {
   const leaseId = crypto.randomUUID();
   const result = await env.DB.batch([
-    env.DB.prepare("INSERT INTO pacing_windows (window_key, estimated_workload_units_used, tasks_started) VALUES (date('now'), ?, 1) ON CONFLICT(window_key) DO UPDATE SET estimated_workload_units_used = estimated_workload_units_used + excluded.estimated_workload_units_used, tasks_started = tasks_started + 1").bind(decision.estimatedWorkloadUnits),
-    env.DB.prepare("INSERT INTO task_leases (task_id, lease_id, provider, estimated_workload_units_reserved, expires_at) VALUES (?, ?, 'codex_included', ?, unixepoch() + ?)").bind(task.id, leaseId, decision.estimatedWorkloadUnits, decision.leaseSeconds),
-    env.DB.prepare("UPDATE tasks SET state = 'dispatching', attempt_count = attempt_count + 1, updated_at = unixepoch() WHERE id = ? AND state IN ('ready','retrying')").bind(task.id),
-    env.DB.prepare("DELETE FROM scheduler_signals WHERE window_key = date('now')"),
+    // The lease insert is the admission commit point. Its state and capacity
+    // predicates make concurrent queue deliveries harmless and prevent two
+    // different tasks from crossing the concurrency limit after both observed
+    // the same available slot.
+    env.DB.prepare("INSERT INTO task_leases (task_id,lease_id,provider,estimated_workload_units_reserved,expires_at) SELECT t.id,?,'codex_included',?,unixepoch()+? FROM tasks t WHERE t.id=? AND t.state IN ('ready','retrying') AND EXISTS (SELECT 1 FROM provider_capacity WHERE provider='codex_included' AND available=1) AND (SELECT COUNT(*) FROM task_leases WHERE expires_at>unixepoch()) < ? AND (? IS NULL OR COALESCE((SELECT tasks_started FROM pacing_windows WHERE window_key=date('now')),0) < ?) AND COALESCE((SELECT estimated_workload_units_used FROM pacing_windows WHERE window_key=date('now')),0)+? <= ?").bind(leaseId, decision.estimatedWorkloadUnits, decision.leaseSeconds, task.id, decision.maxConcurrentTasks, decision.maxTasksPerWindow, decision.maxTasksPerWindow, decision.estimatedWorkloadUnits, decision.maxEstimatedWorkloadUnitsPerWindow),
+    env.DB.prepare("INSERT INTO pacing_windows (window_key, estimated_workload_units_used, tasks_started) SELECT date('now'), ?, 1 WHERE EXISTS (SELECT 1 FROM task_leases WHERE lease_id=?) ON CONFLICT(window_key) DO UPDATE SET estimated_workload_units_used = estimated_workload_units_used + excluded.estimated_workload_units_used, tasks_started = tasks_started + 1").bind(decision.estimatedWorkloadUnits, leaseId),
+    env.DB.prepare("UPDATE tasks SET state = 'dispatching', attempt_count = attempt_count + 1, updated_at = unixepoch() WHERE id = ? AND state IN ('ready','retrying') AND EXISTS (SELECT 1 FROM task_leases WHERE lease_id=?)").bind(task.id, leaseId),
+    env.DB.prepare("DELETE FROM scheduler_signals WHERE window_key = date('now') AND EXISTS (SELECT 1 FROM task_leases WHERE lease_id=?)").bind(leaseId),
   ]);
-  return { leaseId, results: result };
+  const claimed = Boolean(result[0]?.meta?.changes ?? result[0]?.changes);
+  return { leaseId: claimed ? leaseId : null, claimed, results: result };
 }
 
 export async function claimRevision(env, task, decision) {
