@@ -19,6 +19,9 @@ async function verifySignature(secret, signature, body) {
 
 export function readyIssueFromWebhook(event, payload) {
   if (event !== "issues" || payload.action !== "labeled" || payload.label?.name !== "metis:ready") return null;
+  // Ready is a human authority boundary. Metis restores this label when work is
+  // deferred, so bot-authored label events must not enqueue intake again.
+  if (payload.sender?.type === "Bot") return null;
   const labels = (payload.issue?.labels || []).map((label) => typeof label === "string" ? label : label.name);
   const sizeLabel = labels.find((label) => /^metis:size-(small|medium|large|unknown)$/.test(label));
   const maxCostLabel = labels.find((label) => /^metis:max-cost-\d+$/.test(label));
@@ -497,6 +500,7 @@ async function handleIntake(env, message) {
   } catch (error) {
     const reason = `Authoritative issue discussion fetch failed: ${error.message}`;
     await env.DB.prepare("UPDATE tasks SET state='ready', blocker_reason=NULL, updated_at=unixepoch() WHERE id=?").bind(task.id).run();
+    await setState(env, task.repository, task.issue_number, "metis:ready");
     await comment(env, task.repository, task.issue_number, `## Metis deferred intake\n\n${reason}. The human Ready attestation remains authoritative. Metis will retry when evidence is available; no blocker or attempt was recorded.`);
     return;
   }
@@ -526,6 +530,7 @@ async function handleDispatch(env, message) {
   }
   if (!dependencies.executable) {
     await env.DB.prepare("UPDATE tasks SET state='ready', updated_at=unixepoch() WHERE id=?").bind(task.id).run();
+    await setState(env, task.repository, task.issue_number, "metis:ready");
     await recordDependencyEvent(env, task.id, "deferred", { waiting_on: dependencies.waitingOn, observed_at: dependencies.observedAt }, `deferred:${task.id}:${dependencies.waitingOn.sort().join(",")}`);
     return;
   }
@@ -533,6 +538,7 @@ async function handleDispatch(env, message) {
   if (!decision.admitted) {
     if (decision.defer) {
       await env.DB.prepare("UPDATE tasks SET state='ready', updated_at=unixepoch() WHERE id=?").bind(task.id).run();
+      await setState(env, task.repository, task.issue_number, "metis:ready");
       if (decision.scheduler) await recordSchedulerDeferral(env, decision);
       if (decision.repositoryLocked) return;
       return;

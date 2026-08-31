@@ -15,6 +15,7 @@ test("accepts only a metis:ready issue label event", () => {
   });
   assert.equal(readyIssueFromWebhook("issues", { ...payload, label: { name: "bug" } }), null);
   assert.equal(readyIssueFromWebhook("pull_request", payload), null);
+  assert.equal(readyIssueFromWebhook("issues", { ...payload, sender: { login: "metis-control-plane-noah[bot]", type: "Bot" } }), null);
 });
 
 test("accepts BLOCKED results only from the Codex connector", () => {
