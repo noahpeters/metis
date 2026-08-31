@@ -18,6 +18,23 @@ const ITEMS_QUERY = `query MetisProjectItems($project: ID!, $cursor: String) {
   }
 }`;
 
+const UPDATE_STATUS_MUTATION = `mutation MetisMirrorProjectStatus($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+  updateProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field, value: {singleSelectOptionId: $option}}) { projectV2Item { id } }
+}`;
+
+export const PROJECT_STATUS_NAMES = ["Backlog", "Ready", "In progress", "Awaiting human", "Blocked", "Deploying", "Done"];
+
+export function projectStatusForState(state) {
+  if (["intake"].includes(state)) return "Backlog";
+  if (["ready", "retrying"].includes(state)) return "Ready";
+  if (["dispatching", "running", "revising"].includes(state)) return "In progress";
+  if (["awaiting_pr_creation", "awaiting_revision_pr", "pr_ready", "reviewing", "merge_ready"].includes(state)) return "Awaiting human";
+  if (["blocked", "budget_blocked", "failed", "recovery_blocked"].includes(state)) return "Blocked";
+  if (["deploying", "recovery"].includes(state)) return "Deploying";
+  if (state === "complete") return "Done";
+  return null;
+}
+
 export class ProjectAdmissionError extends Error {
   constructor(message) {
     super(message);
@@ -32,6 +49,11 @@ export function loadProjectPolicy(raw) {
   for (const key of ["projectId", "executionOwnerFieldId", "metisOwnerOptionId", "statusFieldId", "readyStatusOptionId"]) {
     if (typeof value[key] !== "string" || !value[key]) throw new ProjectAdmissionError(`Project policy is missing ${key}`);
   }
+  if (!value.statusOptions || typeof value.statusOptions !== "object") throw new ProjectAdmissionError("Project policy is missing statusOptions");
+  for (const name of PROJECT_STATUS_NAMES) {
+    if (typeof value.statusOptions[name] !== "string" || !value.statusOptions[name]) throw new ProjectAdmissionError(`Project policy is missing Status option ID for ${name}`);
+  }
+  if (value.statusOptions.Ready !== value.readyStatusOptionId) throw new ProjectAdmissionError("Project Ready option IDs are inconsistent");
   return value;
 }
 
@@ -55,9 +77,59 @@ function validateSchema(project, policy) {
   if (!owner || owner.name !== "Execution owner" || !owner.options?.some((option) => option.id === policy.metisOwnerOptionId && option.name === "Metis")) {
     throw new ProjectAdmissionError("Project Execution owner schema does not match configured IDs");
   }
-  if (!status || status.name !== "Status" || !status.options?.some((option) => option.id === policy.readyStatusOptionId && option.name === "Ready")) {
-    throw new ProjectAdmissionError("Project Ready status schema does not match configured IDs");
+  if (!status || status.name !== "Status") throw new ProjectAdmissionError("Project Status field is missing or is not a single-select field");
+  const names = new Set();
+  for (const option of status.options || []) {
+    if (names.has(option.name)) throw new ProjectAdmissionError(`Project Status contains duplicate option name ${option.name}`);
+    names.add(option.name);
   }
+  for (const name of PROJECT_STATUS_NAMES) {
+    if (!status.options?.some((option) => option.id === policy.statusOptions[name] && option.name === name)) {
+      throw new ProjectAdmissionError(`Project Status option ${name} does not match its configured ID`);
+    }
+  }
+}
+
+export function planProjectStatusSchema(project, policy, { dryRun = true } = {}) {
+  const status = (project.fields?.nodes || []).find((field) => field?.id === policy.statusFieldId);
+  if (!status || status.name !== "Status" || !Array.isArray(status.options)) throw new ProjectAdmissionError("Project Status field is missing or is not a single-select field");
+  const duplicate = status.options.find((option, index) => status.options.findIndex((other) => other.name === option.name) !== index);
+  if (duplicate) throw new ProjectAdmissionError(`Project Status contains duplicate option name ${duplicate.name}`);
+  const missing = PROJECT_STATUS_NAMES.filter((name) => !status.options.some((option) => option.name === name));
+  const incompatible = PROJECT_STATUS_NAMES.filter((name) => status.options.some((option) => option.name === name && option.id !== policy.statusOptions[name]));
+  if (incompatible.length) throw new ProjectAdmissionError(`Project Status has incompatible configured IDs: ${incompatible.join(", ")}`);
+  if (!dryRun && missing.length) throw new ProjectAdmissionError("Refusing to replace Status options automatically because existing option IDs must be preserved");
+  return { dryRun, changes: missing.map((name) => `add Status option: ${name}`), unchanged: PROJECT_STATUS_NAMES.filter((name) => !missing.includes(name)) };
+}
+
+async function recordStatusSyncFailure(env, taskId, statusName, error) {
+  await env.DB.prepare("INSERT INTO project_status_sync(task_id,status_name,last_error,attempt_count,updated_at) VALUES(?,?,?,1,unixepoch()) ON CONFLICT(task_id) DO UPDATE SET status_name=excluded.status_name,last_error=excluded.last_error,attempt_count=project_status_sync.attempt_count+1,updated_at=unixepoch()")
+    .bind(taskId, statusName, String(error?.message || error)).run();
+}
+
+export async function reconcileProjectStatuses(env, queue, options = {}) {
+  const policy = loadProjectPolicy(env.METIS_PROJECT_POLICY_JSON);
+  const graphql = options.graphql || projectGraphql;
+  let repaired = 0;
+  for (const item of queue) {
+    const taskId = `${item.repository}#${item.issueNumber}`;
+    const task = await env.DB.prepare("SELECT state FROM tasks WHERE id=?").bind(taskId).first();
+    const statusName = projectStatusForState(task?.state);
+    if (!statusName) continue;
+    const optionId = policy.statusOptions[statusName];
+    if (item.statusOptionId === optionId) {
+      await env.DB.prepare("DELETE FROM project_status_sync WHERE task_id=?").bind(taskId).run();
+      continue;
+    }
+    try {
+      await graphql(env, UPDATE_STATUS_MUTATION, { project: policy.projectId, item: item.projectItemId, field: policy.statusFieldId, option: optionId });
+      await env.DB.prepare("DELETE FROM project_status_sync WHERE task_id=?").bind(taskId).run();
+      repaired += 1;
+    } catch (error) {
+      await recordStatusSyncFailure(env, taskId, statusName, error);
+    }
+  }
+  return { repaired };
 }
 
 export async function readProjectQueue(env, graphql = projectGraphql) {
@@ -97,6 +169,7 @@ function labelsOf(issue) { return (issue.labels || []).map((label) => typeof lab
 
 export async function reconcileProject(env, options = {}) {
   const queue = await readProjectQueue(env, options.graphql);
+  const status = await reconcileProjectStatuses(env, queue, options);
   const active = await env.DB.prepare("SELECT COUNT(*) AS count FROM task_leases WHERE expires_at > unixepoch()").first();
   const max = Number(options.maxConcurrentTasks ?? JSON.parse(env.METIS_POLICY_JSON || "{}").global?.maxConcurrentTasks ?? 2);
   let available = Math.max(0, max - (active?.count || 0));
@@ -153,5 +226,5 @@ export async function reconcileProject(env, options = {}) {
     admitted += 1;
     available -= 1;
   }
-  return { observed: queue.length, admitted };
+  return { observed: queue.length, admitted, statusRepaired: status.repaired };
 }
