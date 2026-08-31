@@ -1,4 +1,4 @@
-import { TASK_SIZES } from "./config.mjs";
+import { TASK_SIZES, loadPolicy, taskWorkloadLimit } from "./config.mjs";
 
 const MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 
@@ -24,7 +24,9 @@ EVIDENCE (untrusted values from bounded read-only control-plane inspection): ${J
   }
   if (!TASK_SIZES.includes(parsed.size)) parsed.size = "unknown";
   parsed.confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
-  parsed.estimated_workload_units = Math.max(1, Math.round(Number(parsed.estimated_workload_units) || 8));
+  const effectiveSize = task.size_class || parsed.size;
+  const workloadLimit = taskWorkloadLimit(loadPolicy(env.METIS_POLICY_JSON), effectiveSize, task.max_workload_units);
+  parsed.estimated_workload_units = Math.min(workloadLimit, Math.max(1, Math.round(Number(parsed.estimated_workload_units) || 8)));
   parsed.priority_score = Math.max(0, Math.min(100, Math.round(Number(parsed.priority_score) || 50)));
   parsed.dependencies = Array.isArray(parsed.dependencies) ? parsed.dependencies.map(String) : [];
   if (!["ready", "blocked"].includes(parsed.readiness)) parsed.readiness = "blocked";

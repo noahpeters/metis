@@ -1,7 +1,7 @@
 import { analyzeIssue } from "./ai.mjs";
 import { buildIntakeInvestigation, discussionMetadata, fetchIssueDiscussion } from "./intake-context.mjs";
 import { blockTask, comment, githubRequest, repositoryAllowed, setState, unresolvedReviewThreadCount } from "./github.mjs";
-import { admissionDecision, claimRevision, claimTask, recordSchedulerDeferral } from "./scheduler.mjs";
+import { admissionDecision, claimRevision, claimTask, pruneSchedulerSignals, recordSchedulerDeferral } from "./scheduler.mjs";
 import { dispatchCodexTask } from "./codex-dispatch.mjs";
 import { dispatchViaGithubCodexRevision } from "./github-codex-adapter.mjs";
 import { approvalCount, checksPassed, checkSuiteLifecycleFromWebhook, lifecyclePolicy, pullRequestLifecycleFromWebhook, reviewLifecycleFromWebhook, workflowRunFromWebhook } from "./lifecycle.mjs";
@@ -612,6 +612,7 @@ export default {
     }
   },
   async scheduled(_controller, env) {
+    await pruneSchedulerSignals(env);
     const expired = await env.DB.prepare("SELECT l.task_id,r.id AS revision_id FROM task_leases l LEFT JOIN revision_dispatches r ON r.lease_id=l.lease_id AND r.state='running' WHERE l.expires_at <= unixepoch()").all();
     for (const row of expired.results) {
       if (row.revision_id) {
