@@ -45,6 +45,9 @@ test("GitHub Codex task comment is idempotently marked and preserves guardrails"
   assert.match(body, /Repository remote: https:\/\/github.com\/owner\/repo\.git/);
   assert.match(body, /Pull-request base branch: `main`/);
   assert.match(body, /Metis-Task: owner\/repo#7/);
+  assert.match(body, /human-applied `metis:ready` decision is authoritative/);
+  assert.match(body, /already checked GitHub's structured `blocked by` relationships/);
+  assert.match(body, /Missing proof, uncertainty, stale prose, inferred dependencies/);
   assert.match(body, /Do not run `git push`, use `gh`/);
   assert.match(body, /READY_FOR_PR:/);
   assert.match(body, /Never merge, deploy, or mutate production/);
