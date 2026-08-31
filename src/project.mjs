@@ -1,4 +1,5 @@
 import { githubRequest, repositoryAllowed } from "./github.mjs";
+import { fetchBlockedBy, findDependencyCycle, mirrorDependencies, recordDependencyEvent } from "./dependencies.mjs";
 
 const ITEMS_QUERY = `query MetisProjectItems($project: ID!, $cursor: String) {
   node(id: $project) {
@@ -100,12 +101,41 @@ export async function reconcileProject(env, options = {}) {
   const max = Number(options.maxConcurrentTasks ?? JSON.parse(env.METIS_POLICY_JSON || "{}").global?.maxConcurrentTasks ?? 2);
   let available = Math.max(0, max - (active?.count || 0));
   let admitted = 0;
+  const ready = [];
+  const dependencyGraph = new Map();
+  for (const item of queue) {
+    if (!item.eligible) continue;
+    const id = `${item.repository}#${item.issueNumber}`;
+    const existing = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(id).first();
+    if (existing?.state !== "ready") continue;
+    let dependencies;
+    try {
+      dependencies = await fetchBlockedBy(env, existing, options.fetchDependencies);
+      await mirrorDependencies(env, existing, dependencies);
+    } catch (error) {
+      await recordDependencyEvent(env, id, "reconciliation-error", { message: error.message }, `reconciliation-error:${id}:${Math.floor(Date.now() / 3600000)}`);
+      throw new ProjectAdmissionError(error.message);
+    }
+    dependencyGraph.set(id, dependencies.map((dependency) => dependency.prerequisiteKey));
+    ready.push({ item, task: existing, dependencies });
+  }
+  const cycle = findDependencyCycle(dependencyGraph);
+  const cycleMembers = new Set(cycle || []);
+  if (cycle) await recordDependencyEvent(env, cycle[0], "cycle", { chain: cycle }, `cycle:${cycle.join("->")}`);
   for (const item of queue) {
     if (!item.eligible || available === 0) continue;
     const id = `${item.repository}#${item.issueNumber}`;
     const existing = await env.DB.prepare("SELECT id,state FROM tasks WHERE id=?").bind(id).first();
     if (existing) {
       if (existing.state === "ready") {
+        const observation = ready.find((candidate) => candidate.task.id === id);
+        if (!observation || cycleMembers.has(id)) continue;
+        const waitingOn = observation.dependencies.filter((dependency) => !dependency.completed).map((dependency) => dependency.prerequisiteKey);
+        if (waitingOn.length) {
+          await recordDependencyEvent(env, id, "deferred", { waiting_on: waitingOn, observed_at: observation.dependencies[0]?.observedAt }, `deferred:${id}:${waitingOn.sort().join(",")}`);
+          continue;
+        }
+        await recordDependencyEvent(env, id, "satisfied", { observed_at: observation.dependencies[0]?.observedAt }, `satisfied:${id}:${observation.dependencies[0]?.observedAt || "none"}`);
         await env.DISPATCH_QUEUE.send({ type: "dispatch", taskId: id });
         admitted += 1;
         available -= 1;
