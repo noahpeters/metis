@@ -30,7 +30,7 @@ Perplexity is optional and research-only. It is disabled by default. Paid API fa
 - Workers AI issue analysis for high-volume planning work;
 - normalized task size classes and cost units;
 - global task, cost, concurrency, retry, and per-task limits;
-- hard `metis:budget-blocked` and human-decision `metis:blocked` stops;
+- task-specific `metis:budget-blocked`, evidence-backed `metis:blocked`, and scheduler-level capacity deferrals;
 - first-class `metis:awaiting-pr` checkpoint that releases the coding lease;
 - explicit human-only merge readiness with exact-SHA post-merge monitoring;
 - exact-merge-SHA deployment monitoring and repository health locks;
@@ -62,7 +62,7 @@ Metis is itself an allowlisted target. Its `.metis.yml` requires explicit budget
 
 `METIS_POLICY_JSON` controls normalized cost-unit and execution envelopes. The conservative defaults allow two concurrent tasks, four starts and 20 cost units per daily UTC window, two dispatch attempts, automatic small/medium tasks, and approval-required large/unknown tasks.
 
-D1's `provider_capacity` table is the live provider gate. Set `codex_included.available = 0` or reduce `remaining_units` to hard-stop new coding work. Exhausted global or per-task capacity enters `metis:budget-blocked`; Metis does not purchase overflow.
+D1's `provider_capacity` table is the live provider gate. Set `codex_included.available = 0` or reduce `remaining_units` to hard-stop new coding work. Global or provider exhaustion leaves tasks Ready and records one scheduler-level deferral signal for the current window; it never creates a task attempt, lease, blocker label, or human question. Task-specific approval and cost ceilings remain enforced, and Metis does not purchase overflow.
 
 Issue labels can explicitly set `metis:size-small`, `metis:size-medium`, `metis:size-large`, or `metis:size-unknown`; approve an otherwise approval-required envelope with `metis:budget-approved`; and cap a task with a repository-created `metis:max-cost-N` label. The configured size-class ceiling still wins over a larger per-task number.
 
@@ -74,7 +74,7 @@ npm run verify
 
 ## Guardrails
 
-- A human applies `metis:ready`.
+- A human applies `metis:ready`; that attestation supersedes stale planning prose, inferred dependencies, and earlier human-resolvable blocker questions.
 - Missing information or decisions enter `metis:blocked`, not failure.
 - Budget exhaustion stops work before dispatch or retry.
 - Metis never pushes directly to a default branch, forces a merge, manually deploys, or mutates production data.

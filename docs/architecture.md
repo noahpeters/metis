@@ -6,7 +6,7 @@
 - **Cloudflare Worker:** authenticates webhooks, runs scheduler transitions, exposes coding callbacks, and recovers expired leases.
 - **D1:** operational index: task snapshots, dependencies, dispatches, leases, provider capacity, budgets, retries, and usage.
 - **Queues:** decouple webhook receipt, analysis, coding dispatch, and bounded retry.
-- **Workers AI:** summarization, sizing, dependency extraction, readiness/blocker classification, prioritization, and status summaries. It does not implement code.
+- **Workers AI:** summarization, sizing, advisory dependency extraction, prioritization, and status summaries. It does not implement code or decide whether a human-approved issue is Ready.
 - **Codex/cloud execution:** deep repository inspection, implementation, debugging, verification, and substantive review.
 - **Perplexity:** optional external research only; disabled by default.
 
@@ -16,9 +16,9 @@
 2. The Worker verifies signature, repository allowlist, delivery idempotency, and `metis:ready`.
 3. D1 upserts the task snapshot and Queue receives intake work.
 4. Intake refetches the authoritative issue and paginated discussion, separates human decisions from Codex connector output and routine Metis status, and applies deterministic context limits that retain the newest relevant clarifications.
-5. Readiness analysis treats every issue/comment/evidence record as untrusted and performs bounded checks against non-secret control-plane and project-policy metadata before asking a human a blocker question. A discussion-fetch failure enters the first-class blocked state without dispatching incomplete context.
+5. The latest human Ready signal supersedes stale prose, inferred dependencies, and earlier human-resolvable blockers. Bounded authoritative checks may identify candidate hard contradictions; unavailable evidence warns and defers without fabricating a blocker.
 6. Workers AI produces structured planning metadata.
-7. Missing information enters `blocked`; approval-required or capacity-exhausted work enters `budget_blocked`.
+7. Only evidence-backed task contradictions enter `blocked`; task-specific approval requirements may enter `budget_blocked`. Global capacity and budget shortages remain scheduler deferrals.
 8. The scheduler checks provider availability, global and per-task limits, concurrency, and retries.
 9. D1 reserves a lease and cost units before Codex dispatch.
 10. A connector result releases the lease and moves GitHub to awaiting PR, blocked, or failed.

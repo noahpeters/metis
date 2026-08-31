@@ -5,13 +5,13 @@ GitHub labels are visible task state; D1 stores finer runtime state.
 | State | Label | Meaning |
 |---|---|---|
 | Draft | none | Human is defining work |
-| Ready | `metis:ready` | Human authorized scheduling |
+| Ready | `metis:ready` | Human attested that the plan, prerequisites, decisions, and bounded scope are authorized |
 | Planning | `metis:planning` | Workers AI is deriving orchestration metadata |
 | Implementing | `metis:implementing` | A leased Codex/cloud execution is active |
 | Revising | `metis:revising` | Codex is addressing requested review changes on the existing PR branch |
 | Awaiting PR | `metis:awaiting-pr` | Codex prepared a verified change; a human must click Create PR |
 | Blocked | `metis:blocked` | Missing information or decision; not failure |
-| Budget blocked | `metis:budget-blocked` | A task/global/provider limit stopped work |
+| Budget blocked | `metis:budget-blocked` | A task-specific approval or hard envelope stopped work |
 | PR ready | `metis:pr-ready` | A PR awaits human review and target CI |
 | Reviewing | `metis:reviewing` | Required reviews, checks, or mergeability are pending |
 | Merge ready | `metis:merge-ready` | Configured merge gates passed |
@@ -21,7 +21,9 @@ GitHub labels are visible task state; D1 stores finer runtime state.
 | Recovery blocked | `metis:recovery-blocked` | Recovery cannot continue safely or exhausted its retry limit |
 | Failed | `metis:failed` | An operational failure requires diagnosis |
 
-`awaiting-pr` is a non-blocked human checkpoint. Metis releases the coding lease before asking for the Create PR click, and the subsequent pull-request webhook advances the task to `pr-ready`. `blocked` records known facts, exact missing information, one question, and why proceeding is unsafe. `budget-blocked` names the exhausted limit and stops before further capacity-consuming work. Both blocked states resume only after a human or capacity update and a new `metis:ready` event.
+Applying `metis:ready` is a human authority boundary: it supersedes stale planning gates, prose-only dependencies, previous human-resolvable questions, and model uncertainty. Planning models may summarize, size, prioritize, and suggest dependencies, but may not reverse that decision. Reapplying Ready clears the recorded blocker. Metis may demote a task only for current authoritative evidence of a task-specific hard contradiction, and that evidence must identify its source, observation time, failed invariant, safety impact, minimum resolution, and fingerprint.
+
+`awaiting-pr` is a non-blocked human checkpoint. Metis releases the coding lease before asking for the Create PR click, and the subsequent pull-request webhook advances the task to `pr-ready`. `blocked` records known facts, exact missing information, one question, and why proceeding is unsafe. `budget-blocked` is reserved for a task-specific approval or hard envelope. Global budget, concurrency, and provider availability are scheduler deferrals: the issue remains Ready, retains its queue position, creates no lease or attempt, and emits one scheduler signal per window and cause.
 
 A `CHANGES_REQUESTED` review creates a bounded revision lease against the exact PR head and sends the current inline review feedback to Codex from the original issue. The included GitHub connector prepares a replacement PR through the normal human Create PR handoff. Metis closes the superseded PR, binds the replacement, and returns the task to `reviewing`; renewed human approval, resolution of every review thread, and a human merge remain mandatory. Stale results, expired leases, exhausted revision attempts, and missing decisions fail closed.
 

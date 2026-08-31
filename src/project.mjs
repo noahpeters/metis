@@ -103,7 +103,15 @@ export async function reconcileProject(env, options = {}) {
   for (const item of queue) {
     if (!item.eligible || available === 0) continue;
     const id = `${item.repository}#${item.issueNumber}`;
-    if (await env.DB.prepare("SELECT id FROM tasks WHERE id=?").bind(id).first()) continue;
+    const existing = await env.DB.prepare("SELECT id,state FROM tasks WHERE id=?").bind(id).first();
+    if (existing) {
+      if (existing.state === "ready") {
+        await env.DISPATCH_QUEUE.send({ type: "dispatch", taskId: id });
+        admitted += 1;
+        available -= 1;
+      }
+      continue;
+    }
     const issue = await githubRequest(env, `/repos/${item.repository}/issues/${item.issueNumber}`);
     if (issue.node_id !== item.issueNodeId || issue.pull_request || issue.state !== "open") throw new ProjectAdmissionError(`Authoritative issue ${id} is inaccessible or no longer eligible`);
     const labels = labelsOf(issue);
