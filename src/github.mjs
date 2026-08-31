@@ -59,6 +59,17 @@ export async function githubRequest(env, path, init = {}) {
   return authenticatedGithubRequest(token, path, init);
 }
 
+export async function githubPaginatedRequest(env, path, { perPage = 100 } = {}) {
+  const separator = path.includes("?") ? "&" : "?";
+  const results = [];
+  for (let page = 1; ; page += 1) {
+    const batch = await githubRequest(env, `${path}${separator}per_page=${perPage}&page=${page}`);
+    if (!Array.isArray(batch)) throw new Error(`GitHub pagination response for ${path} is not an array`);
+    results.push(...batch);
+    if (batch.length < perPage) return results;
+  }
+}
+
 export async function githubGraphql(env, query, variables) {
   const token = await githubToken(env);
   const response = await fetch("https://api.github.com/graphql", {

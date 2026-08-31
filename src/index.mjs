@@ -6,6 +6,7 @@ import { dispatchCodexTask } from "./codex-dispatch.mjs";
 import { dispatchViaGithubCodexRevision } from "./github-codex-adapter.mjs";
 import { approvalCount, checksPassed, checkSuiteLifecycleFromWebhook, lifecyclePolicy, pullRequestLifecycleFromWebhook, reviewLifecycleFromWebhook, workflowRunFromWebhook } from "./lifecycle.mjs";
 import { reconcileProject } from "./project.mjs";
+import { dependencyDecision, recordDependencyEvent } from "./dependencies.mjs";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
@@ -516,6 +517,18 @@ async function handleIntake(env, message) {
 async function handleDispatch(env, message) {
   const task = await env.DB.prepare("SELECT * FROM tasks WHERE id = ?").bind(message.taskId).first();
   if (!task) return;
+  let dependencies;
+  try {
+    dependencies = await dependencyDecision(env, task);
+  } catch (error) {
+    await recordDependencyEvent(env, task.id, "reconciliation-error", { message: error.message }, `reconciliation-error:${task.id}:${Math.floor(Date.now() / 3600000)}`);
+    throw error;
+  }
+  if (!dependencies.executable) {
+    await env.DB.prepare("UPDATE tasks SET state='ready', updated_at=unixepoch() WHERE id=?").bind(task.id).run();
+    await recordDependencyEvent(env, task.id, "deferred", { waiting_on: dependencies.waitingOn, observed_at: dependencies.observedAt }, `deferred:${task.id}:${dependencies.waitingOn.sort().join(",")}`);
+    return;
+  }
   const decision = await admissionDecision(env, task);
   if (!decision.admitted) {
     if (decision.defer) {
