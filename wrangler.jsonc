@@ -20,6 +20,7 @@
   "triggers": { "crons": ["*/10 * * * *"] },
   "vars": {
     "ALLOWED_REPOSITORIES": "noahpeters/metis-sandbox,noahpeters/metis",
+    "METIS_READY_LABEL_COMPATIBILITY": "true",
     "CODEX_DISPATCH_MODE": "github_integration",
     "CODEX_GITHUB_INTEGRATION_ENABLED": "true",
     "GITHUB_APP_ID": "4772921",
