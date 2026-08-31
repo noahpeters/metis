@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { admissionDecision, recordSchedulerDeferral, schedulerDeferral } from "../src/scheduler.mjs";
+import { admissionDecision, claimTask, pruneSchedulerSignals, recordSchedulerDeferral, schedulerDeferral } from "../src/scheduler.mjs";
 
 function dbWith({ health = null, capacity = { available: 1 }, window = { estimated_workload_units_used: 20, tasks_started: 1 }, active = { count: 0 } } = {}) {
   return {
@@ -51,4 +51,26 @@ test("scheduler signals are keyed by pacing window and cause", async () => {
   assert.equal(calls.length, 1);
   assert.match(calls[0].sql, /ON CONFLICT\(signal_key\)/);
   assert.match(calls[0].values[0], /^\d{4}-\d{2}-\d{2}:workload-pacing$/);
+});
+
+test("old scheduler signals are pruned at window rollover", async () => {
+  const calls = [];
+  const env = { DB: { prepare: (sql) => ({ run: async () => calls.push(sql) }) } };
+  await pruneSchedulerSignals(env);
+  assert.deepEqual(calls, ["DELETE FROM scheduler_signals WHERE window_key < date('now')"]);
+});
+
+test("a successful claim clears resolved signals for the current window", async () => {
+  const statements = [];
+  const env = {
+    DB: {
+      prepare(sql) {
+        statements.push(sql);
+        return { bind() { return this; } };
+      },
+      async batch(queries) { return queries; },
+    },
+  };
+  await claimTask(env, { id: "owner/repo#15" }, { estimatedWorkloadUnits: 2, leaseSeconds: 60 });
+  assert.ok(statements.includes("DELETE FROM scheduler_signals WHERE window_key = date('now')"));
 });

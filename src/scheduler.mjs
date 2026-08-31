@@ -34,12 +34,17 @@ export async function recordSchedulerDeferral(env, decision) {
     .bind(signalKey, windowKey, decision.kind, decision.reason).run();
 }
 
+export async function pruneSchedulerSignals(env) {
+  await env.DB.prepare("DELETE FROM scheduler_signals WHERE window_key < date('now')").run();
+}
+
 export async function claimTask(env, task, decision) {
   const leaseId = crypto.randomUUID();
   const result = await env.DB.batch([
     env.DB.prepare("INSERT INTO pacing_windows (window_key, estimated_workload_units_used, tasks_started) VALUES (date('now'), ?, 1) ON CONFLICT(window_key) DO UPDATE SET estimated_workload_units_used = estimated_workload_units_used + excluded.estimated_workload_units_used, tasks_started = tasks_started + 1").bind(decision.estimatedWorkloadUnits),
     env.DB.prepare("INSERT INTO task_leases (task_id, lease_id, provider, estimated_workload_units_reserved, expires_at) VALUES (?, ?, 'codex_included', ?, unixepoch() + ?)").bind(task.id, leaseId, decision.estimatedWorkloadUnits, decision.leaseSeconds),
     env.DB.prepare("UPDATE tasks SET state = 'dispatching', attempt_count = attempt_count + 1, updated_at = unixepoch() WHERE id = ? AND state IN ('ready','retrying')").bind(task.id),
+    env.DB.prepare("DELETE FROM scheduler_signals WHERE window_key = date('now')"),
   ]);
   return { leaseId, results: result };
 }
@@ -50,6 +55,7 @@ export async function claimRevision(env, task, decision) {
     env.DB.prepare("INSERT INTO pacing_windows (window_key, estimated_workload_units_used, tasks_started) VALUES (date('now'), ?, 1) ON CONFLICT(window_key) DO UPDATE SET estimated_workload_units_used = estimated_workload_units_used + excluded.estimated_workload_units_used, tasks_started = tasks_started + 1").bind(decision.estimatedWorkloadUnits),
     env.DB.prepare("INSERT INTO task_leases (task_id, lease_id, provider, estimated_workload_units_reserved, expires_at) VALUES (?, ?, 'codex_included', ?, unixepoch() + ?)").bind(task.id, leaseId, decision.estimatedWorkloadUnits, decision.leaseSeconds),
     env.DB.prepare("UPDATE tasks SET state='revising', attempt_count=attempt_count+1, updated_at=unixepoch() WHERE id=? AND state='reviewing'").bind(task.id),
+    env.DB.prepare("DELETE FROM scheduler_signals WHERE window_key = date('now')"),
   ]);
   return leaseId;
 }

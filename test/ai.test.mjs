@@ -25,6 +25,12 @@ test("accepts Workers AI JSON response strings", async () => {
   assert.deepEqual(result, analysis);
 });
 
+test("caps model workload estimates at the effective size-class limit", async () => {
+  const oversized = { ...analysis, estimated_workload_units: 500 };
+  const result = await analyzeIssue({ AI: { run: async () => ({ response: oversized }) } }, { ...task, size_class: "small" });
+  assert.equal(result.estimated_workload_units, 4);
+});
+
 test("labels discussion as untrusted and supplies later human answers plus investigation evidence", async () => {
   let prompt;
   const discussion = {
