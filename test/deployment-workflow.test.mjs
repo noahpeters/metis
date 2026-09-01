@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
 test("routine production deployment preserves secrets and deploys both Workers", async () => {
@@ -18,4 +19,9 @@ test("routine production deployment preserves secrets and deploys both Workers",
   assert.doesNotMatch(workflow, /AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/);
   assert.doesNotMatch(workflow, /CLOUDFLARE_ZONE_ID|CLOUDFLARE_ACCESS_TEAM_DOMAIN|CLOUDFLARE_ACCESS_AUDIENCE/);
   assert.match(workflow, /GITHUB_STEP_SUMMARY/);
+});
+
+test("Access discovery uses the provider-v5 account-qualified import ID", () => {
+  const source = readFileSync("infra/production/import-existing-access.mjs", "utf8");
+  assert.match(source, /`accounts\/\$\{accountId\}\/\$\{matches\[0\]\.id\}`/);
 });
