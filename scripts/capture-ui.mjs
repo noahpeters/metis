@@ -36,6 +36,11 @@ const env = {
   },
   CONTROL_PLANE: {
     async pacingOverview() { return { status: 200, body: JSON.stringify(overview) }; },
+    async repositoryOverview() { return { status: 200, body: JSON.stringify({ repositories: [
+      { repository: "noahpeters/metis", state: "recovery_blocked", dispatch_locked: true, blocking_sha: "60f1d51885342bfe349ff2c28736ce6b20d84846", workflow_url: "https://github.com/noahpeters/metis/actions/runs/33487414111", root_task_id: "noahpeters/metis#68", recovery_attempts: 2, updated_at: 1788249600, ready_count: 1, recovery_task: { issue_number: 68, state: "recovery_blocked" }, recovery_pr: { number: 73, state: "closed_unmerged", url: "https://github.com/noahpeters/metis/pull/73" }, deployment_evidence: [{ head_sha: "7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b", conclusion: "success" }], evidence_policy: "exact_sha", waiting_reason: "Normal dispatch is frozen while recovery for 60f1d5188534 is unresolved." },
+      { repository: "noahpeters/ftops", state: "healthy", dispatch_locked: false, ready_count: 3 },
+      { repository: "noahpeters/msgstats", state: "healthy", dispatch_locked: false, ready_count: 0 },
+    ] }) }; },
   },
 };
 
@@ -67,6 +72,8 @@ try {
   assert.ok(circle?.width >= 250 && circle?.height >= 250, "status circle is not rendered at the intended desktop size");
   assert.equal(await page.locator(".amount strong").textContent(), "32");
   assert.equal(await page.locator(".amount span").textContent(), " / 64");
+  await page.getByRole("heading", { name: "noahpeters/metis" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Revalidate" }).count(), 1);
   assert.equal(failures.length, 0, failures.join("\n"));
   await mkdir(join(root, "output/playwright"), { recursive: true });
   await page.screenshot({ path: screenshot, fullPage: true });

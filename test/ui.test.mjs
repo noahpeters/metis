@@ -67,3 +67,9 @@ test("UI serves every referenced asset from the asset binding", async () => {
   for (const path of ["/app.css", "/app.js", "/pacing.js"]) assert.equal((await uiWorker.fetch(new Request(`https://ui${path}`), env)).status, 200);
   assert.deepEqual(seen, ["/app.css", "/app.js", "/pacing.js"]);
 });
+
+test("UI API exposes only bounded repository diagnostics and revalidation", () => {
+  assert.equal(allowedApiRequest("GET", "/api/repositories"), true);
+  assert.equal(allowedApiRequest("POST", "/api/repositories/revalidate"), true);
+  assert.equal(allowedApiRequest("DELETE", "/api/repositories"), false);
+});

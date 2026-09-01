@@ -5,7 +5,11 @@ const dialog = document.querySelector("#reset-dialog");
 const form = document.querySelector("#reset-form");
 const announcement = document.querySelector("#announcement");
 const resetButton = document.querySelector("#open-reset");
+const repositoryCards = document.querySelector("#repository-cards");
+const revalidateDialog = document.querySelector("#revalidate-dialog");
+const revalidateForm = document.querySelector("#revalidate-form");
 let verifiedOverview = null;
+let selectedRepository = null;
 
 class ApiError extends Error {
   constructor(body, status) {
@@ -126,3 +130,43 @@ form.addEventListener("submit", async (event) => {
 });
 
 refresh();
+
+function renderRepositories(overview) {
+  repositoryCards.replaceChildren(); repositoryCards.setAttribute("aria-busy", "false");
+  for (const repository of overview.repositories) {
+    const item = document.createElement("article"); item.className = "repository-card"; item.dataset.health = repository.dispatch_locked ? "locked" : repository.ready_count ? "ready" : "idle";
+    const heading = document.createElement("div"); heading.className = "repository-heading"; text(heading, "h3", repository.repository); text(heading, "span", repository.dispatch_locked ? "Recovery Locked" : repository.ready_count ? "Backlog ready" : "Backlog idle").className = "state-pill"; item.append(heading);
+    text(item, "p", repository.dispatch_locked ? repository.waiting_reason : `${repository.ready_count} Ready issue${repository.ready_count === 1 ? "" : "s"}.`).className = "reason";
+    if (repository.dispatch_locked) {
+      const evidence = document.createElement("dl"); evidence.className = "evidence-list";
+      const add = (name, value, href) => { const row = document.createElement("div"); text(row, "dt", name); const dd = document.createElement("dd"); const node = text(dd, href ? "a" : "span", value || "Not observed"); if (href) { node.href = href; node.target = "_blank"; node.rel = "noreferrer"; } row.append(dd); evidence.append(row); };
+      add("Blocking commit", repository.blocking_sha?.slice(0, 12), repository.workflow_url); add("Root task", repository.root_task_id); add("Recovery issue", repository.recovery_task ? `#${repository.recovery_task.issue_number} · ${repository.recovery_task.state}` : null); add("Recovery PR", repository.recovery_pr ? `#${repository.recovery_pr.number} · ${repository.recovery_pr.state.replaceAll("_", " ")}` : null, repository.recovery_pr?.url); add("Attempts", String(repository.recovery_attempts)); add("Evidence policy", repository.evidence_policy.replaceAll("_", " ")); add("Last transition", repository.updated_at ? new Date(repository.updated_at * 1000).toLocaleString() : null); item.append(evidence);
+      const newer = repository.deployment_evidence.find((run) => run.head_sha !== repository.blocking_sha && run.conclusion === "success");
+      if (newer) text(item, "p", `Contradictory evidence: newer successful main deployment ${newer.head_sha.slice(0, 12)} is recorded but has not cleared this lock.`).className = "warning";
+      const button = text(item, "button", "Revalidate"); button.type = "button"; button.addEventListener("click", () => openRevalidate(repository));
+    }
+    repositoryCards.append(item);
+  }
+}
+
+async function refreshRepositories() {
+  try { renderRepositories(await api("/api/repositories")); }
+  catch { repositoryCards.setAttribute("aria-busy", "false"); repositoryCards.innerHTML = '<p class="error">Repository health is unavailable. No state was inferred.</p>'; }
+}
+
+function openRevalidate(repository) {
+  selectedRepository = repository;
+  document.querySelector("#revalidate-transition").textContent = `${repository.repository} will transition from ${repository.state} to healthy only if GitHub evidence satisfies ${repository.evidence_policy.replaceAll("_", " ")}.`;
+  document.querySelector("#revalidate-evidence").innerHTML = `<div><dt>Blocking SHA</dt><dd>${repository.blocking_sha}</dd></div><div><dt>Observed version</dt><dd>${repository.updated_at}</dd></div>`;
+  revalidateDialog.showModal(); revalidateForm.elements.reason.focus();
+}
+document.querySelector("#cancel-revalidate").addEventListener("click", () => revalidateDialog.close());
+revalidateForm.addEventListener("submit", async (event) => {
+  event.preventDefault(); const submit = revalidateForm.querySelector('[type="submit"]'); submit.disabled = true;
+  try {
+    const result = await api("/api/repositories/revalidate", { method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ repository: selectedRepository.repository, expected_updated_at: selectedRepository.updated_at, confirmation: "REVALIDATE_RECOVERY", reason: new FormData(revalidateForm).get("reason"), request_id: crypto.randomUUID() }) });
+    announcement.textContent = result.repaired ? "Recovery lock repaired and Ready work reconsidered." : result.message; revalidateForm.reset(); revalidateDialog.close(); await refreshRepositories();
+  } catch (error) { announcement.textContent = `Revalidation failed: ${error.message}`; document.querySelector("#revalidate-transition").textContent = `${error.message}. The recovery lock was retained; refresh and inspect the evidence before retrying.`; }
+  finally { submit.disabled = false; }
+});
+refreshRepositories();
