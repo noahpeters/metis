@@ -1,0 +1,1 @@
+ALTER TABLE project_reconciliation_runs ADD COLUMN hierarchy_snapshot_json TEXT;
