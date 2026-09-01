@@ -19,8 +19,6 @@ env:
   TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
   TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
   TF_VAR_cloudflare_access_team_domain: ${{ vars.CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
-  AWS_ACCESS_KEY_ID: ${{ secrets.TERRAFORM_STATE_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.TERRAFORM_STATE_SECRET_ACCESS_KEY }}
 
 jobs:
   verify:
@@ -45,12 +43,12 @@ jobs:
           terraform_version: 1.16.0
       - name: Terraform format
         run: terraform -chdir=infra/production fmt -check
-      - name: Initialize durable state
+      - name: Initialize Terraform
         run: terraform -chdir=infra/production init
       - name: Validate infrastructure
         run: terraform -chdir=infra/production validate
       - name: Read-only production plan
-        run: terraform -chdir=infra/production plan -lock-timeout=5m -out=/tmp/production.tfplan
+        run: terraform -chdir=infra/production plan -out=/tmp/production.tfplan
       - name: Reject persistent resource replacement
         run: terraform -chdir=infra/production show -json /tmp/production.tfplan > /tmp/production-plan.json && node scripts/check-terraform-plan.mjs /tmp/production-plan.json
       - name: Record plan
@@ -74,11 +72,11 @@ jobs:
           terraform_version: 1.16.0
       - run: terraform -chdir=infra/production init
       - name: Plan exact merge SHA
-        run: terraform -chdir=infra/production plan -lock-timeout=5m -out=/tmp/production.tfplan
+        run: terraform -chdir=infra/production plan -out=/tmp/production.tfplan
       - name: Reject persistent resource replacement
         run: terraform -chdir=infra/production show -json /tmp/production.tfplan > /tmp/production-plan.json && node scripts/check-terraform-plan.mjs /tmp/production-plan.json
       - name: Apply reviewed infrastructure
-        run: terraform -chdir=infra/production apply -lock-timeout=5m -auto-approve /tmp/production.tfplan
+        run: terraform -chdir=infra/production apply -auto-approve /tmp/production.tfplan
       - name: Read Access configuration
         id: outputs
         run: |
@@ -91,7 +89,7 @@ jobs:
         run: |
           echo "### Terraform production apply" >> "$GITHUB_STEP_SUMMARY"
           echo "Applied exact merge SHA: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "State: R2 production/terraform.tfstate (locked)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Infrastructure applied from the checked-in production configuration." >> "$GITHUB_STEP_SUMMARY"
 
   deploy-production:
     if: github.event_name == 'push'
