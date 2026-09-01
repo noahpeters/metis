@@ -8,4 +8,4 @@ protected_paths:
   - infra/
   - migrations/
 deployment: forbidden
-notes: Follow AGENTS.md. Pull-request merges are human-only. Never deploy Metis from a coding task; GitHub Actions owns staging deployment after a human merge.
+notes: Follow AGENTS.md. Pull-request merges are human-only. Never deploy Metis from a coding task; GitHub Actions owns production deployment after a human merge.

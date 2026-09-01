@@ -22,7 +22,7 @@ test("JWT verifier rejects malformed, expired, issuer, and audience claims befor
 });
 
 test("local auth is explicit and cannot be enabled in a deployed environment", async () => {
-  await assert.rejects(authenticate(new Request("https://ui/"), { ENVIRONMENT: "staging", LOCAL_AUTH_ENABLED: "true", LOCAL_AUTH_EMAIL: "dev@from-trees.com" }));
+  await assert.rejects(authenticate(new Request("https://ui/"), { ENVIRONMENT: "production", LOCAL_AUTH_ENABLED: "true", LOCAL_AUTH_EMAIL: "dev@from-trees.com" }));
   assert.equal((await authenticate(new Request("https://ui/"), { ENVIRONMENT: "local", LOCAL_AUTH_ENABLED: "true", LOCAL_AUTH_EMAIL: "dev@from-trees.com" })).email, "dev@from-trees.com");
 });
 

@@ -8,8 +8,9 @@
   },
   "scripts": {
     "check": "find src scripts -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check",
-    "db:migrate:staging": "node scripts/require-github-actions.mjs && wrangler d1 migrations apply DB --remote",
-    "deploy:staging": "node scripts/require-github-actions.mjs && wrangler deploy",
+    "db:migrate:production": "node scripts/require-github-actions.mjs && wrangler d1 migrations apply DB --remote",
+    "deploy:production": "node scripts/require-github-actions.mjs && wrangler deploy",
+    "deploy:ui:production": "node scripts/require-github-actions.mjs && wrangler deploy --config wrangler.ui.jsonc",
     "test": "node --test test/*.test.mjs",
     "verify": "npm run check && npm test"
   },
