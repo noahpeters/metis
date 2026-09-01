@@ -5,10 +5,10 @@ import { approvalCount, checksPassed, lifecyclePolicy, pullRequestLifecycleFromW
 test("lifecycle policy is fail-closed and repository scoped", () => {
   const env = { METIS_LIFECYCLE_POLICY_JSON: JSON.stringify({ defaults: { requiredApprovals: 2 }, repositories: { "owner/repo": { deploymentWorkflows: ["Deploy"] } } }) };
   assert.deepEqual(lifecyclePolicy(env, "owner/repo"), {
-    requiredApprovals: 2, requiredChecks: true, maxRevisionAttempts: 2, deploymentWorkflows: ["Deploy"], maxRecoveryAttempts: 2,
+    requiredApprovals: 2, requiredChecks: true, maxRevisionAttempts: 2, deploymentWorkflows: ["Deploy"], maxRecoveryAttempts: 2, maxMergeConflictAttempts: 2,
   });
   assert.deepEqual(lifecyclePolicy({}, "other/repo"), {
-    requiredApprovals: 1, requiredChecks: true, maxRevisionAttempts: 2, deploymentWorkflows: [], maxRecoveryAttempts: 2,
+    requiredApprovals: 1, requiredChecks: true, maxRevisionAttempts: 2, deploymentWorkflows: [], maxRecoveryAttempts: 2, maxMergeConflictAttempts: 2,
   });
 });
 
@@ -34,6 +34,10 @@ test("checks and approvals require completed success and latest reviewer state",
     { user: { login: "a" }, state: "CHANGES_REQUESTED" },
     { user: { login: "b" }, state: "APPROVED" },
   ]), 1);
+  assert.equal(approvalCount([
+    { user: { login: "a" }, state: "APPROVED", commit_id: "old" },
+    { user: { login: "b" }, state: "APPROVED", commit_id: "new" },
+  ], "new"), 1);
 });
 
 test("workflow completion retains exact deployment SHA", () => {

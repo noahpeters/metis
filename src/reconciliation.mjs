@@ -1,7 +1,8 @@
 import { comment, githubRequest, setState } from "./github.mjs";
 import { lifecyclePolicy } from "./lifecycle.mjs";
+import { observeManagedPullRequestMergeability } from "./merge-conflicts.mjs";
 
-export const RECONCILABLE_STATES = ["pending_connector_ack", "running", "awaiting_pr_creation", "pr_ready", "reviewing", "merge_ready", "merging", "deploying", "recovery"];
+export const RECONCILABLE_STATES = ["pending_connector_ack", "running", "awaiting_pr_creation", "pr_ready", "reviewing", "merge_ready", "merge_conflict", "merging", "deploying", "recovery"];
 const SUCCESS = new Set(["success", "neutral", "skipped"]);
 const FAILURE = new Set(["failure", "cancelled", "timed_out", "action_required", "startup_failure"]);
 
@@ -79,7 +80,11 @@ export async function reconcileManagedTasks(env, { maxTasks = 20, onDeploymentFa
           .bind(pr.number, pr.html_url, task.id).run();
         await audit(env, task, "pr-bound", { pull_request_number: pr.number, head_sha: pr.head.sha });
       }
-      if (!pr.merged || !pr.merge_commit_sha) { results.push({ task_id: task.id, state: "pr_ready" }); continue; }
+      if (!pr.merged || !pr.merge_commit_sha) {
+        const conflict = await observeManagedPullRequestMergeability(env, task, pr, { maxAttempts: lifecyclePolicy(env, task.repository).maxMergeConflictAttempts });
+        results.push({ task_id: task.id, state: conflict.state });
+        continue;
+      }
       const mergeSha = pr.merge_commit_sha;
       const evidence = await workflowEvidence(env, task, mergeSha);
       await env.DB.batch([
