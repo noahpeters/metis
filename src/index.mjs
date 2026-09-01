@@ -1,7 +1,7 @@
 import { analyzeIssue } from "./ai.mjs";
 import { buildIntakeInvestigation, discussionMetadata, fetchIssueDiscussion } from "./intake-context.mjs";
 import { blockTask, comment, githubRequest, repositoryAllowed, setState, unresolvedReviewThreadCount } from "./github.mjs";
-import { admissionDecision, claimRevision, claimTask, pruneSchedulerSignals, recordSchedulerDeferral } from "./scheduler.mjs";
+import { admissionDecision, claimRevision, claimTask, ensureScheduledPacingWindow, pruneSchedulerSignals, recordSchedulerDeferral } from "./scheduler.mjs";
 import { dispatchCodexTask } from "./codex-dispatch.mjs";
 import { dispatchViaGithubCodexRevision } from "./github-codex-adapter.mjs";
 import { approvalCount, checksPassed, checkSuiteLifecycleFromWebhook, lifecyclePolicy, pullRequestLifecycleFromWebhook, reviewLifecycleFromWebhook, workflowRunFromWebhook } from "./lifecycle.mjs";
@@ -11,6 +11,7 @@ import { capacityObservationStatements } from "./provider-capacity.mjs";
 import { ingestOpenAIAnalytics } from "./openai-analytics.mjs";
 import { reconcileManagedTasks } from "./reconciliation.mjs";
 import { observeManagedPullRequestMergeability } from "./merge-conflicts.mjs";
+import { pacingOverview, resetPacingWindow } from "./pacing-api.mjs";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
@@ -754,6 +755,8 @@ export default {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") return json({ ok: true, service: "metis-control-plane" });
     if (request.method === "GET" && url.pathname === "/internal/ui/status") return uiStatus(request, env);
+    if (request.method === "GET" && url.pathname === "/internal/ui/pacing") return pacingOverview(request, env);
+    if (request.method === "POST" && url.pathname === "/internal/ui/pacing/reset") return resetPacingWindow(request, env, () => resumeReadyBacklog(env));
     if (request.method === "POST" && url.pathname === "/webhooks/github") return receiveWebhook(request, env);
     if (request.method === "POST" && url.pathname === "/callbacks/codex") return handleCallback(request, env);
     return json({ error: "not found" }, 404);
@@ -776,6 +779,7 @@ export default {
     }
   },
   async scheduled(_controller, env) {
+    await ensureScheduledPacingWindow(env);
     // Analytics failures are ledger observations, not task or recovery failures.
     try { await ingestOpenAIAnalytics(env); }
     catch { console.error("Analytics ingestion failed"); }

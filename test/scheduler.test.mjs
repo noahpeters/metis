@@ -8,6 +8,7 @@ function dbWith({ health = null, capacity = { available: 1 }, window = { estimat
       return {
         bind() { return this; },
         async first() {
+          if (sql.startsWith("SELECT current_window_id,generation")) return null;
           if (sql.includes("repository_health")) return health;
           if (sql.includes("provider_capacity")) return capacity;
           if (sql.includes("pacing_windows")) return window;
@@ -46,18 +47,18 @@ test("optional task-start pacing defers Ready work", async () => {
 
 test("scheduler signals are keyed by pacing window and cause", async () => {
   const calls = [];
-  const env = { DB: { prepare: (sql) => ({ bind: (...values) => ({ run: async () => calls.push({ sql, values }) }) }) } };
+  const env = { DB: { prepare: (sql) => ({ first: async () => ({ current_window_id: "window-7" }), bind: (...values) => ({ run: async () => calls.push({ sql, values }) }) }) } };
   await recordSchedulerDeferral(env, schedulerDeferral("workload-pacing", "reached"));
   assert.equal(calls.length, 1);
   assert.match(calls[0].sql, /ON CONFLICT\(signal_key\)/);
-  assert.match(calls[0].values[0], /^\d{4}-\d{2}-\d{2}:workload-pacing$/);
+  assert.equal(calls[0].values[0], "window-7:workload-pacing");
 });
 
 test("old scheduler signals are pruned at window rollover", async () => {
   const calls = [];
   const env = { DB: { prepare: (sql) => ({ run: async () => calls.push(sql) }) } };
   await pruneSchedulerSignals(env);
-  assert.deepEqual(calls, ["DELETE FROM scheduler_signals WHERE window_key < date('now')"]);
+  assert.deepEqual(calls, ["DELETE FROM scheduler_signals WHERE window_key != (SELECT current_window_id FROM pacing_window_control WHERE singleton=1)"]);
 });
 
 test("a successful claim clears resolved signals for the current window", async () => {
@@ -75,5 +76,5 @@ test("a successful claim clears resolved signals for the current window", async 
   assert.match(statements[0], /t\.state IN \('ready','retrying'\)/);
   assert.match(statements[0], /COUNT\(\*\) FROM task_leases/);
   assert.match(statements[0], /tasks_started/);
-  assert.ok(statements.some((sql) => sql.startsWith("DELETE FROM scheduler_signals WHERE window_key = date('now')")));
+  assert.ok(statements.some((sql) => sql.startsWith("DELETE FROM scheduler_signals WHERE window_key=(SELECT current_window_id")));
 });
