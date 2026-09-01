@@ -14,6 +14,17 @@ import { observeManagedPullRequestMergeability } from "./merge-conflicts.mjs";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
+export function authorizeUiBinding(request, env) {
+  const email = request.headers.get("X-Metis-Verified-Email")?.toLowerCase();
+  const token = request.headers.get("X-Metis-UI-Binding");
+  return Boolean(env.UI_BINDING_TOKEN && token === env.UI_BINDING_TOKEN && email && /^[^@]+@from-trees\.com$/.test(email));
+}
+
+function uiStatus(request, env) {
+  if (!authorizeUiBinding(request, env)) return new Response(JSON.stringify({ error: { code: "unauthorized", message: "Service binding authorization required" } }), { status: 401, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  return new Response(JSON.stringify({ service: "metis", status: "operational" }), { headers: { "content-type": "application/json", "cache-control": "no-store" } });
+}
+
 async function resumeReadyBacklog(env) {
   try {
     return await reconcileProject(env);
@@ -742,6 +753,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") return json({ ok: true, service: "metis-control-plane" });
+    if (request.method === "GET" && url.pathname === "/internal/ui/status") return uiStatus(request, env);
     if (request.method === "POST" && url.pathname === "/webhooks/github") return receiveWebhook(request, env);
     if (request.method === "POST" && url.pathname === "/callbacks/codex") return handleCallback(request, env);
     return json({ error: "not found" }, 404);

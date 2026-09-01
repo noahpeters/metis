@@ -49,6 +49,16 @@ Metis deploys only from GitHub Actions after verification succeeds on `main`. Th
 
 Local `wrangler deploy`, D1 migration, and `terraform apply` operations are not accepted deployment paths. The repository deployment scripts enforce the GitHub Actions boundary. Terraform remains the infrastructure definition and may be formatted, validated, or planned locally without applying changes.
 
+### Administration UI operator setup
+
+The administration shell runs as the dedicated `metis-ui-staging` Worker and reaches the control plane only through its `CONTROL_PLANE` service binding. Before the first GitHub-Actions deployment, the operator must:
+
+1. configure a Cloudflare Access identity provider that returns verified email claims;
+2. point `metis_ui_hostname` at the UI Worker and set its `CLOUDFLARE_ACCESS_AUDIENCE` and `CLOUDFLARE_ACCESS_TEAM_DOMAIN` variables from the Access application; and
+3. create the same encrypted `UI_BINDING_TOKEN` secret on the UI and control-plane Workers (never put it in Terraform variables or state).
+
+Access permits only verified `from-trees.com` identities. The UI verifies the signed Access JWT rather than trusting the convenience email header. Local authentication requires both `ENVIRONMENT=local` and `LOCAL_AUTH_ENABLED=true`; deployed configuration fixes the latter to `false`.
+
 The Worker updates issue labels/comments. Branch and PR permissions belong to the isolated coding dispatcher.
 
 Current staging endpoint: `https://metis-control-plane-staging.gr4gwzrfq2.workers.dev`. It is restricted to the disposable `noahpeters/metis-sandbox` repository and included Codex capacity; paid API and Perplexity fallback remain disabled.

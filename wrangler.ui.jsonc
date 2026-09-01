@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "metis-ui-staging",
+  "main": "src/ui/worker.mjs",
+  "compatibility_date": "2026-08-30",
+  "workers_dev": false,
+  "assets": { "directory": "./ui-assets", "binding": "ASSETS", "run_worker_first": true },
+  "services": [{ "binding": "CONTROL_PLANE", "service": "metis-control-plane-staging" }],
+  "vars": { "ENVIRONMENT": "staging", "LOCAL_AUTH_ENABLED": "false" }
+}

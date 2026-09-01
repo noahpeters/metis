@@ -70,3 +70,24 @@ resource "cloudflare_workers_script_subdomain" "metis" {
   enabled          = true
   previews_enabled = false
 }
+
+# Cloudflare's identity provider supplies verified claims. No signing key or
+# user credential is managed by Terraform or stored in its state.
+resource "cloudflare_zero_trust_access_application" "metis_ui" {
+  account_id       = var.cloudflare_account_id
+  name             = "Metis administration"
+  domain           = var.metis_ui_hostname
+  type             = "self_hosted"
+  session_duration = "8h"
+}
+
+resource "cloudflare_zero_trust_access_policy" "metis_ui_verified_domain" {
+  account_id     = var.cloudflare_account_id
+  application_id = cloudflare_zero_trust_access_application.metis_ui.id
+  name           = "Verified from-trees.com identities"
+  precedence     = 1
+  decision       = "allow"
+  include = [{
+    email_domain = { domain = "from-trees.com" }
+  }]
+}
