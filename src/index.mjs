@@ -3,6 +3,7 @@ import { buildIntakeInvestigation, discussionMetadata, fetchIssueDiscussion } fr
 import { blockTask, comment, githubRequest, repositoryAllowed, setState, unresolvedReviewThreadCount } from "./github.mjs";
 import { admissionDecision, claimRevision, claimTask, ensureScheduledPacingWindow, pruneSchedulerSignals, recordSchedulerDeferral } from "./scheduler.mjs";
 import { dispatchCodexTask } from "./codex-dispatch.mjs";
+import { commitReservationStatements, dispatchFailureClass, reconcileReservationStatements, releaseReservationStatements, sanitizedDispatchError } from "./dispatch-reservations.mjs";
 import { dispatchViaGithubCodexRevision } from "./github-codex-adapter.mjs";
 import { approvalCount, checksPassed, checkSuiteLifecycleFromWebhook, lifecyclePolicy, pullRequestLifecycleFromWebhook, reviewLifecycleFromWebhook, workflowRunFromWebhook } from "./lifecycle.mjs";
 import { reconcileProject } from "./project.mjs";
@@ -498,6 +499,7 @@ async function processWebhook(event, payload, env) {
     if (connectorAck.status === "accepted") {
       await env.DB.batch([
         ...observationStatements,
+        ...commitReservationStatements(env, pending.lease_id, "connector_accepted"),
         env.DB.prepare("UPDATE dispatches SET external_id=?,state='running',result_json=?,updated_at=unixepoch() WHERE id=? AND state='pending_connector_ack'").bind(connectorAck.task_url, audit, pending.id),
         env.DB.prepare("UPDATE tasks SET state='running',blocker_reason=NULL,updated_at=unixepoch() WHERE id=? AND state='pending_connector_ack'").bind(id),
         env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,legacy_estimated_workload_units,metadata_json,created_at) VALUES(?,'codex_included','connector_acknowledged',0,?,unixepoch())").bind(id, audit),
@@ -508,8 +510,7 @@ async function processWebhook(event, payload, env) {
     await env.DB.batch([
       ...observationStatements,
       env.DB.prepare("UPDATE dispatches SET state='blocked',result_json=?,updated_at=unixepoch() WHERE id=? AND state='pending_connector_ack'").bind(audit, pending.id),
-      env.DB.prepare("DELETE FROM task_leases WHERE lease_id=?").bind(pending.lease_id),
-      env.DB.prepare("UPDATE pacing_windows SET tasks_started=MAX(0,tasks_started-1),estimated_workload_units_used=MAX(0,estimated_workload_units_used-?) WHERE window_key=date('now')").bind(pending.estimated_workload_units_reserved),
+      ...releaseReservationStatements(env, pending.lease_id, "connector_rejected", reason),
       env.DB.prepare("UPDATE tasks SET state='blocked',blocker_reason=?,attempt_count=MAX(0,attempt_count-1),updated_at=unixepoch() WHERE id=? AND state='pending_connector_ack'").bind(reason, id),
       env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,legacy_estimated_workload_units,metadata_json,created_at) VALUES(?,'codex_included','connector_rejected_refund',0,?,unixepoch())").bind(id, audit),
     ]);
@@ -702,17 +703,38 @@ async function handleDispatch(env, message) {
     // Ready task authoritative; the backlog scan will revisit it after release.
     return;
   }
-  await setState(env, task.repository, task.issue_number, "metis:implementing");
+  let providerAttempted = false;
   try {
+    // Label synchronization is local orchestration work and therefore remains
+    // safely refundable if it fails before any provider request is attempted.
+    await setState(env, task.repository, task.issue_number, "metis:implementing");
+    providerAttempted = true;
     const dispatch = await dispatchCodexTask(env, { ...task, max_workload_units: task.max_workload_units || decision.estimatedWorkloadUnits }, leaseId);
     const pending = dispatch.driver === "github_user_integration";
-    await env.DB.prepare("INSERT INTO dispatches (task_id, lease_id, provider, external_id, state, created_at, updated_at) VALUES (?, ?, 'codex_included', ?, ?, unixepoch(), unixepoch())").bind(task.id, leaseId, dispatch.id, pending ? "pending_connector_ack" : "running").run();
-    await env.DB.prepare("UPDATE tasks SET state=?, updated_at=unixepoch() WHERE id=?").bind(pending ? "pending_connector_ack" : "running", task.id).run();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO dispatches (task_id, lease_id, provider, external_id, state, created_at, updated_at) VALUES (?, ?, 'codex_included', ?, ?, unixepoch(), unixepoch())").bind(task.id, leaseId, dispatch.id, pending ? "pending_connector_ack" : "running"),
+      ...(pending ? [] : commitReservationStatements(env, leaseId)),
+      env.DB.prepare("UPDATE tasks SET state=?, updated_at=unixepoch() WHERE id=?").bind(pending ? "pending_connector_ack" : "running", task.id),
+    ]);
   } catch (error) {
-    await env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(task.id).run();
+    if (!providerAttempted) error.acceptance = "confirmed_unaccepted";
+    const detail = sanitizedDispatchError(error);
+    const failureClass = dispatchFailureClass(error);
+    if (failureClass === "acceptance_unknown") {
+      await env.DB.batch([
+        ...reconcileReservationStatements(env, leaseId, failureClass, detail),
+        env.DB.prepare("UPDATE tasks SET state='blocked',blocker_reason=?,updated_at=unixepoch() WHERE id=?").bind(`Dispatch acceptance requires reconciliation: ${detail}`, task.id),
+      ]);
+      await setState(env, task.repository, task.issue_number, "metis:blocked");
+      return;
+    }
+    await env.DB.batch([
+      ...releaseReservationStatements(env, leaseId, failureClass, detail),
+      env.DB.prepare("UPDATE tasks SET attempt_count=MAX(0,attempt_count-1),updated_at=unixepoch() WHERE id=?").bind(task.id),
+    ]);
     if (task.attempt_count + 1 >= decision.maxRetries) {
-      await env.DB.prepare("UPDATE tasks SET state='blocked', blocker_reason=?, updated_at=unixepoch() WHERE id=?").bind(String(error), task.id).run();
-      return blockTask(env, task, "The coding provider could not accept the task within its retry limit.", "Should Metis retry after the provider configuration or capacity is corrected?");
+      await env.DB.prepare("UPDATE tasks SET state='blocked', blocker_reason=?, updated_at=unixepoch() WHERE id=?").bind(detail, task.id).run();
+      return blockTask(env, task, `The coding provider rejected the task (${failureClass}): ${detail}`, "Should Metis retry after this actionable dispatch error is corrected?");
     }
     await env.DB.prepare("UPDATE tasks SET state='retrying', updated_at=unixepoch() WHERE id=?").bind(task.id).run();
     throw error;
@@ -794,13 +816,12 @@ export default {
         if (task) await setState(env, task.repository, task.issue_number, "metis:blocked");
         continue;
       }
+      const lease = await env.DB.prepare("SELECT lease_id FROM task_leases WHERE task_id=?").bind(row.task_id).first();
       await env.DB.batch([
-        env.DB.prepare("DELETE FROM task_leases WHERE task_id=? AND EXISTS (SELECT 1 FROM tasks WHERE id=? AND state IN ('pending_connector_ack','dispatching','running'))").bind(row.task_id, row.task_id),
+        ...(lease ? reconcileReservationStatements(env, lease.lease_id, "lease_expired_acceptance_unknown", "Lease expired without authoritative provider acceptance evidence.") : []),
         env.DB.prepare("UPDATE dispatches SET state='ack_timeout',result_json=?,updated_at=unixepoch() WHERE task_id=? AND state='pending_connector_ack'").bind(JSON.stringify({ reason: "connector acknowledgment timed out" }), row.task_id),
-        env.DB.prepare("UPDATE pacing_windows SET tasks_started=MAX(0,tasks_started-1),estimated_workload_units_used=MAX(0,estimated_workload_units_used-?) WHERE window_key=date('now') AND EXISTS (SELECT 1 FROM dispatches WHERE task_id=? AND state='ack_timeout')").bind(row.estimated_workload_units_reserved, row.task_id),
         env.DB.prepare("UPDATE tasks SET state='blocked',blocker_reason='Codex connector acknowledgment timed out before task acceptance.',updated_at=unixepoch() WHERE id=? AND state='pending_connector_ack'").bind(row.task_id),
-        env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,legacy_estimated_workload_units,metadata_json,created_at) SELECT ?,'codex_included','connector_ack_timeout_refund',0,?,unixepoch() WHERE EXISTS (SELECT 1 FROM dispatches WHERE task_id=? AND state='ack_timeout')").bind(row.task_id, JSON.stringify({ reason: "connector acknowledgment timed out" }), row.task_id),
-        env.DB.prepare("UPDATE tasks SET state='retrying', updated_at=unixepoch() WHERE id=? AND state IN ('dispatching','running')").bind(row.task_id),
+        env.DB.prepare("UPDATE tasks SET state='blocked',blocker_reason='Dispatch lease expired with unknown provider acceptance; operator reconciliation is required.',updated_at=unixepoch() WHERE id=? AND state IN ('dispatching','running')").bind(row.task_id),
       ]);
       const timedOut = await env.DB.prepare("SELECT state FROM tasks WHERE id=?").bind(row.task_id).first();
       if (timedOut?.state === "blocked") {
