@@ -19,7 +19,7 @@ export default defineConfig({
     { name: "mobile-chromium", use: { ...devices["Pixel 7"] } },
   ],
   webServer: {
-    command: "npx wrangler dev --config wrangler.ui.jsonc --port 8788 --var ENVIRONMENT:local --var LOCAL_AUTH_ENABLED:true --var LOCAL_AUTH_EMAIL:ui-test@from-trees.com",
+    command: "node test/ui/server.mjs",
     url: "http://127.0.0.1:8788",
     reuseExistingServer: false,
     timeout: 120_000,
