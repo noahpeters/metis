@@ -24,6 +24,22 @@ function item(id, number, owner = "metis-option", status = "ready-option", repos
   ] } };
 }
 
+function withHierarchy(projectGraphql, children = {}, parents = {}) {
+  return async (requestEnv, query, variables) => {
+    if (!variables.issue) return projectGraphql(requestEnv, query, variables);
+    const number = Number(variables.issue.replace("ISSUE_", ""));
+    const childNumbers = children[number] || [];
+    const parentNumber = parents[number];
+    return { node: {
+      id: variables.issue,
+      number,
+      repository: { nameWithOwner: "noahpeters/metis" },
+      parent: parentNumber ? { id: `ISSUE_${parentNumber}`, number: parentNumber, repository: { nameWithOwner: "noahpeters/metis" } } : null,
+      subIssues: { nodes: childNumbers.map((child) => ({ id: `ISSUE_${child}`, number: child, repository: { nameWithOwner: "noahpeters/metis" } })), pageInfo: { hasNextPage: false, endCursor: null } },
+    } };
+  };
+}
+
 const env = { METIS_PROJECT_POLICY_JSON: JSON.stringify(policy), ALLOWED_REPOSITORIES: "noahpeters/metis,noahpeters/metis-sandbox" };
 
 test("Project pages retain connection POSITION order and eligibility", async () => {
@@ -35,7 +51,7 @@ test("Project pages retain connection POSITION order and eligibility", async () 
       ? page([item("item-2", 2), item("item-3", 3, "human-option")], true, "next")
       : page([item("item-1", 1, "metis-option", "todo-option"), item("item-4", 4)]);
   };
-  const result = await readProjectQueue(env, graphql);
+  const result = await readProjectQueue(env, withHierarchy(graphql));
   assert.deepEqual(calls, [null, "next"]);
   assert.deepEqual(result.map(({ projectItemId, orderIndex, eligible }) => ({ projectItemId, orderIndex, eligible })), [
     { projectItemId: "item-2", orderIndex: 0, eligible: true },
@@ -56,17 +72,47 @@ test("scheduler scans are bounded without changing authoritative Project order",
 });
 
 test("Project queue fails closed for schema drift and duplicates but skips ineligible content", async () => {
-  await assert.rejects(() => readProjectQueue(env, async () => {
+  await assert.rejects(() => readProjectQueue(env, withHierarchy(async () => {
     const value = page([item("one", 1)]); value.node.fields.nodes[1].options[0].name = "Not ready"; return value;
-  }), /Project Status option/);
-  await assert.rejects(() => readProjectQueue(env, async () => page([item("one", 1), item("two", 1)])), /duplicate issue/);
-  assert.deepEqual(await readProjectQueue(env, async () => page([item("one", 1, "metis-option", "ready-option", "outside/repo")])), []);
-  assert.deepEqual(await readProjectQueue(env, async () => page([{ ...item("one", 1), content: { __typename: "PullRequest" } }])), []);
-  assert.deepEqual(await readProjectQueue(env, async () => page([{ ...item("one", 1), isArchived: true }])), []);
+  })), /Project Status option/);
+  await assert.rejects(() => readProjectQueue(env, withHierarchy(async () => page([item("one", 1), item("two", 1)]))), /duplicate issue/);
+  assert.deepEqual(await readProjectQueue(env, withHierarchy(async () => page([item("one", 1, "metis-option", "ready-option", "outside/repo")]))), []);
+  assert.deepEqual(await readProjectQueue(env, withHierarchy(async () => page([{ ...item("one", 1), content: { __typename: "PullRequest" } }]))), []);
+  assert.deepEqual(await readProjectQueue(env, withHierarchy(async () => page([{ ...item("one", 1), isArchived: true }]))), []);
 });
 
 test("Project pagination rejects a repeated cursor", async () => {
   await assert.rejects(() => readProjectQueue(env, async () => page([], true, "same")), /repeated an end cursor/);
+});
+
+test("Project hierarchy groups descendants ahead of the next positioned root", async () => {
+  const flat = [item("parent-5", 5, "human-option"), item("parent-12", 12, "human-option"), item("child-25", 25), item("child-44", 44), item("child-45", 45), item("child-46", 46)];
+  const graphql = withHierarchy(async () => page(flat), { 5: [44, 45, 46], 12: [25] }, { 44: 5, 45: 5, 46: 5, 25: 12 });
+  const queue = await readProjectQueue(env, graphql);
+  assert.deepEqual(queue.map((entry) => entry.issueNumber), [5, 44, 45, 46, 12, 25]);
+  assert.deepEqual(boundedEligibleItems(queue).map((entry) => entry.issueNumber), [44, 45, 46, 25]);
+  assert.deepEqual(queue.find((entry) => entry.issueNumber === 44).ancestry.map((entry) => entry.issueNumber), [5]);
+  assert.equal(queue.find((entry) => entry.issueNumber === 25).rootPosition, 1);
+});
+
+test("Project hierarchy preserves unparented positions, nested order, and deduplicates flat children", async () => {
+  const flat = [item("parent-1", 1, "human-option"), item("child-2", 2), item("root-9", 9), item("child-3", 3)];
+  const graphql = withHierarchy(async () => page(flat), { 1: [2], 2: [3] }, { 2: 1, 3: 2 });
+  const queue = await readProjectQueue(env, graphql);
+  assert.deepEqual(queue.map((entry) => entry.issueNumber), [1, 2, 3, 9]);
+  assert.deepEqual(queue.find((entry) => entry.issueNumber === 3).ancestry.map((entry) => entry.issueNumber), [1, 2]);
+  assert.deepEqual(queue.map((entry) => entry.orderIndex), [0, 1, 2, 3]);
+});
+
+test("Project hierarchy fails closed on cycles, conflicting parents, and sub-issue pagination failure", async () => {
+  await assert.rejects(() => readProjectQueue(env, withHierarchy(async () => page([item("one", 1), item("two", 2)]), { 1: [2], 2: [1] }, { 1: 2, 2: 1 })), /cycle/);
+  await assert.rejects(() => readProjectQueue(env, withHierarchy(async () => page([item("one", 1), item("two", 2), item("three", 3)]), { 1: [3], 2: [3] }, { 3: 1 })), /conflicting ancestry/);
+  const incomplete = withHierarchy(async () => page([item("one", 1)]));
+  await assert.rejects(() => readProjectQueue(env, async (...args) => {
+    const result = await incomplete(...args);
+    if (args[2].issue) result.node.subIssues.pageInfo = { hasNextPage: true, endCursor: null };
+    return result;
+  }), /did not return an end cursor/);
 });
 
 test("Project credential and exact ID policy are mandatory", async () => {

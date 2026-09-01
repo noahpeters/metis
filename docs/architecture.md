@@ -29,20 +29,21 @@ Neither a green PR check nor a workflow for another commit can complete a task.
 
 ## Scheduling path
 
-1. A scheduled reconciliation reads every page of Metis Main Project in position order and validates the configured field and option IDs.
+1. A scheduled reconciliation reads every page of Metis Main Project in position order, validates the configured field and option IDs, and expands GitHub's authoritative parent/sub-issue relationships depth-first. Top-level Project position orders queue groups; GitHub's sub-issue order determines sibling priority, including nested and cross-repository children. A child also present as a flat Project item is emitted only under its nearest represented ancestor, while an unparented issue keeps its flat position.
 2. Only open, accessible, non-archived, allowlisted issues with `Execution owner=Metis` and `Status=Ready` are eligible; removed or changed items are not admitted.
-3. D1 records each reconciliation, its page checkpoint, outcome, and a redacted operator-visible failure reason before an eligible issue receives intake work.
-4. Intake refetches the authoritative issue and paginated discussion, separates human decisions from Codex connector output and routine Metis status, and applies deterministic context limits that retain the newest relevant clarifications.
-5. Project Ready is the human authority signal. Running work remains D1-authoritative: later Project edits or removal do not implicitly cancel it. Bounded authoritative checks may identify candidate hard contradictions; unavailable evidence warns and defers without fabricating a blocker.
-6. Workers AI produces structured planning metadata.
-7. Only evidence-backed task contradictions enter `blocked`; task-specific approval requirements may enter `budget_blocked`. A closed provider gate and pacing exhaustion remain scheduler deferrals.
-8. The scheduler checks the explicit provider gate, operator pacing, per-task limits, concurrency, and retries.
-9. D1 reserves a lease and legacy estimated workload units before Codex dispatch; this estimate is never provider-capacity evidence.
-10. A connector result releases the lease and moves GitHub to awaiting PR, blocked, or failed.
-11. For included Codex Cloud work, a human reviews the prepared diff and clicks Create PR.
-12. The signed pull-request webhook verifies the Metis task marker and moves GitHub to PR ready.
-13. Repository-scoped policy marks a PR ready after checks, approvals, mergeability, and health pass; only a human may merge it.
-14. Metis monitors required deployment workflows for the exact merge SHA; a failure freezes normal work and creates a bounded corrective PR chain.
+3. D1 records each reconciliation, its page checkpoint, outcome, and a redacted operator-visible failure reason before an eligible issue receives intake work. Successful snapshots include each issue's observed root position, ancestry, sibling position, and reconciliation time for audit; these observations are not durable issue identity.
+4. Inaccessible or disallowed hierarchy data, incomplete pagination, cycles, conflicting ancestry, or excessive nesting fail the entire reconciliation closed. Ready intent is preserved, and admission consumes no attempt, lease, reservation, provider capacity, or pacing allowance until a later scheduled reconciliation succeeds.
+5. Intake refetches the authoritative issue and paginated discussion, separates human decisions from Codex connector output and routine Metis status, and applies deterministic context limits that retain the newest relevant clarifications.
+6. Project Ready is the human authority signal. Running work remains D1-authoritative: later Project edits or removal do not implicitly cancel it. Bounded authoritative checks may identify candidate hard contradictions; unavailable evidence warns and defers without fabricating a blocker.
+7. Workers AI produces structured planning metadata.
+8. Only evidence-backed task contradictions enter `blocked`; task-specific approval requirements may enter `budget_blocked`. A closed provider gate and pacing exhaustion remain scheduler deferrals.
+9. The scheduler checks the explicit provider gate, operator pacing, per-task limits, concurrency, and retries.
+10. D1 reserves a lease and legacy estimated workload units before Codex dispatch; this estimate is never provider-capacity evidence.
+11. A connector result releases the lease and moves GitHub to awaiting PR, blocked, or failed.
+12. For included Codex Cloud work, a human reviews the prepared diff and clicks Create PR.
+13. The signed pull-request webhook verifies the Metis task marker and moves GitHub to PR ready.
+14. Repository-scoped policy marks a PR ready after checks, approvals, mergeability, and health pass; only a human may merge it.
+15. Metis monitors required deployment workflows for the exact merge SHA; a failure freezes normal work and creates a bounded corrective PR chain.
 
 ## Provider boundary
 
