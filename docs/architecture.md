@@ -1,5 +1,22 @@
 # Architecture
 
+## Authoritative lifecycle reconciliation
+
+GitHub issue and pull-request identities, the exact `Metis-Task: owner/repo#issue`
+marker, the human merge SHA, and configured Actions workflow runs for that exact
+SHA outrank stale runtime rows and leases. The scheduled reconciler scans a
+bounded set of nonterminal tasks, discovers missed pull requests with bounded
+pagination, and appends keyed audit observations before repairing lifecycle
+state. It fails closed and posts one operator-visible error when evidence is
+ambiguous, inaccessible, or pagination is incomplete.
+
+A merged pull request remains deploying until the latest attempt of every
+configured deployment workflow succeeds for its merge SHA. Failure, cancellation,
+timeout, or absence beyond the observation window enters the existing bounded
+recovery path. Completion removes stale leases, restores repository health,
+mirrors the complete label, records one evidence comment, and closes the issue.
+Neither a green PR check nor a workflow for another commit can complete a task.
+
 ## Ownership
 
 - **GitHub:** issues, comments, labels, branches, pull requests, repository instructions, and CI are durable engineering truth.
