@@ -45,7 +45,7 @@ See `docs/codex-dispatch-adapter.md` for the authenticated capability, task, ide
 
 ## Deployment
 
-Metis deploys only from GitHub Actions after verification succeeds on `main`. The workflow applies D1 migrations and deploys the Worker using `wrangler.jsonc`. Configure the repository's `staging` environment with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; keep GitHub App, Project, and dispatch credentials as encrypted Worker secrets. Provision or rotate Worker secrets separately from routine deployment so an unchanged deploy never rewrites credentials or creates an extra Worker version.
+Metis deploys only from GitHub Actions after verification succeeds on `main`. The workflow applies D1 migrations and deploys the Worker using `wrangler.jsonc`. Configure the repository's `production` environment with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; keep GitHub App, Project, and dispatch credentials as encrypted Worker secrets. Provision or rotate Worker secrets separately from routine deployment so an unchanged deploy never rewrites credentials or creates an extra Worker version.
 
 Harmless documentation-only commits may be used to exercise the managed pull-request and deployment lifecycle.
 
@@ -53,7 +53,7 @@ Local `wrangler deploy`, D1 migration, and `terraform apply` operations are not 
 
 ### Administration UI operator setup
 
-The administration shell runs as the dedicated `metis-ui-staging` Worker and reaches the control plane only through its `CONTROL_PLANE` service binding. Before the first GitHub-Actions deployment, the operator must:
+The administration shell runs as the dedicated `metis-ui` Worker and reaches the control plane only through its `CONTROL_PLANE` service binding. Before the first GitHub-Actions deployment, the operator must:
 
 1. configure a Cloudflare Access identity provider that returns verified email claims;
 2. point `metis_ui_hostname` at the UI Worker and set its `CLOUDFLARE_ACCESS_AUDIENCE` and `CLOUDFLARE_ACCESS_TEAM_DOMAIN` variables from the Access application; and
@@ -63,13 +63,13 @@ Access permits only verified `from-trees.com` identities. The UI verifies the si
 
 The Worker updates issue labels/comments. Branch and PR permissions belong to the isolated coding dispatcher.
 
-Current staging endpoint: `https://metis-control-plane-staging.gr4gwzrfq2.workers.dev`. It is restricted to the disposable `noahpeters/metis-sandbox` repository and included Codex capacity; paid API and Perplexity fallback remain disabled.
+Production control-plane endpoint: `https://metis-control-plane.gr4gwzrfq2.workers.dev`. The protected administration UI is `https://metis.from-trees.com`. The allowlist contains Metis and the disposable `noahpeters/metis-sandbox` integration target; included Codex capacity is enabled while paid API and Perplexity fallback remain disabled.
 
 ## Target repository contract
 
 Target repositories stay thin: `.metis.yml` declares verification and guardrails, `AGENTS.md` carries repository-specific instructions, and a shared GitHub App webhook supplies events centrally. There is no per-repository dispatch workflow or token.
 
-Metis is itself an allowlisted target. Its `.metis.yml` requires explicit budget approval, treats workflows, Terraform, and migrations as protected paths, forbids coding-task deployment, and delegates staging deployment exclusively to the `CI` workflow after a human merge. `metis-sandbox` remains the disposable integration target.
+Metis is itself an allowlisted target. Its `.metis.yml` requires explicit budget approval, treats workflows, Terraform, and migrations as protected paths, forbids coding-task deployment, and delegates production deployment exclusively to the `CI` workflow after a human merge. `metis-sandbox` remains the disposable integration target.
 
 ## Pacing and provider capacity
 

@@ -6,7 +6,7 @@ _Evidence reviewed 2026-08-31. This is a capability audit, not a record of works
 
 Metis cannot safely automate ChatGPT or Codex subscription-capacity decisions from an officially supported machine interface today. The supported workspace analytics surfaces are retrospective, aggregate reporting surfaces. They do not publish included allowance, remaining allowance or credits, the next limit-reset time, or an overage-control state. Values that those surfaces do not return must remain `null`/unknown; local workload units, elapsed time, UI observations, and API token counts are not substitutes.
 
-The repository proves only that the staging driver is configured for the GitHub Codex integration. It contains no workspace identifier, admin credential, Compliance API key, or evidence of the workspace's ChatGPT plan. Consequently, workspace eligibility is **unknown**, rather than assumed from a successful Codex invocation. Verification requires a workspace owner to inspect the workspace analytics controls; no credential should be added to this repository to perform that check.
+The repository proves only that the production driver is configured for the GitHub Codex integration. It contains no workspace identifier, admin credential, Compliance API key, or evidence of the workspace's ChatGPT plan. Consequently, workspace eligibility is **unknown**, rather than assumed from a successful Codex invocation. Verification requires a workspace owner to inspect the workspace analytics controls; no credential should be added to this repository to perform that check.
 
 ## Official surfaces and authorization boundaries
 

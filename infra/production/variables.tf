@@ -1,5 +1,5 @@
 variable "cloudflare_account_id" {
-  description = "Cloudflare account that owns the Metis staging resources."
+  description = "Cloudflare account that owns the Metis production resources."
   type        = string
   default     = "125d8016e23830dcaf86de127ce90576"
 }
@@ -10,14 +10,19 @@ variable "cloudflare_api_token" {
   sensitive   = true
 }
 
+variable "cloudflare_zone_id" {
+  description = "Cloudflare zone containing metis.from-trees.com."
+  type        = string
+}
+
 variable "allowed_repositories" {
-  description = "Comma-separated repositories accepted by the staging webhook. Empty keeps staging inert."
+  description = "Comma-separated repositories accepted by the production webhook. Empty keeps production inert."
   type        = string
   default     = ""
 }
 
 variable "metis_policy_json" {
-  description = "Fail-closed staging provider-gate and pacing policy."
+  description = "Fail-closed production provider-gate and pacing policy."
   type        = string
   default     = "{\"global\":{\"maxConcurrentTasks\":2,\"maxEstimatedWorkloadUnitsPerWindow\":20,\"maxTasksPerWindow\":4,\"maxRetries\":2},\"providers\":{\"codex_included\":{\"enabled\":false},\"paid_api\":{\"enabled\":false},\"perplexity\":{\"enabled\":false}}}"
 }
@@ -52,7 +57,7 @@ variable "github_app_id" {
 }
 
 variable "github_app_installation_id" {
-  description = "GitHub App installation ID scoped to the staging sandbox repository."
+  description = "GitHub App installation ID scoped to the production repositories."
   type        = string
   default     = ""
 }

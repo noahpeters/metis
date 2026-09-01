@@ -1,11 +1,11 @@
 locals {
-  worker_name = "metis-control-plane-staging"
+  worker_name = "metis-control-plane"
   worker_url  = "https://${local.worker_name}.gr4gwzrfq2.workers.dev"
 }
 
 resource "cloudflare_d1_database" "metis" {
   account_id = var.cloudflare_account_id
-  name       = "metis-staging"
+  name       = "metis-production"
   read_replication = {
     mode = "disabled"
   }
@@ -13,43 +13,19 @@ resource "cloudflare_d1_database" "metis" {
 
 resource "cloudflare_queue" "dispatch" {
   account_id = var.cloudflare_account_id
-  queue_name = "metis-dispatch-staging"
+  queue_name = "metis-dispatch"
 }
 
 resource "cloudflare_queue" "dead_letter" {
   account_id = var.cloudflare_account_id
-  queue_name = "metis-dead-letter-staging"
-}
-
-resource "cloudflare_workers_script" "metis" {
-  account_id         = var.cloudflare_account_id
-  script_name        = local.worker_name
-  compatibility_date = "2026-08-30"
-  content_file       = "${path.module}/../../.build/index.js"
-  content_sha256     = filesha256("${path.module}/../../.build/index.js")
-  content_type       = "application/javascript+module"
-  main_module        = "index.js"
-
-  bindings = [
-    { name = "AI", type = "ai" },
-    { name = "ALLOWED_REPOSITORIES", type = "plain_text", text = var.allowed_repositories },
-    { name = "CODEX_DISPATCH_MODE", type = "plain_text", text = var.codex_dispatch_mode },
-    { name = "CODEX_GITHUB_INTEGRATION_ENABLED", type = "plain_text", text = tostring(var.codex_github_integration_enabled) },
-    { name = "GITHUB_APP_ID", type = "plain_text", text = var.github_app_id },
-    { name = "GITHUB_APP_INSTALLATION_ID", type = "plain_text", text = var.github_app_installation_id },
-    { name = "DB", type = "d1", database_id = cloudflare_d1_database.metis.id },
-    { name = "DISPATCH_QUEUE", type = "queue", queue_name = cloudflare_queue.dispatch.queue_name },
-    { name = "METIS_POLICY_JSON", type = "plain_text", text = var.metis_policy_json },
-    { name = "METIS_LIFECYCLE_POLICY_JSON", type = "plain_text", text = var.metis_lifecycle_policy_json },
-    { name = "PUBLIC_BASE_URL", type = "plain_text", text = local.worker_url },
-  ]
+  queue_name = "metis-dead-letter"
 }
 
 resource "cloudflare_queue_consumer" "dispatch" {
   account_id        = var.cloudflare_account_id
   queue_id          = cloudflare_queue.dispatch.id
   type              = "worker"
-  script_name       = cloudflare_workers_script.metis.script_name
+  script_name       = local.worker_name
   dead_letter_queue = cloudflare_queue.dead_letter.queue_name
   settings = {
     batch_size       = 5
@@ -60,15 +36,30 @@ resource "cloudflare_queue_consumer" "dispatch" {
 
 resource "cloudflare_workers_cron_trigger" "lease_recovery" {
   account_id  = var.cloudflare_account_id
-  script_name = cloudflare_workers_script.metis.script_name
+  script_name = local.worker_name
   schedules   = [{ cron = "*/10 * * * *" }]
 }
 
 resource "cloudflare_workers_script_subdomain" "metis" {
   account_id       = var.cloudflare_account_id
-  script_name      = cloudflare_workers_script.metis.script_name
+  script_name      = local.worker_name
   enabled          = true
   previews_enabled = false
+}
+
+resource "cloudflare_dns_record" "metis_ui" {
+  zone_id = var.cloudflare_zone_id
+  name    = var.metis_ui_hostname
+  type    = "AAAA"
+  content = "100::"
+  proxied = true
+  ttl     = 1
+}
+
+resource "cloudflare_workers_route" "metis_ui" {
+  zone_id = var.cloudflare_zone_id
+  pattern = "${var.metis_ui_hostname}/*"
+  script  = "metis-ui"
 }
 
 # Cloudflare's identity provider supplies verified claims. No signing key or

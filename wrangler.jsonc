@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "metis-control-plane-staging",
+  "name": "metis-control-plane",
   "main": "src/index.mjs",
   "compatibility_date": "2026-08-30",
   "workers_dev": true,
@@ -10,7 +10,7 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "metis-staging",
+      "database_name": "metis-production",
       "database_id": "fab80b33-f3d1-4fb6-bfa7-05ab613386c5",
       "migrations_dir": "migrations"
     }
@@ -19,15 +19,15 @@
     "producers": [
       {
         "binding": "DISPATCH_QUEUE",
-        "queue": "metis-dispatch-staging"
+        "queue": "metis-dispatch"
       }
     ],
     "consumers": [
       {
-        "queue": "metis-dispatch-staging",
+        "queue": "metis-dispatch",
         "max_batch_size": 5,
         "max_retries": 3,
-        "dead_letter_queue": "metis-dead-letter-staging"
+        "dead_letter_queue": "metis-dead-letter"
       }
     ]
   },
@@ -42,7 +42,7 @@
     "CODEX_GITHUB_INTEGRATION_ENABLED": "true",
     "GITHUB_APP_ID": "4772921",
     "GITHUB_APP_INSTALLATION_ID": "157788676",
-    "PUBLIC_BASE_URL": "https://metis-control-plane-staging.gr4gwzrfq2.workers.dev",
+    "PUBLIC_BASE_URL": "https://metis-control-plane.gr4gwzrfq2.workers.dev",
     "METIS_POLICY_JSON": "{\"global\":{\"maxConcurrentTasks\":1,\"maxEstimatedWorkloadUnitsPerWindow\":96,\"maxTasksPerWindow\":24,\"maxRetries\":2},\"providers\":{\"codex_included\":{\"enabled\":true},\"paid_api\":{\"enabled\":false},\"perplexity\":{\"enabled\":false}}}",
     "METIS_LIFECYCLE_POLICY_JSON": "{\"defaults\":{\"requiredApprovals\":1,\"requiredChecks\":true,\"maxRevisionAttempts\":2,\"deploymentWorkflows\":[],\"maxRecoveryAttempts\":2},\"repositories\":{\"noahpeters/metis-sandbox\":{\"requiredChecks\":false,\"deploymentWorkflows\":[\"Sandbox Deployment\"]},\"noahpeters/metis\":{\"requiredChecks\":true,\"deploymentWorkflows\":[\"CI\"]}}}",
     "METIS_PROJECT_POLICY_JSON": "{\"projectId\":\"PVT_kwHOAA6eJM4Bh81k\",\"executionOwnerFieldId\":\"PVTSSF_lAHOAA6eJM4Bh81kzhg2oW0\",\"metisOwnerOptionId\":\"ab09d440\",\"statusFieldId\":\"PVTSSF_lAHOAA6eJM4Bh81kzhg2lx4\",\"readyStatusOptionId\":\"c2c65c9f\",\"statusOptions\":{\"Backlog\":\"f75ad846\",\"Ready\":\"c2c65c9f\",\"In progress\":\"47fc9ee4\",\"Awaiting human\":\"76657f59\",\"Blocked\":\"757a0f3c\",\"Deploying\":\"889196ca\",\"Done\":\"98236657\"}}"
