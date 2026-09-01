@@ -31,5 +31,5 @@ if (matches.length > 1) {
 }
 if (matches.length === 0) process.exit(0);
 
-const imported = spawnSync("terraform", ["-chdir=infra/production", "import", "-input=false", address, `${accountId}/${matches[0].id}`], { stdio: "inherit" });
+const imported = spawnSync("terraform", ["-chdir=infra/production", "import", "-input=false", address, `accounts/${accountId}/${matches[0].id}`], { stdio: "inherit" });
 if (imported.status !== 0) process.exit(imported.status ?? 1);

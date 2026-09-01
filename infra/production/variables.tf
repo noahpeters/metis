@@ -56,9 +56,3 @@ variable "github_app_installation_id" {
   type        = string
   default     = ""
 }
-
-variable "metis_ui_hostname" {
-  description = "Operator-configured hostname protected by Cloudflare Access."
-  type        = string
-  default     = "metis.from-trees.com"
-}

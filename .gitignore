@@ -8,3 +8,4 @@ infra/**/*.tfstate
 infra/**/*.tfstate.*
 infra/**/*.tfplan
 infra/**/crash.log
+output/playwright/

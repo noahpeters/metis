@@ -3,7 +3,7 @@
 resource "cloudflare_zero_trust_access_application" "metis_ui" {
   account_id       = var.cloudflare_account_id
   name             = "Metis administration"
-  domain           = "${var.metis_ui_hostname}/*"
+  domain           = "metis.from-trees.com/*"
   type             = "self_hosted"
   session_duration = "8h"
   policies = [{
@@ -17,6 +17,6 @@ resource "cloudflare_zero_trust_access_application" "metis_ui" {
 
   destinations = [{
     type = "public"
-    uri  = "${var.metis_ui_hostname}/*"
+    uri  = "metis.from-trees.com/*"
   }]
 }
