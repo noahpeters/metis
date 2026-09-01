@@ -2,7 +2,7 @@
 
 ## GitHub intake
 
-Metis receives native GitHub App webhooks at `POST /webhooks/github`. It accepts only signed `issues.labeled` events whose label is `metis:ready` and repository is allowlisted. `X-GitHub-Delivery` is the idempotency key.
+Metis receives native GitHub App webhooks at `POST /webhooks/github`. `X-GitHub-Delivery` is the idempotency key. Before lifecycle handling, Metis stores the normalized event in D1 and advances its delivery through `received`, `queued`, `processing`, `completed`, or `failed`. A retry is considered a duplicate only after completion; incomplete deliveries are resumed on retry and bounded scheduled restart reconciliation. Lifecycle handlers remain idempotent against stable task, PR, SHA, workflow, and transition identities.
 
 ## Internal Queue messages
 
@@ -15,7 +15,7 @@ D1 is read on every delivery, so stale payload data cannot override scheduler st
 
 ## Codex connector results
 
-An official `chatgpt-codex-connector` issue comment beginning with `READY_FOR_PR:` moves the task to `awaiting_pr_creation`, releases its lease, and prompts a human to review the linked Codex task and click **Create PR**. A comment beginning with `BLOCKED:` releases the lease and preserves the concrete blocker.
+An official `chatgpt-codex-connector` issue comment beginning with `READY_FOR_PR:` is conclusive acceptance and completion evidence for the current dispatch. It atomically moves either `pending_connector_ack` or `running` to `awaiting_pr_creation`, records when the connector omitted a separate acknowledgment, releases the matching lease, and prompts a human to review the linked Codex task and click **Create PR**. A dispatch marker, when supplied, must match the current lease; stale attempts are rejected. Duplicate results are idempotent, and lease expiration cannot demote the completed handoff. A comment beginning with `BLOCKED:` releases the lease and preserves the concrete blocker.
 
 The prepared pull-request body must include `Metis-Task: owner/repository#issue`. A signed `pull_request.opened` webhook with that exact marker advances only an `awaiting_pr_creation` task. Metis binds that PR as opened without changing its owner or recreating it.
 

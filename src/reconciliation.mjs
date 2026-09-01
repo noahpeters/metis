@@ -1,7 +1,7 @@
 import { comment, githubRequest, setState } from "./github.mjs";
 import { lifecyclePolicy } from "./lifecycle.mjs";
 
-const ACTIVE_STATES = ["running", "awaiting_pr_creation", "pr_ready", "reviewing", "merge_ready", "merging", "deploying", "recovery"];
+export const RECONCILABLE_STATES = ["pending_connector_ack", "running", "awaiting_pr_creation", "pr_ready", "reviewing", "merge_ready", "merging", "deploying", "recovery"];
 const SUCCESS = new Set(["success", "neutral", "skipped"]);
 const FAILURE = new Set(["failure", "cancelled", "timed_out", "action_required", "startup_failure"]);
 
@@ -65,8 +65,8 @@ async function workflowEvidence(env, task, mergeSha) {
 }
 
 export async function reconcileManagedTasks(env, { maxTasks = 20, onDeploymentFailure } = {}) {
-  const placeholders = ACTIVE_STATES.map(() => "?").join(",");
-  const tasks = await env.DB.prepare(`SELECT * FROM tasks WHERE state IN (${placeholders}) ORDER BY updated_at LIMIT ?`).bind(...ACTIVE_STATES, maxTasks).all();
+  const placeholders = RECONCILABLE_STATES.map(() => "?").join(",");
+  const tasks = await env.DB.prepare(`SELECT * FROM tasks WHERE state IN (${placeholders}) ORDER BY updated_at LIMIT ?`).bind(...RECONCILABLE_STATES, maxTasks).all();
   const results = [];
   for (const task of tasks.results) {
     try {
