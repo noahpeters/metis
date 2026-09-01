@@ -9,6 +9,7 @@ import { reconcileProject } from "./project.mjs";
 import { dependencyDecision, recordDependencyEvent } from "./dependencies.mjs";
 import { capacityObservationStatements } from "./provider-capacity.mjs";
 import { reconcileManagedTasks } from "./reconciliation.mjs";
+import { observeManagedPullRequestMergeability } from "./merge-conflicts.mjs";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
@@ -177,8 +178,9 @@ async function evaluateMergeReadiness(env, task, lifecycle) {
   const policy = lifecyclePolicy(env, task.repository);
   const health = await env.DB.prepare("SELECT state FROM repository_health WHERE repository=?").bind(task.repository).first();
   if (health && health.state !== "healthy" && !task.is_recovery) return { ready: false, reason: "repository recovery lock active" };
-  if (task.state === "merge_ready") return { ready: true, reason: "already ready for human merge" };
   const pullRequest = await githubRequest(env, `/repos/${task.repository}/pulls/${lifecycle.pull_request_number}`);
+  const conflict = await observeManagedPullRequestMergeability(env, task, pullRequest, { maxAttempts: policy.maxMergeConflictAttempts });
+  if (["conflicting", "correction_dispatched", "correction_failed"].includes(conflict.state)) return { ready: false, reason: conflict.state };
   if (pullRequest.draft || pullRequest.state !== "open" || pullRequest.base?.ref !== pullRequest.base?.repo?.default_branch) {
     return { ready: false, reason: "pull request is not an open, non-draft change to the default branch" };
   }
@@ -188,9 +190,9 @@ async function evaluateMergeReadiness(env, task, lifecycle) {
     unresolvedReviewThreadCount(env, task.repository, lifecycle.pull_request_number),
   ]);
   const checksReady = !policy.requiredChecks || checksPassed(checks.check_runs || []);
-  const approvalsReady = approvalCount(reviews || []) >= policy.requiredApprovals;
+  const approvalsReady = approvalCount(reviews || [], pullRequest.head.sha) >= policy.requiredApprovals;
   if (!checksReady || !approvalsReady || unresolvedThreads > 0 || pullRequest.mergeable !== true) {
-    await env.DB.prepare("UPDATE tasks SET state='reviewing', updated_at=unixepoch() WHERE id=? AND state IN ('pr_ready','reviewing','merge_ready')").bind(task.id).run();
+    await env.DB.prepare("UPDATE tasks SET state='reviewing', updated_at=unixepoch() WHERE id=? AND state IN ('pr_ready','reviewing','merge_ready','merge_conflict')").bind(task.id).run();
     await setState(env, task.repository, task.issue_number, "metis:reviewing");
     return { ready: false, reason: `waiting for checks, approvals, resolved threads, or mergeability (${checksReady}/${approvalsReady}/${unresolvedThreads}/${pullRequest.mergeable})` };
   }
@@ -399,7 +401,7 @@ async function processWebhook(event, payload, env) {
       existing.pull_request_number = null;
     }
     if (["opened", "reopened"].includes(pullRequestLifecycle.action)
-      && !["awaiting_pr_creation", "awaiting_revision_pr", "pr_ready", "reviewing", "merge_ready", "merging"].includes(existing.state)) {
+      && !["awaiting_pr_creation", "awaiting_revision_pr", "pr_ready", "reviewing", "merge_ready", "merge_conflict", "merging"].includes(existing.state)) {
       return json({ accepted: false, reason: "task is not in a pull-request lifecycle state" }, 202);
     }
     if (["synchronize", "closed"].includes(pullRequestLifecycle.action) && !existing.pull_request_number) {
