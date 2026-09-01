@@ -59,13 +59,14 @@ test("accepts ready-for-PR results only from the Codex connector", () => {
 test("requires official connector evidence for pending dispatch acknowledgment", () => {
   const payload = {
     action: "created", repository: { full_name: "owner/repo" }, issue: { number: 13 },
-    comment: { body: "Codex accepted this request. [Open task](https://chatgpt.com/codex/cloud/tasks/task_123)", html_url: "https://github.test/comment/1", performed_via_github_app: { id: 1144995, slug: "chatgpt-codex-connector" } },
+    comment: { id: 91, created_at: "2026-08-31T12:00:00Z", body: "Codex accepted this request. [Open task](https://chatgpt.com/codex/cloud/tasks/task_123)", html_url: "https://github.test/comment/1", performed_via_github_app: { id: 1144995, slug: "chatgpt-codex-connector" } },
     sender: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
   };
   assert.deepEqual(connectorAcknowledgmentFromWebhook("issue_comment", payload), {
     repository: "owner/repo", issue_number: 13, status: "accepted", lease_id: null,
+    capacity_outcome: "accepted", observed_at: 1788177600, reset_at: null, limit_reason: null,
     task_url: "https://chatgpt.com/codex/cloud/tasks/task_123", setup_url: null,
-    reason: "Codex accepted this request. [Open task](https://chatgpt.com/codex/cloud/tasks/task_123)", comment_url: "https://github.test/comment/1",
+    reason: "Codex accepted this request. [Open task](https://chatgpt.com/codex/cloud/tasks/task_123)", comment_url: "https://github.test/comment/1", comment_id: "91",
   });
   assert.equal(connectorAcknowledgmentFromWebhook("issue_comment", { ...payload, sender: { login: "lookalike", type: "Bot" } }), null);
   assert.equal(connectorAcknowledgmentFromWebhook("issue_comment", { ...payload, comment: { ...payload.comment, body: "Thanks for the mention" } }), null);
@@ -77,11 +78,32 @@ test("recognizes environment and generic pre-creation connector rejections", () 
   const app = { id: 1144995, slug: "chatgpt-codex-connector" };
   const environment = connectorAcknowledgmentFromWebhook("issue_comment", { ...base, comment: { body: "This repository requires a Codex environment. Create one at https://chatgpt.com/codex/settings/environments", performed_via_github_app: app } });
   assert.equal(environment.status, "rejected");
+  assert.equal(environment.capacity_outcome, "unavailable");
   assert.equal(environment.setup_url, "https://chatgpt.com/codex/settings/environments");
   assert.match(environment.reason, /configured cloud environment/);
   const generic = connectorAcknowledgmentFromWebhook("issue_comment", { ...base, comment: { body: "Unable to create a task for this request.", performed_via_github_app: app } });
   assert.equal(generic.status, "rejected");
+  assert.equal(generic.capacity_outcome, "rejected");
   assert.equal(generic.setup_url, null);
+});
+
+test("classifies authoritative limits and ambiguous acknowledgments without inventing reset data", () => {
+  const base = { action: "created", repository: { full_name: "owner/repo" }, issue: { number: 13 }, sender: { login: "chatgpt-codex-connector[bot]", type: "Bot" } };
+  const app = { id: 1144995, slug: "chatgpt-codex-connector" };
+  const limited = connectorAcknowledgmentFromWebhook("issue_comment", { ...base, comment: { id: 92, created_at: "2026-08-31T12:00:00Z", body: "Workspace usage limit reached. Available again at 2026-09-01T08:30:00Z.", performed_via_github_app: app } });
+  assert.equal(limited.status, "rejected");
+  assert.equal(limited.capacity_outcome, "exhausted");
+  assert.equal(limited.reset_at, 1788251400);
+  assert.equal(limited.limit_reason, "Workspace usage limit reached. Available again at 2026-09-01T08:30:00Z.");
+
+  const noReset = connectorAcknowledgmentFromWebhook("issue_comment", { ...base, comment: { body: "Your task quota is exhausted.", performed_via_github_app: app } });
+  assert.equal(noReset.capacity_outcome, "exhausted");
+  assert.equal(noReset.reset_at, null);
+
+  const ambiguous = connectorAcknowledgmentFromWebhook("issue_comment", { ...base, comment: { body: "Codex received this task request and is processing the mention.", performed_via_github_app: app } });
+  assert.equal(ambiguous.status, "unknown");
+  assert.equal(ambiguous.capacity_outcome, "unknown");
+  assert.equal(ambiguous.task_url, null);
 });
 
 test("maps a marked pull request to its awaiting Metis task", () => {
