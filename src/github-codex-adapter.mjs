@@ -52,12 +52,23 @@ export async function dispatchViaGithubCodex(env, task, leaseId) {
   if (!repositoryAllowed(env, task.repository)) throw new Error("Repository is not allowlisted for Codex dispatch");
 
   const path = `/repos/${task.repository}/issues/${task.issue_number}/comments?per_page=100`;
-  const comments = await githubUserRequest(env, path);
+  let comments;
+  try { comments = await githubUserRequest(env, path); }
+  catch (error) { error.acceptance = "confirmed_unaccepted"; throw error; }
   const existing = comments.find((item) => item.body?.includes(marker(leaseId)));
-  const created = existing || await githubUserRequest(env, `/repos/${task.repository}/issues/${task.issue_number}/comments`, {
-    method: "POST",
-    body: JSON.stringify({ body: buildGithubCodexComment(task, leaseId) }),
-  });
+  let created = existing;
+  if (!created) {
+    try {
+      created = await githubUserRequest(env, `/repos/${task.repository}/issues/${task.issue_number}/comments`, {
+        method: "POST", body: JSON.stringify({ body: buildGithubCodexComment(task, leaseId) }),
+      });
+    } catch (error) {
+      // An HTTP rejection proves GitHub did not create the comment. A transport
+      // failure after POST may have delivered it and must never be auto-refunded.
+      error.acceptance = error.status ? "confirmed_unaccepted" : "unknown";
+      throw error;
+    }
+  }
 
   return {
     id: `github-issue-comment:${created.id}`,

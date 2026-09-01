@@ -13,17 +13,24 @@ export function validateCapabilities(value) {
   return value;
 }
 
-async function dispatcherRequest(env, path, init = {}) {
+async function dispatcherRequest(env, path, init = {}, deliveryAttempt = false) {
   if (!env.CODEX_DISPATCH_URL) throw new Error("CODEX_DISPATCH_URL is not configured");
-  const response = await fetch(`${env.CODEX_DISPATCH_URL.replace(/\/$/, "")}${path}`, {
-    ...init,
-    headers: {
-      accept: "application/json",
-      authorization: `Bearer ${env.CODEX_DISPATCH_TOKEN}`,
-      ...init.headers,
-    },
-  });
-  if (!response.ok) throw new Error(`Codex dispatcher ${path} failed (${response.status})`);
+  let response;
+  try {
+    response = await fetch(`${env.CODEX_DISPATCH_URL.replace(/\/$/, "")}${path}`, {
+      ...init,
+      headers: { accept: "application/json", authorization: `Bearer ${env.CODEX_DISPATCH_TOKEN}`, ...init.headers },
+    });
+  } catch (error) {
+    error.acceptance = deliveryAttempt ? "unknown" : "confirmed_unaccepted";
+    throw error;
+  }
+  if (!response.ok) {
+    const error = new Error(`Codex dispatcher ${path} failed`);
+    error.status = response.status;
+    error.acceptance = "confirmed_unaccepted";
+    throw error;
+  }
   return response.json();
 }
 
@@ -57,7 +64,8 @@ export function buildCodexTask(task, leaseId, callbackUrl) {
 }
 
 export async function dispatchCodexTask(env, task, leaseId) {
-  await getCodexCapabilities(env);
+  try { await getCodexCapabilities(env); }
+  catch (error) { error.acceptance = "confirmed_unaccepted"; throw error; }
   if (env.CODEX_DISPATCH_MODE === "github_integration") {
     return dispatchViaGithubCodex(env, task, leaseId);
   }
@@ -65,7 +73,11 @@ export async function dispatchCodexTask(env, task, leaseId) {
     method: "POST",
     headers: { "content-type": "application/json", "idempotency-key": leaseId },
     body: JSON.stringify(buildCodexTask(task, leaseId, `${env.PUBLIC_BASE_URL}/callbacks/codex`)),
-  });
-  if (!result?.id || !["queued", "running"].includes(result.status)) throw new Error("Codex dispatcher returned an invalid task receipt");
+  }, true);
+  if (!result?.id || !["queued", "running"].includes(result.status)) {
+    const error = new Error("Codex dispatcher returned an invalid task receipt");
+    error.acceptance = "unknown";
+    throw error;
+  }
   return result;
 }
