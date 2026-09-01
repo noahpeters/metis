@@ -48,7 +48,7 @@ routes, cron, Access application ID, and encrypted-secret names (never values).
    to Terraform, Git, or logs. Required control-plane secrets are
    `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`,
    `GITHUB_DISPATCH_USER_TOKEN`, and `METIS_PROJECT_USER_TOKEN`. Cloudflare's
-   service-binding caller context replaces the former duplicated UI/control-plane secret.
+   capability-bound service RPC replaces the former duplicated UI/control-plane secret.
 5. Merge only after the production environment is configured. The `CI` workflow
    migrates the preserved D1 first, deploys `metis-control-plane`, and then
    deploys `metis-ui` with its private service binding. Switch the GitHub webhook

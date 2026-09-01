@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { pacingOverview, resetPacingWindow, RESET_CONFIRMATION } from "../src/pacing-api.mjs";
 
-const headers = { "X-Metis-Verified-Email": "admin@from-trees.com", "CF-Worker": "from-trees.com" };
+const headers = { "X-Metis-Verified-Email": "admin@from-trees.com" };
 
 test("overview distinguishes local estimates from unknown provider state and never caches", async () => {
   const rows = [

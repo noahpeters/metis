@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "metis-control-plane",
-  "main": "src/index.mjs",
+  "main": "src/control-plane-entrypoint.mjs",
   "compatibility_date": "2026-08-30",
   "workers_dev": true,
   "ai": {

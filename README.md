@@ -57,7 +57,7 @@ The administration shell runs as the dedicated `metis-ui` Worker and reaches the
 
 1. configure a Cloudflare Access identity provider that returns verified email claims;
 2. protect the fixed `metis.from-trees.com` hostname with Cloudflare Access and allow verified `from-trees.com` identities; and
-3. deploy the checked-in `CONTROL_PLANE` service binding. Cloudflare adds the caller-zone context used by the control plane, so no duplicated cross-Worker secret is required.
+3. deploy the checked-in `CONTROL_PLANE` RPC service binding. The binding itself is the private capability, so no duplicated cross-Worker secret or inferred HTTP header is required.
 
 Access permits only verified `from-trees.com` identities. The UI verifies the signed Access JWT rather than trusting the convenience email header. Local authentication requires both `ENVIRONMENT=local` and `LOCAL_AUTH_ENABLED=true`; deployed configuration fixes the latter to `false`.
 
