@@ -40,6 +40,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Validate production deployment configuration
+        run: node scripts/validate-production-deployment.mjs
       - name: Apply D1 migrations
         run: npm run db:migrate:production
       - name: Deploy control-plane Worker
