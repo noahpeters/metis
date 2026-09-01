@@ -46,3 +46,13 @@ test("SSR fails closed and never caches unauthorized state", async () => {
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.match(await response.text(), /Access denied/);
 });
+
+test("authenticated shell exposes accessible pacing and confirmation states", async () => {
+  const response = await uiWorker.fetch(new Request("https://ui/"), { ENVIRONMENT: "local", LOCAL_AUTH_ENABLED: "true", LOCAL_AUTH_EMAIL: "admin@from-trees.com" });
+  const html = await response.text();
+  assert.match(html, /Loading pacing status/);
+  assert.match(html, /<dialog id="reset-dialog"/);
+  assert.match(html, /does not reset ChatGPT or Codex/);
+  assert.match(html, /minlength="8"/);
+  assert.match(html, /aria-live="assertive"/);
+});
