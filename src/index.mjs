@@ -8,6 +8,7 @@ import { approvalCount, checksPassed, checkSuiteLifecycleFromWebhook, lifecycleP
 import { reconcileProject } from "./project.mjs";
 import { dependencyDecision, recordDependencyEvent } from "./dependencies.mjs";
 import { capacityObservationStatements } from "./provider-capacity.mjs";
+import { reconcileManagedTasks } from "./reconciliation.mjs";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
@@ -717,6 +718,9 @@ export default {
   },
   async scheduled(_controller, env) {
     await pruneSchedulerSignals(env);
+    // GitHub is authoritative: repair missed/out-of-order lifecycle webhooks
+    // before an expired local lease is allowed to change task state.
+    await reconcileManagedTasks(env, { onDeploymentFailure: (task, workflow) => beginRecovery(env, task, workflow) });
     const expired = await env.DB.prepare("SELECT l.task_id,l.estimated_workload_units_reserved,r.id AS revision_id FROM task_leases l LEFT JOIN revision_dispatches r ON r.lease_id=l.lease_id AND r.state='running' WHERE l.expires_at <= unixepoch()").all();
     for (const row of expired.results) {
       if (row.revision_id) {
