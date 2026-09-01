@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { allowedApiRequest } from "../src/ui/api.mjs";
-import { authenticate, emailAllowed, verifyAccessJwt } from "../src/ui/auth.mjs";
+import { authenticate, emailAllowed } from "../src/ui/auth.mjs";
 import { authorizeUiBinding } from "../src/index.mjs";
 import uiWorker from "../src/ui/worker.mjs";
 
@@ -11,14 +11,10 @@ test("authorization matches only the exact organization domain", () => {
   assert.equal(emailAllowed("@from-trees.com"), false);
 });
 
-test("JWT verifier rejects malformed, expired, issuer, and audience claims before key lookup", async () => {
-  const part = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  const header = part({ alg: "RS256", kid: "one" });
-  const base = { iss: "https://team.cloudflareaccess.com", aud: "aud", exp: 200, email: "user@from-trees.com" };
-  for (const claims of [{ ...base, exp: 1 }, { ...base, iss: "https://evil.invalid" }, { ...base, aud: "wrong" }, { ...base, email: "user@example.com" }]) {
-    await assert.rejects(verifyAccessJwt(`${header}.${part(claims)}.AA`, { teamDomain: "team", audience: "aud" }, () => assert.fail("must not fetch"), 100_000));
-  }
-  await assert.rejects(verifyAccessJwt("not-a-jwt", { teamDomain: "team", audience: "aud" }));
+test("deployed auth requires the identity header injected by Cloudflare Access", async () => {
+  await assert.rejects(authenticate(new Request("https://ui/"), { ENVIRONMENT: "production" }));
+  await assert.rejects(authenticate(new Request("https://ui/", { headers: { "Cf-Access-Authenticated-User-Email": "user@example.com" } }), { ENVIRONMENT: "production" }));
+  assert.equal((await authenticate(new Request("https://ui/", { headers: { "Cf-Access-Authenticated-User-Email": "User@FROM-TREES.COM" } }), { ENVIRONMENT: "production" })).email, "user@from-trees.com");
 });
 
 test("local auth is explicit and cannot be enabled in a deployed environment", async () => {
