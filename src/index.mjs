@@ -8,6 +8,7 @@ import { approvalCount, checksPassed, checkSuiteLifecycleFromWebhook, lifecycleP
 import { reconcileProject } from "./project.mjs";
 import { dependencyDecision, recordDependencyEvent } from "./dependencies.mjs";
 import { capacityObservationStatements } from "./provider-capacity.mjs";
+import { ingestOpenAIAnalytics } from "./openai-analytics.mjs";
 import { reconcileManagedTasks } from "./reconciliation.mjs";
 import { observeManagedPullRequestMergeability } from "./merge-conflicts.mjs";
 
@@ -763,6 +764,9 @@ export default {
     }
   },
   async scheduled(_controller, env) {
+    // Analytics failures are ledger observations, not task or recovery failures.
+    try { await ingestOpenAIAnalytics(env); }
+    catch { console.error("Analytics ingestion failed"); }
     await pruneSchedulerSignals(env);
     await resumeIncompleteWebhookDeliveries(env);
     // GitHub is authoritative: repair missed/out-of-order lifecycle webhooks

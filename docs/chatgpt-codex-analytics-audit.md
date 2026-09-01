@@ -62,3 +62,15 @@ Status meanings:
 ## Verification required before any implementation
 
 An authorized workspace owner must establish, outside this repository: the plan and analytics entitlement, permissible reporting roles, the exact current documentation for any chosen endpoint, retention/privacy approval, and a secret delivery path. Until all are established, the analytics adapter should have no ChatGPT-workspace network integration and should return capacity fields as unknown. This conclusion does not block the existing human-gated GitHub Codex driver.
+
+## Implemented API-platform collector
+
+Metis can optionally poll the officially documented organization completions-usage and costs endpoints. This collector is deliberately scoped to `openai_api`: it records delayed, unattributed API-platform buckets and does not represent ChatGPT/Codex-plan analytics, change the Codex capacity gate, or enable paid usage.
+
+Collection is disabled unless all three deployment values exist:
+
+- `OPENAI_ANALYTICS_ADMIN_KEY`, supplied only through the Worker secret store, is a dedicated Admin API key with the minimum organization read access supported by the provider;
+- `OPENAI_ANALYTICS_ORG_ID` selects the API organization; and
+- `OPENAI_ANALYTICS_WORKSPACE_REF` is a non-secret internal reference stored with observations.
+
+The scheduled collector rereads a seven-day window ending five minutes before collection, follows provider page cursors, and retries bounded `429` responses. Deterministic bucket/dimension keys make repeat delivery idempotent, while a content digest creates a distinct append-only revision when delayed aggregates are corrected. Permission, rate-limit, response-shape, and network failures create sanitized unavailable observations; they do not stop lifecycle reconciliation, recovery, or dispatch. Unsupported values remain null, and costs remain explicitly nested under the API-platform billing scope rather than being converted to credits or included allowance.
