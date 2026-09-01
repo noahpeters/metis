@@ -7,6 +7,7 @@ import { dispatchViaGithubCodexRevision } from "./github-codex-adapter.mjs";
 import { approvalCount, checksPassed, checkSuiteLifecycleFromWebhook, lifecyclePolicy, pullRequestLifecycleFromWebhook, reviewLifecycleFromWebhook, workflowRunFromWebhook } from "./lifecycle.mjs";
 import { reconcileProject } from "./project.mjs";
 import { dependencyDecision, recordDependencyEvent } from "./dependencies.mjs";
+import { capacityObservationStatements } from "./provider-capacity.mjs";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
@@ -36,6 +37,14 @@ function isOfficialCodexConnector(payload) {
 
 const CODEX_TASK_URL = /https:\/\/chatgpt\.com\/(?:s\/[^)\s]+|codex\/cloud\/tasks\/[^)\s]+)/;
 
+function suppliedResetTime(body) {
+  const match = body.match(/(?:reset(?:s|ting)?|try again|available again)(?:\s+(?:at|after|on|in))?\s*[:\-]?\s*(\d{10,13}|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?Z)/i);
+  if (!match) return null;
+  if (/^\d+$/.test(match[1])) return Math.floor(Number(match[1]) / (match[1].length === 13 ? 1000 : 1));
+  const milliseconds = Date.parse(match[1]);
+  return Number.isFinite(milliseconds) ? Math.floor(milliseconds / 1000) : null;
+}
+
 // The GitHub connector does not currently provide a machine-readable callback
 // when it accepts (or rejects) an @codex mention. Keep this deliberately narrow:
 // only the official App is trusted and acceptance requires a stable task link.
@@ -46,20 +55,30 @@ export function connectorAcknowledgmentFromWebhook(event, payload) {
   const taskUrl = body.match(CODEX_TASK_URL)?.[0] || null;
   const setupUrl = body.match(/https:\/\/(?:help\.openai\.com|chatgpt\.com|platform\.openai\.com)\/[^)\s]+/)?.[0] || null;
   const environmentRequired = /(?:create|configure|set up|select|requires?|need(?:s|ed)?)\s+(?:an?\s+)?(?:codex\s+)?environment|environment\s+(?:is\s+)?(?:required|not (?:configured|found|available))/i.test(body);
-  const rejected = environmentRequired || /(?:could(?:n't| not)|unable to|can't|cannot|failed to)\s+(?:create|start|launch|run|accept)|request\s+(?:was\s+)?rejected/i.test(body);
-  if (!taskUrl && !rejected && !body.startsWith("BLOCKED:")) return null;
+  const integrationFailure = environmentRequired || /(?:permission|authorization|installation|integration|configuration|credential).{0,40}(?:required|missing|invalid|denied|disabled|not (?:configured|installed|authorized))/i.test(body);
+  const exhausted = /(?:usage|capacity|rate|task|plan|workspace)?\s*(?:limit|quota|allowance)\s+(?:has been |is )?(?:reached|exceeded|exhausted)|(?:out of|no)\s+(?:remaining\s+)?(?:credits|capacity)|too many requests/i.test(body);
+  const rejected = integrationFailure || exhausted || /(?:could(?:n't| not)|unable to|can't|cannot|failed to)\s+(?:create|start|launch|run|accept)|request\s+(?:was\s+)?rejected/i.test(body);
   const marker = body.match(/metis-codex-dispatch:([A-Za-z0-9-]+)/)?.[1] || null;
+  const acknowledgment = /(?:codex|task|request|dispatch)/i.test(body) && /(?:mention|received|processing|accept|reject|unable|cannot|can't|couldn't|failed|limit|quota|capacity)/i.test(body);
+  if (!taskUrl && !rejected && !body.startsWith("BLOCKED:") && !marker && !acknowledgment) return null;
+  const observedAt = payload.comment?.created_at ? Math.floor(Date.parse(payload.comment.created_at) / 1000) : Math.floor(Date.now() / 1000);
+  const capacityOutcome = taskUrl ? "accepted" : exhausted ? "exhausted" : integrationFailure ? "unavailable" : rejected ? "rejected" : "unknown";
   return {
     repository: payload.repository?.full_name,
     issue_number: payload.issue?.number,
-    status: taskUrl ? "accepted" : "rejected",
+    status: taskUrl ? "accepted" : rejected ? "rejected" : "unknown",
+    capacity_outcome: capacityOutcome,
+    observed_at: observedAt,
+    reset_at: exhausted ? suppliedResetTime(body) : null,
+    limit_reason: exhausted ? body.split("\n", 1)[0].slice(0, 240) : null,
     lease_id: marker,
     task_url: taskUrl,
     setup_url: environmentRequired ? setupUrl : null,
-    reason: environmentRequired
+    reason: (environmentRequired
       ? "Codex requires a configured cloud environment before it can create this task."
-      : body.split("\n", 1)[0].replace(/^BLOCKED:\s*/, "") || "The Codex connector rejected the task before creation.",
+      : body.split("\n", 1)[0].replace(/^BLOCKED:\s*/, "") || "The Codex connector rejected the task before creation.").slice(0, 240),
     comment_url: payload.comment?.html_url || null,
+    comment_id: payload.comment?.id ? String(payload.comment.id) : null,
   };
 }
 
@@ -461,12 +480,22 @@ async function receiveWebhook(request, env) {
   }
   if (connectorAck && !blocked) {
     const id = `${connectorAck.repository}#${connectorAck.issue_number}`;
-    const pending = await env.DB.prepare("SELECT d.*,l.estimated_workload_units_reserved FROM dispatches d JOIN task_leases l ON l.lease_id=d.lease_id WHERE d.task_id=? AND d.state='pending_connector_ack' ORDER BY d.id DESC LIMIT 1").bind(id).first();
-    if (!pending) return json({ accepted: false, reason: "no pending connector acknowledgment" }, 202);
+    const pending = await env.DB.prepare("SELECT d.*,l.estimated_workload_units_reserved FROM dispatches d LEFT JOIN task_leases l ON l.lease_id=d.lease_id WHERE d.task_id=? ORDER BY d.id DESC LIMIT 1").bind(id).first();
+    if (!pending) return json({ accepted: false, reason: "no correlated dispatch" }, 202);
     if (connectorAck.lease_id && connectorAck.lease_id !== pending.lease_id) return json({ accepted: false, reason: "connector acknowledgment lease mismatch" }, 202);
     const audit = JSON.stringify(connectorAck);
+    const observationStatements = capacityObservationStatements(env, pending.id, connectorAck);
+    if (pending.state !== "pending_connector_ack") {
+      await env.DB.batch(observationStatements);
+      return json({ accepted: true, task_id: id, state: pending.state, late: true, capacity: connectorAck.capacity_outcome }, 202);
+    }
+    if (connectorAck.status === "unknown") {
+      await env.DB.batch(observationStatements);
+      return json({ accepted: true, task_id: id, state: "pending_connector_ack", capacity: "unknown" }, 202);
+    }
     if (connectorAck.status === "accepted") {
       await env.DB.batch([
+        ...observationStatements,
         env.DB.prepare("UPDATE dispatches SET external_id=?,state='running',result_json=?,updated_at=unixepoch() WHERE id=? AND state='pending_connector_ack'").bind(connectorAck.task_url, audit, pending.id),
         env.DB.prepare("UPDATE tasks SET state='running',blocker_reason=NULL,updated_at=unixepoch() WHERE id=? AND state='pending_connector_ack'").bind(id),
         env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,legacy_estimated_workload_units,metadata_json,created_at) VALUES(?,'codex_included','connector_acknowledged',0,?,unixepoch())").bind(id, audit),
@@ -475,6 +504,7 @@ async function receiveWebhook(request, env) {
     }
     const reason = connectorAck.setup_url ? `${connectorAck.reason} Setup: ${connectorAck.setup_url}` : connectorAck.reason;
     await env.DB.batch([
+      ...observationStatements,
       env.DB.prepare("UPDATE dispatches SET state='blocked',result_json=?,updated_at=unixepoch() WHERE id=? AND state='pending_connector_ack'").bind(audit, pending.id),
       env.DB.prepare("DELETE FROM task_leases WHERE lease_id=?").bind(pending.lease_id),
       env.DB.prepare("UPDATE pacing_windows SET tasks_started=MAX(0,tasks_started-1),estimated_workload_units_used=MAX(0,estimated_workload_units_used-?) WHERE window_key=date('now')").bind(pending.estimated_workload_units_reserved),
