@@ -27,7 +27,6 @@ const env = {
   ENVIRONMENT: "local",
   LOCAL_AUTH_ENABLED: "true",
   LOCAL_AUTH_EMAIL: "noah@from-trees.com",
-  UI_BINDING_TOKEN: "visual-test",
   ASSETS: {
     async fetch(request) {
       const pathname = new URL(request.url).pathname.slice(1);
@@ -36,10 +35,7 @@ const env = {
     },
   },
   CONTROL_PLANE: {
-    async fetch(request) {
-      if (new URL(request.url).pathname === "/internal/ui/pacing") return new Response(JSON.stringify(overview), { headers: { "content-type": "application/json" } });
-      return new Response("Not found", { status: 404 });
-    },
+    async pacingOverview() { return { status: 200, body: JSON.stringify(overview) }; },
   },
 };
 

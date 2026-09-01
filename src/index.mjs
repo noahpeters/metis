@@ -11,19 +11,19 @@ import { capacityObservationStatements } from "./provider-capacity.mjs";
 import { ingestOpenAIAnalytics } from "./openai-analytics.mjs";
 import { reconcileManagedTasks } from "./reconciliation.mjs";
 import { observeManagedPullRequestMergeability } from "./merge-conflicts.mjs";
-import { pacingOverview, resetPacingWindow } from "./pacing-api.mjs";
-import { authorizeUiBinding } from "./ui-binding-auth.mjs";
-
-export { authorizeUiBinding } from "./ui-binding-auth.mjs";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
-function uiStatus(request, env) {
-  if (!authorizeUiBinding(request)) return new Response(JSON.stringify({ error: { code: "unauthorized", message: "Service binding authorization required" } }), { status: 401, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+export function uiStatusForIdentity(email) {
+  if (!identityAllowed(email)) return new Response(JSON.stringify({ error: { code: "unauthorized", message: "Verified identity required" } }), { status: 401, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   return new Response(JSON.stringify({ service: "metis", status: "operational" }), { headers: { "content-type": "application/json", "cache-control": "no-store" } });
 }
 
-async function resumeReadyBacklog(env) {
+function identityAllowed(email) {
+  return typeof email === "string" && /^[^@]+@from-trees\.com$/.test(email.toLowerCase());
+}
+
+export async function resumeReadyBacklog(env) {
   try {
     return await reconcileProject(env);
   } catch (error) {
@@ -751,9 +751,6 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") return json({ ok: true, service: "metis-control-plane" });
-    if (request.method === "GET" && url.pathname === "/internal/ui/status") return uiStatus(request, env);
-    if (request.method === "GET" && url.pathname === "/internal/ui/pacing") return pacingOverview(request, env);
-    if (request.method === "POST" && url.pathname === "/internal/ui/pacing/reset") return resetPacingWindow(request, env, () => resumeReadyBacklog(env));
     if (request.method === "POST" && url.pathname === "/webhooks/github") return receiveWebhook(request, env);
     if (request.method === "POST" && url.pathname === "/callbacks/codex") return handleCallback(request, env);
     return json({ error: "not found" }, 404);

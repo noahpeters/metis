@@ -25,3 +25,13 @@ test("Access discovery uses the provider-v5 account-qualified import ID", () => 
   const source = readFileSync("infra/production/import-existing-access.mjs", "utf8");
   assert.match(source, /`accounts\/\$\{accountId\}\/\$\{matches\[0\]\.id\}`/);
 });
+
+test("administration API uses capability-bound service RPC", () => {
+  const controlPlane = readFileSync("wrangler.jsonc", "utf8");
+  const entrypoint = readFileSync("src/control-plane-entrypoint.mjs", "utf8");
+  const uiApi = readFileSync("src/ui/api.mjs", "utf8");
+  assert.match(controlPlane, /"main": "src\/control-plane-entrypoint\.mjs"/);
+  assert.match(entrypoint, /extends WorkerEntrypoint/);
+  assert.match(uiApi, /CONTROL_PLANE\.pacingOverview/);
+  assert.doesNotMatch(uiApi, /CONTROL_PLANE\.fetch|UI_BINDING_TOKEN|X-Metis-UI-Binding/);
+});

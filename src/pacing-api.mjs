@@ -1,5 +1,4 @@
 import { loadPolicy } from "./config.mjs";
-import { authorizeUiBinding } from "./ui-binding-auth.mjs";
 
 export const PACING_OVERVIEW_SCHEMA_VERSION = 1;
 export const RESET_CONFIRMATION = "START_NEW_PACING_WINDOW";
@@ -13,7 +12,11 @@ function nextUtcDay(seconds) {
 }
 
 export async function pacingOverview(request, env) {
-  if (!authorizeUiBinding(request)) return error("unauthorized", "Service binding authorization required", 401);
+  return pacingOverviewForIdentity(request.headers.get("X-Metis-Verified-Email"), env);
+}
+
+export async function pacingOverviewForIdentity(email, env) {
+  if (!identityAllowed(email)) return error("unauthorized", "Verified identity required", 401);
   const policy = loadPolicy(env.METIS_POLICY_JSON);
   const [window, provider, active, executable, checkpoint] = await Promise.all([
     env.DB.prepare("SELECT p.*,c.generation FROM pacing_window_control c JOIN pacing_windows p ON p.window_key=c.current_window_id WHERE c.singleton=1").first(),
@@ -42,7 +45,11 @@ export async function pacingOverview(request, env) {
 }
 
 export async function resetPacingWindow(request, env, reconcile) {
-  if (!authorizeUiBinding(request)) return error("unauthorized", "Service binding authorization required", 401);
+  return resetPacingWindowForIdentity(request.headers.get("X-Metis-Verified-Email"), request, env, reconcile);
+}
+
+export async function resetPacingWindowForIdentity(email, request, env, reconcile = async () => {}) {
+  if (!identityAllowed(email)) return error("unauthorized", "Verified identity required", 401);
   const idempotencyKey = request.headers.get("Idempotency-Key")?.trim();
   if (!idempotencyKey || idempotencyKey.length > 200) return error("invalid_idempotency_key", "A valid Idempotency-Key is required", 400);
   let body;
@@ -55,7 +62,7 @@ export async function resetPacingWindow(request, env, reconcile) {
   if (!current || current.current_window_id !== body.expected_window_id) return error("stale_window", "The expected pacing window is no longer current", 409, { current_window_id: current?.current_window_id ?? null });
   const now = Math.floor(Date.now() / 1000);
   const newId = `${new Date(now * 1000).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-g${current.generation + 1}-${crypto.randomUUID().slice(0, 8)}`;
-  const actor = request.headers.get("X-Metis-Verified-Email").toLowerCase();
+  const actor = email.toLowerCase();
   const rows = await env.DB.batch([
     env.DB.prepare("INSERT INTO pacing_windows(window_key,estimated_workload_units_used,tasks_started,started_at) SELECT ?,0,0,? WHERE EXISTS(SELECT 1 FROM pacing_window_control WHERE singleton=1 AND current_window_id=?)").bind(newId, now, body.expected_window_id),
     env.DB.prepare("UPDATE pacing_windows SET ended_at=?,superseded_by=? WHERE window_key=? AND ended_at IS NULL AND EXISTS(SELECT 1 FROM pacing_window_control WHERE current_window_id=?)").bind(now, newId, body.expected_window_id, body.expected_window_id),
@@ -73,3 +80,4 @@ export async function resetPacingWindow(request, env, reconcile) {
 
 function result(row, duplicate) { return { source_window_id: row.source_window_id, new_window_id: row.new_window_id, reset_at: iso(row.created_at), duplicate }; }
 function error(code, message, status, details) { return noStore({ error: { code, message, ...(details || {}) } }, status); }
+function identityAllowed(email) { return typeof email === "string" && /^[^@]+@from-trees\.com$/.test(email.toLowerCase()); }

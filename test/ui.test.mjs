@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { allowedApiRequest } from "../src/ui/api.mjs";
 import { authenticate, emailAllowed } from "../src/ui/auth.mjs";
-import { authorizeUiBinding } from "../src/index.mjs";
+import { uiStatusForIdentity } from "../src/index.mjs";
+import { proxyApi } from "../src/ui/api.mjs";
 import uiWorker from "../src/ui/worker.mjs";
 
 test("authorization matches only the exact organization domain", () => {
@@ -30,11 +31,14 @@ test("API allowlist permits only read-only status", () => {
   assert.equal(allowedApiRequest("POST", "/api/pacing/reset"), true);
 });
 
-test("control plane re-authorizes verified binding context", () => {
-  assert.equal(authorizeUiBinding(new Request("https://cp/internal/ui/status", { headers: { "X-Metis-Verified-Email": "admin@from-trees.com", "CF-Worker": "from-trees.com" } })), true);
-  assert.equal(authorizeUiBinding(new Request("https://cp/internal/ui/status", { headers: { "X-Metis-Verified-Email": "admin@from-trees.com" } })), false);
-  assert.equal(authorizeUiBinding(new Request("https://cp/internal/ui/status", { headers: { "X-Metis-Verified-Email": "admin@from-trees.com", "CF-Worker": "evil.example" } })), false);
-  assert.equal(authorizeUiBinding(new Request("https://cp/internal/ui/status", { headers: { "Cf-Access-Authenticated-User-Email": "admin@from-trees.com", "CF-Worker": "from-trees.com" } })), false);
+test("control plane RPC re-authorizes the forwarded identity", async () => {
+  assert.equal(uiStatusForIdentity("admin@from-trees.com").status, 200);
+  assert.equal(uiStatusForIdentity("admin@example.com").status, 401);
+  const calls = [];
+  const env = { CONTROL_PLANE: { async pacingOverview(email) { calls.push(email); return { status: 200, body: JSON.stringify({ ok: true }) }; } } };
+  const response = await proxyApi(new Request("https://ui/api/pacing"), env, { email: "admin@from-trees.com" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, ["admin@from-trees.com"]);
 });
 
 test("SSR fails closed and never caches unauthorized state", async () => {
