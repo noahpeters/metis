@@ -34,6 +34,35 @@ function isOfficialCodexConnector(payload) {
     && payload.comment?.performed_via_github_app?.slug === "chatgpt-codex-connector";
 }
 
+const CODEX_TASK_URL = /https:\/\/chatgpt\.com\/(?:s\/[^)\s]+|codex\/cloud\/tasks\/[^)\s]+)/;
+
+// The GitHub connector does not currently provide a machine-readable callback
+// when it accepts (or rejects) an @codex mention. Keep this deliberately narrow:
+// only the official App is trusted and acceptance requires a stable task link.
+export function connectorAcknowledgmentFromWebhook(event, payload) {
+  if (event !== "issue_comment" || payload.action !== "created" || !isOfficialCodexConnector(payload)) return null;
+  const body = payload.comment?.body || "";
+  if (/^(?:READY_FOR_PR:|REVISION_READY:|REVISION_BLOCKED:)/.test(body)) return null;
+  const taskUrl = body.match(CODEX_TASK_URL)?.[0] || null;
+  const setupUrl = body.match(/https:\/\/(?:help\.openai\.com|chatgpt\.com|platform\.openai\.com)\/[^)\s]+/)?.[0] || null;
+  const environmentRequired = /(?:create|configure|set up|select|requires?|need(?:s|ed)?)\s+(?:an?\s+)?(?:codex\s+)?environment|environment\s+(?:is\s+)?(?:required|not (?:configured|found|available))/i.test(body);
+  const rejected = environmentRequired || /(?:could(?:n't| not)|unable to|can't|cannot|failed to)\s+(?:create|start|launch|run|accept)|request\s+(?:was\s+)?rejected/i.test(body);
+  if (!taskUrl && !rejected && !body.startsWith("BLOCKED:")) return null;
+  const marker = body.match(/metis-codex-dispatch:([A-Za-z0-9-]+)/)?.[1] || null;
+  return {
+    repository: payload.repository?.full_name,
+    issue_number: payload.issue?.number,
+    status: taskUrl ? "accepted" : "rejected",
+    lease_id: marker,
+    task_url: taskUrl,
+    setup_url: environmentRequired ? setupUrl : null,
+    reason: environmentRequired
+      ? "Codex requires a configured cloud environment before it can create this task."
+      : body.split("\n", 1)[0].replace(/^BLOCKED:\s*/, "") || "The Codex connector rejected the task before creation.",
+    comment_url: payload.comment?.html_url || null,
+  };
+}
+
 export function blockedCodexFromWebhook(event, payload) {
   const body = payload.comment?.body || "";
   if (
@@ -60,7 +89,7 @@ export function readyForPrCodexFromWebhook(event, payload) {
     || !isOfficialCodexConnector(payload)
     || !body.startsWith("READY_FOR_PR:")
   ) return null;
-  const taskUrl = body.match(/https:\/\/chatgpt\.com\/(?:s\/[^)\s]+|codex\/cloud\/tasks\/[^)\s]+)/)?.[0] || null;
+  const taskUrl = body.match(CODEX_TASK_URL)?.[0] || null;
   return {
     repository: payload.repository?.full_name,
     issue_number: payload.issue?.number,
@@ -297,6 +326,7 @@ async function receiveWebhook(request, env) {
   const task = null;
   const blocked = blockedCodexFromWebhook(event, payload);
   const readyForPr = readyForPrCodexFromWebhook(event, payload);
+  const connectorAck = connectorAcknowledgmentFromWebhook(event, payload);
   const revisionResult = revisionCodexFromWebhook(event, payload);
   const pullRequest = pullRequestForTaskFromWebhook(event, payload);
   let pullRequestLifecycle = pullRequestLifecycleFromWebhook(event, payload);
@@ -304,8 +334,8 @@ async function receiveWebhook(request, env) {
   const reviewLifecycle = reviewLifecycleFromWebhook(event, payload);
   const checkSuiteLifecycle = checkSuiteLifecycleFromWebhook(event, payload);
   const workflowRun = workflowRunFromWebhook(event, payload);
-  if (!task && !blocked && !readyForPr && !revisionResult && !pullRequest && !pullRequestLifecycle && !unmarkedRevisionPr && !reviewLifecycle && !checkSuiteLifecycle && !workflowRun) return json({ accepted: false }, 202);
-  const repository = task?.repository || blocked?.repository || readyForPr?.repository || revisionResult?.repository || pullRequest?.repository || pullRequestLifecycle?.repository || unmarkedRevisionPr?.repository || reviewLifecycle?.repository || checkSuiteLifecycle?.repository || workflowRun?.repository;
+  if (!task && !blocked && !readyForPr && !connectorAck && !revisionResult && !pullRequest && !pullRequestLifecycle && !unmarkedRevisionPr && !reviewLifecycle && !checkSuiteLifecycle && !workflowRun) return json({ accepted: false }, 202);
+  const repository = task?.repository || blocked?.repository || readyForPr?.repository || connectorAck?.repository || revisionResult?.repository || pullRequest?.repository || pullRequestLifecycle?.repository || unmarkedRevisionPr?.repository || reviewLifecycle?.repository || checkSuiteLifecycle?.repository || workflowRun?.repository;
   if (!repositoryAllowed(env, repository)) return json({ error: "repository not allowed" }, 403);
   try {
     await env.DB.prepare("INSERT INTO webhook_deliveries (delivery_id, event_name, received_at) VALUES (?, ?, unixepoch())").bind(delivery, event).run();
@@ -429,16 +459,50 @@ async function receiveWebhook(request, env) {
     const result = await evaluateMergeReadiness(env, taskForCheck, checkSuiteLifecycle);
     return json({ accepted: true, task_id: taskForCheck.id, merge_readiness: result }, 202);
   }
+  if (connectorAck && !blocked) {
+    const id = `${connectorAck.repository}#${connectorAck.issue_number}`;
+    const pending = await env.DB.prepare("SELECT d.*,l.estimated_workload_units_reserved FROM dispatches d JOIN task_leases l ON l.lease_id=d.lease_id WHERE d.task_id=? AND d.state='pending_connector_ack' ORDER BY d.id DESC LIMIT 1").bind(id).first();
+    if (!pending) return json({ accepted: false, reason: "no pending connector acknowledgment" }, 202);
+    if (connectorAck.lease_id && connectorAck.lease_id !== pending.lease_id) return json({ accepted: false, reason: "connector acknowledgment lease mismatch" }, 202);
+    const audit = JSON.stringify(connectorAck);
+    if (connectorAck.status === "accepted") {
+      await env.DB.batch([
+        env.DB.prepare("UPDATE dispatches SET external_id=?,state='running',result_json=?,updated_at=unixepoch() WHERE id=? AND state='pending_connector_ack'").bind(connectorAck.task_url, audit, pending.id),
+        env.DB.prepare("UPDATE tasks SET state='running',blocker_reason=NULL,updated_at=unixepoch() WHERE id=? AND state='pending_connector_ack'").bind(id),
+        env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,legacy_estimated_workload_units,metadata_json,created_at) VALUES(?,'codex_included','connector_acknowledged',0,?,unixepoch())").bind(id, audit),
+      ]);
+      return json({ accepted: true, task_id: id, state: "running", external_id: connectorAck.task_url }, 202);
+    }
+    const reason = connectorAck.setup_url ? `${connectorAck.reason} Setup: ${connectorAck.setup_url}` : connectorAck.reason;
+    await env.DB.batch([
+      env.DB.prepare("UPDATE dispatches SET state='blocked',result_json=?,updated_at=unixepoch() WHERE id=? AND state='pending_connector_ack'").bind(audit, pending.id),
+      env.DB.prepare("DELETE FROM task_leases WHERE lease_id=?").bind(pending.lease_id),
+      env.DB.prepare("UPDATE pacing_windows SET tasks_started=MAX(0,tasks_started-1),estimated_workload_units_used=MAX(0,estimated_workload_units_used-?) WHERE window_key=date('now')").bind(pending.estimated_workload_units_reserved),
+      env.DB.prepare("UPDATE tasks SET state='blocked',blocker_reason=?,attempt_count=MAX(0,attempt_count-1),updated_at=unixepoch() WHERE id=? AND state='pending_connector_ack'").bind(reason, id),
+      env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,legacy_estimated_workload_units,metadata_json,created_at) VALUES(?,'codex_included','connector_rejected_refund',0,?,unixepoch())").bind(id, audit),
+    ]);
+    await setState(env, connectorAck.repository, connectorAck.issue_number, "metis:blocked");
+    await comment(env, connectorAck.repository, connectorAck.issue_number, `## Codex did not accept this dispatch\n\n${reason}\n\nThe unused task-start and workload reservations were refunded. After resolving this blocker, reapply \`metis:ready\` to retry once.`);
+    await resumeReadyBacklog(env);
+    return json({ accepted: true, task_id: id, state: "blocked", refunded: true }, 202);
+  }
   if (blocked) {
     const id = `${blocked.repository}#${blocked.issue_number}`;
     const existing = await env.DB.prepare("SELECT id FROM tasks WHERE id=?").bind(id).first();
     if (!existing) return json({ accepted: false, reason: "unknown task" }, 202);
+    const pending = await env.DB.prepare("SELECT d.id,d.lease_id,l.estimated_workload_units_reserved FROM dispatches d LEFT JOIN task_leases l ON l.lease_id=d.lease_id WHERE d.task_id=? AND d.state='pending_connector_ack' ORDER BY d.id DESC LIMIT 1").bind(id).first();
     const result = JSON.stringify({ status: "blocked", question: blocked.question, comment_url: blocked.comment_url });
-    await env.DB.batch([
-      env.DB.prepare("UPDATE dispatches SET state='blocked', result_json=?, updated_at=unixepoch() WHERE task_id=? AND state='running'").bind(result, id),
+    const statements = [
+      env.DB.prepare("UPDATE dispatches SET state='blocked', result_json=?, updated_at=unixepoch() WHERE task_id=? AND state IN ('pending_connector_ack','running')").bind(result, id),
       env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(id),
       env.DB.prepare("UPDATE tasks SET state='blocked', blocker_reason=?, updated_at=unixepoch() WHERE id=?").bind(blocked.question, id),
-    ]);
+      env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,legacy_estimated_workload_units,metadata_json,created_at) VALUES(?,'codex_included',?,0,?,unixepoch())").bind(id, pending ? "connector_rejected_refund" : "coding_blocked", result),
+    ];
+    if (pending) {
+      statements.push(env.DB.prepare("UPDATE pacing_windows SET tasks_started=MAX(0,tasks_started-1),estimated_workload_units_used=MAX(0,estimated_workload_units_used-?) WHERE window_key=date('now')").bind(pending.estimated_workload_units_reserved));
+      statements.push(env.DB.prepare("UPDATE tasks SET attempt_count=MAX(0,attempt_count-1) WHERE id=?").bind(id));
+    }
+    await env.DB.batch(statements);
     await setState(env, blocked.repository, blocked.issue_number, "metis:blocked");
     await resumeReadyBacklog(env);
     return json({ accepted: true, task_id: id, state: "blocked" }, 202);
@@ -554,8 +618,9 @@ async function handleDispatch(env, message) {
   await setState(env, task.repository, task.issue_number, "metis:implementing");
   try {
     const dispatch = await dispatchCodexTask(env, { ...task, max_workload_units: task.max_workload_units || decision.estimatedWorkloadUnits }, leaseId);
-    await env.DB.prepare("INSERT INTO dispatches (task_id, lease_id, provider, external_id, state, created_at, updated_at) VALUES (?, ?, 'codex_included', ?, 'running', unixepoch(), unixepoch())").bind(task.id, leaseId, dispatch.id).run();
-    await env.DB.prepare("UPDATE tasks SET state='running', updated_at=unixepoch() WHERE id=?").bind(task.id).run();
+    const pending = dispatch.driver === "github_user_integration";
+    await env.DB.prepare("INSERT INTO dispatches (task_id, lease_id, provider, external_id, state, created_at, updated_at) VALUES (?, ?, 'codex_included', ?, ?, unixepoch(), unixepoch())").bind(task.id, leaseId, dispatch.id, pending ? "pending_connector_ack" : "running").run();
+    await env.DB.prepare("UPDATE tasks SET state=?, updated_at=unixepoch() WHERE id=?").bind(pending ? "pending_connector_ack" : "running", task.id).run();
   } catch (error) {
     await env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(task.id).run();
     if (task.attempt_count + 1 >= decision.maxRetries) {
@@ -622,7 +687,7 @@ export default {
   },
   async scheduled(_controller, env) {
     await pruneSchedulerSignals(env);
-    const expired = await env.DB.prepare("SELECT l.task_id,r.id AS revision_id FROM task_leases l LEFT JOIN revision_dispatches r ON r.lease_id=l.lease_id AND r.state='running' WHERE l.expires_at <= unixepoch()").all();
+    const expired = await env.DB.prepare("SELECT l.task_id,l.estimated_workload_units_reserved,r.id AS revision_id FROM task_leases l LEFT JOIN revision_dispatches r ON r.lease_id=l.lease_id AND r.state='running' WHERE l.expires_at <= unixepoch()").all();
     for (const row of expired.results) {
       if (row.revision_id) {
         const task = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(row.task_id).first();
@@ -636,9 +701,17 @@ export default {
       }
       await env.DB.batch([
         env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(row.task_id),
+        env.DB.prepare("UPDATE dispatches SET state='ack_timeout',result_json=?,updated_at=unixepoch() WHERE task_id=? AND state='pending_connector_ack'").bind(JSON.stringify({ reason: "connector acknowledgment timed out" }), row.task_id),
+        env.DB.prepare("UPDATE pacing_windows SET tasks_started=MAX(0,tasks_started-1),estimated_workload_units_used=MAX(0,estimated_workload_units_used-?) WHERE window_key=date('now') AND EXISTS (SELECT 1 FROM dispatches WHERE task_id=? AND state='ack_timeout')").bind(row.estimated_workload_units_reserved, row.task_id),
+        env.DB.prepare("UPDATE tasks SET state='blocked',blocker_reason='Codex connector acknowledgment timed out before task acceptance.',updated_at=unixepoch() WHERE id=? AND state='pending_connector_ack'").bind(row.task_id),
+        env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,legacy_estimated_workload_units,metadata_json,created_at) SELECT ?,'codex_included','connector_ack_timeout_refund',0,?,unixepoch() WHERE EXISTS (SELECT 1 FROM dispatches WHERE task_id=? AND state='ack_timeout')").bind(row.task_id, JSON.stringify({ reason: "connector acknowledgment timed out" }), row.task_id),
         env.DB.prepare("UPDATE tasks SET state='retrying', updated_at=unixepoch() WHERE id=? AND state IN ('dispatching','running')").bind(row.task_id),
       ]);
-      await env.DISPATCH_QUEUE.send({ type: "dispatch", taskId: row.task_id });
+      const timedOut = await env.DB.prepare("SELECT state FROM tasks WHERE id=?").bind(row.task_id).first();
+      if (timedOut?.state === "blocked") {
+        const task = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(row.task_id).first();
+        if (task) await setState(env, task.repository, task.issue_number, "metis:blocked");
+      } else await env.DISPATCH_QUEUE.send({ type: "dispatch", taskId: row.task_id });
     }
     await resumeReadyBacklog(env);
   },

@@ -27,7 +27,7 @@ export const PROJECT_STATUS_NAMES = ["Backlog", "Ready", "In progress", "Awaitin
 export function projectStatusForState(state) {
   if (["intake"].includes(state)) return "Backlog";
   if (["ready", "retrying"].includes(state)) return "Ready";
-  if (["dispatching", "running", "revising"].includes(state)) return "In progress";
+  if (["dispatching", "pending_connector_ack", "running", "revising"].includes(state)) return "In progress";
   if (["awaiting_pr_creation", "awaiting_revision_pr", "pr_ready", "reviewing", "merge_ready"].includes(state)) return "Awaiting human";
   if (["blocked", "budget_blocked", "failed", "recovery_blocked"].includes(state)) return "Blocked";
   if (["deploying", "recovery"].includes(state)) return "Deploying";

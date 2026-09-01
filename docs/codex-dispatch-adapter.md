@@ -19,7 +19,9 @@ The adapter must later call Metis with `completed`, `blocked`, or `failed`. Comp
 
 ## GitHub Codex cloud driver
 
-Metis includes a GitHub-mediated driver for the supported Codex cloud integration. It posts an idempotently marked, user-authored `@codex` task request to the allowlisted GitHub issue. The request tells Codex to open a pull request, obey repository instructions, never merge or deploy, and return a first-class `BLOCKED:` question when information is missing.
+Metis includes a GitHub-mediated driver for the supported Codex cloud integration. It posts an idempotently marked, user-authored `@codex` task request to the allowlisted GitHub issue. Posting leaves the dispatch in `pending_connector_ack`; only an official connector response containing a stable Codex task link advances it to `running`. The request tells Codex to open a pull request, obey repository instructions, never merge or deploy, and return a first-class `BLOCKED:` question when information is missing.
+
+Official setup/environment-required and generic pre-creation rejection responses block the task even when they do not use `BLOCKED:`. Metis records the response and correlation result, releases the lease, refunds the unused task-start and estimated-workload reservations, and preserves any setup link in the blocker. Missing acknowledgments expire to an observable blocked state and receive the same refund. Reapplying the human `metis:ready` decision creates one new lease; comment markers make delivery idempotent within each attempt.
 
 This path does not use the OpenAI API. It relies on the repository being connected to Codex cloud and the GitHub user being linked to an eligible ChatGPT/Codex account. GitHub App installation-token comments are intentionally not used for dispatch because they are bot-authored and do not trigger Codex. The App remains responsible for webhook and control-plane operations.
 
