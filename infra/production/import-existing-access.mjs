@@ -7,6 +7,10 @@ const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || process.env.TF_VAR_cloudf
 const address = "cloudflare_zero_trust_access_application.metis_ui";
 const name = "Metis administration";
 const domain = "metis.from-trees.com/*";
+// The application created by the previous configuration used the bare
+// hostname. Import it before Terraform updates it to the current wildcard
+// destination, rather than attempting to create a duplicate application.
+const discoverableDomains = new Set([domain, "metis.from-trees.com"]);
 
 if (!apiToken || !accountId) {
   console.error("CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set.");
@@ -24,7 +28,7 @@ if (!response.ok || !payload.success) {
   process.exit(1);
 }
 
-const matches = payload.result.filter((application) => application.name === name && application.domain === domain);
+const matches = payload.result.filter((application) => application.name === name && discoverableDomains.has(application.domain));
 if (matches.length > 1) {
   console.error(`Expected at most one ${name} application at ${domain}; found ${matches.length}.`);
   process.exit(1);
