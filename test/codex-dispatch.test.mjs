@@ -14,4 +14,6 @@ test("task envelope forbids merge, deployment, and production mutation", () => {
   assert.equal(task.execution_envelope.deployment, "forbidden");
   assert.equal(task.execution_envelope.production_mutation, "forbidden");
   assert.equal(task.execution_envelope.max_workload_units, 4);
+  assert.match(task.instructions, /desktop and mobile screenshot evidence/);
+  assert.match(task.instructions, /missing visual evidence is incomplete/);
 });

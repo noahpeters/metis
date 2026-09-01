@@ -9,3 +9,5 @@
 - Prefer explicit state transitions and idempotent GitHub operations.
 - Never log secrets, tokens, or full model prompts containing secrets.
 - Run `npm run verify` before proposing a change.
+- For any user-interface change, also run `npm run test:ui`. A build or unit test alone is not UI verification: Chromium must render the affected routes at desktop and mobile sizes, and the resulting Playwright screenshots must be attached as review evidence. A missing browser or missing screenshot is a verification failure to repair, never an acceptable warning.
+- In a UI pull request, direct reviewers to the `playwright-ui-evidence` artifact in the PR's CI run; it contains the HTML report and desktop/mobile screenshots.

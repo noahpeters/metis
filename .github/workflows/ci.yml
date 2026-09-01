@@ -14,12 +14,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run verify
+      - name: Detect UI changes
+        id: ui
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            BASE_SHA="HEAD^"
+          fi
+          if git diff --quiet "$BASE_SHA" HEAD -- ui-assets src/ui test/ui playwright.config.mjs wrangler.ui.jsonc; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install Chromium
+        if: steps.ui.outputs.changed == 'true'
+        run: npx playwright install --with-deps chromium
+      - name: Verify rendered UI
+        if: steps.ui.outputs.changed == 'true'
+        run: npm run test:ui
+      - name: Upload Playwright report and screenshots
+        if: always() && steps.ui.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-ui-evidence
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: error
+          retention-days: 14
 
   deploy-production:
     if: github.event_name == 'push'

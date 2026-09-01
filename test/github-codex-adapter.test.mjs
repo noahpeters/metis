@@ -53,6 +53,8 @@ test("GitHub Codex task comment is idempotently marked and preserves guardrails"
   assert.match(body, /Do not run `git push`, use `gh`/);
   assert.match(body, /READY_FOR_PR:/);
   assert.match(body, /Never merge, deploy, or mutate production/);
+  assert.match(body, /desktop and mobile screenshot evidence/);
+  assert.match(body, /browser report and screenshot artifact/);
   assert.match(body, /BLOCKED:/);
 });
 
@@ -66,5 +68,6 @@ test("GitHub Codex revision prompt is exact-head and existing-PR scoped", () => 
   assert.match(body, /prepare a replacement pull request/);
   assert.match(body, /Do not run `git push`, use `gh`/);
   assert.match(body, /READY_FOR_PR:/);
+  assert.match(body, /desktop and mobile screenshot evidence/);
   assert.match(body, /Metis-Task: owner\/repo#7/);
 });

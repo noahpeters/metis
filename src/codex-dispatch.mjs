@@ -51,7 +51,7 @@ export function buildCodexTask(task, leaseId, callbackUrl) {
       production_mutation: "forbidden",
       blocked_state: "required_for_missing_decisions",
     },
-    instructions: "Inspect the repository deeply, implement, debug, verify, and substantively review. Open a PR but never merge or deploy. Return BLOCKED when a decision or missing information prevents safe progress.",
+    instructions: "Inspect the repository deeply, implement, debug, verify, and substantively review. Open a PR but never merge or deploy. For UI changes, run the repository-controlled browser verification command and produce desktop and mobile screenshot evidence; a build alone or missing visual evidence is incomplete. Return BLOCKED when a decision or missing information prevents safe progress.",
     callback_url: callbackUrl,
   };
 }

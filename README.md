@@ -87,6 +87,16 @@ Provider reporting is intentionally separate from local pacing. The supported-si
 npm run verify
 ```
 
+UI changes additionally require repository-controlled rendered verification:
+
+```sh
+npm run test:ui
+```
+
+That command starts the UI Worker with local-only test authentication, exercises it in Chromium at desktop and mobile viewports, and writes screenshots to `test-results/` plus an HTML report to `playwright-report/`. For a pull request that changes the UI, download the **playwright-ui-evidence** artifact from the CI workflow run to review the report and screenshots. A build without this artifact is not sufficient UI verification.
+
+Codex Cloud environments must use `.codex/setup.sh` as their setup script. After that script changes, reset the environment cache in Codex Cloud so fresh and resumed tasks run `npm ci` and install Chromium instead of reusing an image without the browser.
+
 ## Guardrails
 
 - Only an open, allowlisted issue in Metis Main Project with `Execution owner=Metis` and `Status=Ready` can enter normal intake. Labels are lifecycle visibility only and never authorize admission.
