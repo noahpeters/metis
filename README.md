@@ -87,6 +87,21 @@ Provider reporting is intentionally separate from local pacing. The supported-si
 npm run verify
 ```
 
+The production-shaped browser suite runs separately so unit verification stays
+fast. Install Chromium once with `npx playwright install chromium`, then run:
+
+```sh
+npm run test:full-stack
+```
+
+The suite starts the actual control-plane and UI entrypoints in one multi-Worker
+Miniflare runtime, migrates an isolated local D1 database, and connects the
+Workers with the real `CONTROL_PLANE` RPC service binding. Chromium covers local
+authentication, rendered pacing states, and a reset initiated through the UI;
+the test then verifies the new window and audit row directly in local D1. It
+configures no remote Worker or database. Failure evidence is saved under
+`output/full-stack/` for CI artifact upload.
+
 ## Guardrails
 
 - Only an open, allowlisted issue in Metis Main Project with `Execution owner=Metis` and `Status=Ready` can enter normal intake. Labels are lifecycle visibility only and never authorize admission.

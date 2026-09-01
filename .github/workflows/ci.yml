@@ -33,6 +33,8 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Verify rendered administration UI
         run: npm run test:ui:visual
+      - name: Verify D1-to-UI round trips
+        run: npm run test:full-stack
       - name: Upload administration UI screenshot
         if: always()
         uses: actions/upload-artifact@v4
@@ -40,6 +42,13 @@ jobs:
           name: metis-administration-ui
           path: output/playwright/metis-pacing.png
           if-no-files-found: error
+      - name: Upload full-stack diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metis-full-stack-diagnostics
+          path: output/full-stack/
+          if-no-files-found: warn
 
   terraform-plan:
     needs: verify
