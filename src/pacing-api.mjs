@@ -1,4 +1,5 @@
 import { loadPolicy } from "./config.mjs";
+import { authorizeUiBinding } from "./ui-binding-auth.mjs";
 
 export const PACING_OVERVIEW_SCHEMA_VERSION = 1;
 export const RESET_CONFIRMATION = "START_NEW_PACING_WINDOW";
@@ -12,7 +13,7 @@ function nextUtcDay(seconds) {
 }
 
 export async function pacingOverview(request, env) {
-  if (!authorize(request, env)) return error("unauthorized", "Service binding authorization required", 401);
+  if (!authorizeUiBinding(request)) return error("unauthorized", "Service binding authorization required", 401);
   const policy = loadPolicy(env.METIS_POLICY_JSON);
   const [window, provider, active, executable, checkpoint] = await Promise.all([
     env.DB.prepare("SELECT p.*,c.generation FROM pacing_window_control c JOIN pacing_windows p ON p.window_key=c.current_window_id WHERE c.singleton=1").first(),
@@ -41,7 +42,7 @@ export async function pacingOverview(request, env) {
 }
 
 export async function resetPacingWindow(request, env, reconcile) {
-  if (!authorize(request, env)) return error("unauthorized", "Service binding authorization required", 401);
+  if (!authorizeUiBinding(request)) return error("unauthorized", "Service binding authorization required", 401);
   const idempotencyKey = request.headers.get("Idempotency-Key")?.trim();
   if (!idempotencyKey || idempotencyKey.length > 200) return error("invalid_idempotency_key", "A valid Idempotency-Key is required", 400);
   let body;
@@ -70,9 +71,5 @@ export async function resetPacingWindow(request, env, reconcile) {
   return noStore({ source_window_id: body.expected_window_id, new_window_id: newId, reset_at: iso(now), duplicate: false }, 201);
 }
 
-function authorize(request, env) {
-  const email = request.headers.get("X-Metis-Verified-Email")?.toLowerCase();
-  return Boolean(env.UI_BINDING_TOKEN && request.headers.get("X-Metis-UI-Binding") === env.UI_BINDING_TOKEN && email && /^[^@]+@from-trees\.com$/.test(email));
-}
 function result(row, duplicate) { return { source_window_id: row.source_window_id, new_window_id: row.new_window_id, reset_at: iso(row.created_at), duplicate }; }
 function error(code, message, status, details) { return noStore({ error: { code, message, ...(details || {}) } }, status); }

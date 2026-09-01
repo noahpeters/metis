@@ -31,9 +31,10 @@ test("API allowlist permits only read-only status", () => {
 });
 
 test("control plane re-authorizes verified binding context", () => {
-  const env = { UI_BINDING_TOKEN: "secret" };
-  assert.equal(authorizeUiBinding(new Request("https://cp/internal/ui/status", { headers: { "X-Metis-Verified-Email": "admin@from-trees.com", "X-Metis-UI-Binding": "secret" } }), env), true);
-  assert.equal(authorizeUiBinding(new Request("https://cp/internal/ui/status", { headers: { "Cf-Access-Authenticated-User-Email": "admin@from-trees.com" } }), env), false);
+  assert.equal(authorizeUiBinding(new Request("https://cp/internal/ui/status", { headers: { "X-Metis-Verified-Email": "admin@from-trees.com", "CF-Worker": "from-trees.com" } })), true);
+  assert.equal(authorizeUiBinding(new Request("https://cp/internal/ui/status", { headers: { "X-Metis-Verified-Email": "admin@from-trees.com" } })), false);
+  assert.equal(authorizeUiBinding(new Request("https://cp/internal/ui/status", { headers: { "X-Metis-Verified-Email": "admin@from-trees.com", "CF-Worker": "evil.example" } })), false);
+  assert.equal(authorizeUiBinding(new Request("https://cp/internal/ui/status", { headers: { "Cf-Access-Authenticated-User-Email": "admin@from-trees.com", "CF-Worker": "from-trees.com" } })), false);
 });
 
 test("SSR fails closed and never caches unauthorized state", async () => {
