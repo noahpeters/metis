@@ -1,4 +1,4 @@
-export const allowedApiRequest = (method, pathname) => method === "GET" && pathname === "/api/status";
+export const allowedApiRequest = (method, pathname) => (method === "GET" && ["/api/status", "/api/pacing"].includes(pathname)) || (method === "POST" && pathname === "/api/pacing/reset");
 
 export async function proxyApi(request, env, identity) {
   const url = new URL(request.url);
@@ -7,7 +7,9 @@ export async function proxyApi(request, env, identity) {
     "X-Metis-Verified-Email": identity.email,
     "X-Metis-UI-Binding": env.UI_BINDING_TOKEN,
   });
-  const upstream = await env.CONTROL_PLANE.fetch(new Request(`https://control-plane/internal/ui/status`, { headers }));
+  if (request.headers.has("Idempotency-Key")) headers.set("Idempotency-Key", request.headers.get("Idempotency-Key"));
+  const route = url.pathname === "/api/status" ? "/internal/ui/status" : url.pathname === "/api/pacing" ? "/internal/ui/pacing" : "/internal/ui/pacing/reset";
+  const upstream = await env.CONTROL_PLANE.fetch(new Request(`https://control-plane${route}`, { method: request.method, headers, body: request.method === "POST" ? request.body : null }));
   return new Response(upstream.body, { status: upstream.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 }
 

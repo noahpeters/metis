@@ -30,6 +30,8 @@ test("API allowlist permits only read-only status", () => {
   assert.equal(allowedApiRequest("GET", "/api/status"), true);
   assert.equal(allowedApiRequest("POST", "/api/status"), false);
   assert.equal(allowedApiRequest("GET", "/api/tasks"), false);
+  assert.equal(allowedApiRequest("GET", "/api/pacing"), true);
+  assert.equal(allowedApiRequest("POST", "/api/pacing/reset"), true);
 });
 
 test("control plane re-authorizes verified binding context", () => {
