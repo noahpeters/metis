@@ -10,11 +10,6 @@ variable "cloudflare_api_token" {
   sensitive   = true
 }
 
-variable "cloudflare_zone_id" {
-  description = "Cloudflare zone containing metis.from-trees.com."
-  type        = string
-}
-
 variable "allowed_repositories" {
   description = "Comma-separated repositories accepted by the production webhook. Empty keeps production inert."
   type        = string

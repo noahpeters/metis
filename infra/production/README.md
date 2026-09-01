@@ -1,8 +1,8 @@
 # Metis production infrastructure
 
-Terraform describes the D1 database, Queues, queue consumer, cron trigger, DNS, Worker route, workers.dev subdomain, and Cloudflare Access policy. Wrangler owns Worker code and bindings so Terraform cannot deploy a Worker version. State remains local and ignored by Git while the infrastructure backend is being bootstrapped.
+Terraform describes the Cloudflare Access application and its verified-domain policy. Wrangler owns the Worker code, custom domain, D1/Queue bindings, encrypted secrets, and runtime triggers, matching the FTOPS split between Terraform Access configuration and Wrangler deployments. Metis does not provision or require a remote Terraform state service.
 
-Production deployments happen only through `.github/workflows/ci.yml` after verification succeeds on `main`. The workflow applies D1 migrations and deploys the Worker with the checked-in Wrangler configuration, matching the FTOPS/msgstats release model. The repository deployment scripts fail outside GitHub Actions. Do not run `terraform apply` or `wrangler deploy` locally.
+Pull requests format, validate, and generate a read-only plan. After human merge, `.github/workflows/ci.yml` creates a fresh plan for the exact merge SHA, rejects replacement of persistent resources, applies it under the `production` environment, and only then migrates D1 and deploys both Workers. The repository deployment scripts fail outside GitHub Actions. Do not run `terraform apply` or `wrangler deploy` locally.
 
 Use the repository-local Terraform toolchain only for formatting, validation, and read-only planning:
 
@@ -11,7 +11,15 @@ Use the repository-local Terraform toolchain only for formatting, validation, an
 TF_VAR_cloudflare_api_token=... ./scripts/terraform -chdir=infra/production plan
 ```
 
-Never commit the API token, Terraform state, `.tools`, or `.build`. Any future infrastructure apply workflow must first move Terraform state to a durable remote backend; local applies are not an accepted deployment path.
+Never commit API credentials, Terraform's generated local state, plans, `.tools`, or `.build`. Local applies are not an accepted deployment path.
+
+## Existing application discovery
+
+Like FTOPS, every CI run checks Cloudflare for an existing Access application with the exact configured name and domain and imports that application into the transient Terraform run before planning. No match means the first apply will create it; multiple matches fail closed. The script never reads or prints credentials.
+
+Worker scripts and the UI `CONTROL_PLANE` service binding remain outside Terraform so infrastructure apply cannot replace code, bindings, queues, D1 data, or encrypted secrets.
+
+The UI hostname is checked into `wrangler.ui.jsonc` as a Worker custom domain, matching the FTOPS deployment pattern and avoiding a separate zone-ID setting. Cloudflare Access injects the authenticated identity header after enforcing the checked-in `from-trees.com` policy; the UI rejects missing or out-of-domain identities.
 
 Codex cloud dispatch remains fail-closed until `codex_dispatch_mode` is set to `github_integration`, `codex_github_integration_enabled` is true, the encrypted Worker secret `GITHUB_DISPATCH_USER_TOKEN` is present, the target repository is allowlisted and connected to Codex cloud, and included capacity is enabled in policy and D1. The dispatch token must be a fine-grained GitHub user token restricted to the target repository with Issues read/write; keep it out of Terraform variables and state.
 
@@ -21,21 +29,13 @@ Before enabling a repository in `METIS_LIFECYCLE_POLICY_JSON`, update the GitHub
 
 ## In-place cutover runbook
 
-This directory is the continuation of the existing Terraform state, not a fresh
-installation. Before any apply, move the durable state object's module/path from
-the former infrastructure directory to `infra/production`; do not initialize an empty state. Back up
-the state and record the current D1 database ID, queue depths, Worker versions,
+Before any cutover, record the current D1 database ID, queue depths, Worker versions,
 routes, cron, Access application ID, and encrypted-secret names (never values).
 
 1. Freeze dispatch with the existing provider gate and wait for the dispatch and
    dead-letter queues to drain. Keep webhook ingestion on the old Worker during
    this interval.
-2. Move Terraform addresses with `terraform state mv` if the backend records a
-   module path. Import the existing D1 ID at `cloudflare_d1_database.metis` if it
-   is not already in that state. The checked-in Wrangler ID remains
-   `fab80b33-f3d1-4fb6-bfa7-05ab613386c5`; verify it before and after the rename.
-   Changing the D1 display name must update that object in place. Reject any plan
-   that destroys or replaces it.
+2. The checked-in Wrangler D1 ID remains `fab80b33-f3d1-4fb6-bfa7-05ab613386c5`; verify it before and after deployment. Terraform does not manage or replace it.
 3. Queues cannot be renamed in place. Only after both queues are empty, create
    `metis-dispatch` and `metis-dead-letter`, then merge the configuration change
    so GitHub Actions atomically deploys the new producer/consumer bindings. Keep

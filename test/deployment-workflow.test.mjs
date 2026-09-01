@@ -10,4 +10,12 @@ test("routine production deployment preserves secrets and deploys both Workers",
   assert.match(workflow, /npm run db:migrate:production/);
   assert.match(workflow, /npm run deploy:production/);
   assert.match(workflow, /npm run deploy:ui:production/);
+  assert.match(workflow, /terraform-plan:/);
+  assert.match(workflow, /terraform-apply:/);
+  assert.match(workflow, /needs: \[verify, terraform-apply\]/);
+  assert.match(workflow, /environment: production/);
+  assert.doesNotMatch(workflow, /TERRAFORM_STATE_ACCESS_KEY_ID|TERRAFORM_STATE_SECRET_ACCESS_KEY/);
+  assert.doesNotMatch(workflow, /AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/);
+  assert.doesNotMatch(workflow, /CLOUDFLARE_ZONE_ID|CLOUDFLARE_ACCESS_TEAM_DOMAIN|CLOUDFLARE_ACCESS_AUDIENCE/);
+  assert.match(workflow, /GITHUB_STEP_SUMMARY/);
 });

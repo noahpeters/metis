@@ -4,6 +4,7 @@
   "main": "src/ui/worker.mjs",
   "compatibility_date": "2026-08-30",
   "workers_dev": false,
+  "routes": [{ "pattern": "metis.from-trees.com", "custom_domain": true }],
   "assets": { "directory": "./ui-assets", "binding": "ASSETS", "run_worker_first": true },
   "services": [{ "binding": "CONTROL_PLANE", "service": "metis-control-plane" }],
   "vars": { "ENVIRONMENT": "production", "LOCAL_AUTH_ENABLED": "false" }

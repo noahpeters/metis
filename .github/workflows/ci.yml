@@ -9,6 +9,15 @@ concurrency:
   group: metis-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -21,18 +30,62 @@ jobs:
       - run: npm ci
       - run: npm run verify
 
-  deploy-production:
-    if: github.event_name == 'push'
+  terraform-plan:
     needs: verify
     runs-on: ubuntu-latest
     environment: production
-    permissions:
-      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.0
+      - name: Terraform format
+        run: terraform -chdir=infra/production fmt -check
+      - name: Initialize Terraform
+        run: terraform -chdir=infra/production init
+      - name: Discover existing Access application
+        run: node infra/production/import-existing-access.mjs
+      - name: Validate infrastructure
+        run: terraform -chdir=infra/production validate
+      - name: Read-only production plan
+        run: terraform -chdir=infra/production plan -out=/tmp/production.tfplan
+      - name: Record plan
+        run: |
+          echo "### Terraform production plan" >> "$GITHUB_STEP_SUMMARY"
+          echo "Commit: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+          terraform -chdir=infra/production show -no-color /tmp/production.tfplan | tail -n 1 >> "$GITHUB_STEP_SUMMARY"
+
+  terraform-apply:
+    if: github.event_name == 'push'
+    needs: terraform-plan
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.0
+      - run: terraform -chdir=infra/production init
+      - name: Discover existing Access application
+        run: node infra/production/import-existing-access.mjs
+      - name: Plan exact merge SHA
+        run: terraform -chdir=infra/production plan -out=/tmp/production.tfplan
+      - name: Apply reviewed infrastructure
+        run: terraform -chdir=infra/production apply -auto-approve /tmp/production.tfplan
+      - name: Record apply
+        run: |
+          echo "### Terraform production apply" >> "$GITHUB_STEP_SUMMARY"
+          echo "Applied exact merge SHA: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Infrastructure applied from the checked-in production configuration." >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-production:
+    if: github.event_name == 'push'
+    needs: [verify, terraform-apply]
+    runs-on: ubuntu-latest
+    environment: production
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_ACCESS_AUDIENCE: ${{ vars.CLOUDFLARE_ACCESS_AUDIENCE }}
-      CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${{ vars.CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -43,11 +96,22 @@ jobs:
       - name: Apply D1 migrations
         run: npm run db:migrate:production
       - name: Deploy control-plane Worker
-        run: npm run deploy:production
+        run: npm run deploy:production | tee /tmp/control-plane-deploy.log
       - name: Deploy administration UI Worker
         run: >-
           npm run deploy:ui:production --
           --var ENVIRONMENT:production
           --var LOCAL_AUTH_ENABLED:false
-          --var CLOUDFLARE_ACCESS_AUDIENCE:$CLOUDFLARE_ACCESS_AUDIENCE
-          --var CLOUDFLARE_ACCESS_TEAM_DOMAIN:$CLOUDFLARE_ACCESS_TEAM_DOMAIN
+          | tee /tmp/ui-deploy.log
+      - name: Verify public endpoints
+        run: |
+          curl --fail --silent --show-error --retry 5 https://metis-control-plane.gr4gwzrfq2.workers.dev/health >/dev/null
+          status=$(curl --silent --output /dev/null --write-out '%{http_code}' https://metis.from-trees.com/)
+          test "$status" = 302 || test "$status" = 403
+      - name: Record deployment evidence
+        if: always()
+        run: |
+          echo "### Production deployment" >> "$GITHUB_STEP_SUMMARY"
+          echo "Exact merge SHA: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+          sed -n '/Version ID:/p' /tmp/control-plane-deploy.log /tmp/ui-deploy.log >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo "Health and unauthenticated Access boundary smoke checks completed." >> "$GITHUB_STEP_SUMMARY"
