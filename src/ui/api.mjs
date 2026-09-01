@@ -5,7 +5,6 @@ export async function proxyApi(request, env, identity) {
   if (!allowedApiRequest(request.method, url.pathname)) return response({ error: { code: "not_found", message: "API route is not allowed" } }, 404);
   const headers = new Headers({
     "X-Metis-Verified-Email": identity.email,
-    "X-Metis-UI-Binding": env.UI_BINDING_TOKEN,
   });
   if (request.headers.has("Idempotency-Key")) headers.set("Idempotency-Key", request.headers.get("Idempotency-Key"));
   const route = url.pathname === "/api/status" ? "/internal/ui/status" : url.pathname === "/api/pacing" ? "/internal/ui/pacing" : "/internal/ui/pacing/reset";

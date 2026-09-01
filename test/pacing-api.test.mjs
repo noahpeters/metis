@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { pacingOverview, resetPacingWindow, RESET_CONFIRMATION } from "../src/pacing-api.mjs";
 
-const headers = { "X-Metis-Verified-Email": "admin@from-trees.com", "X-Metis-UI-Binding": "secret" };
+const headers = { "X-Metis-Verified-Email": "admin@from-trees.com", "CF-Worker": "from-trees.com" };
 
 test("overview distinguishes local estimates from unknown provider state and never caches", async () => {
   const rows = [
@@ -12,7 +12,7 @@ test("overview distinguishes local estimates from unknown provider state and nev
     { count: 4 },
     { last_successful_at: 1_700_000_010 },
   ];
-  const env = { UI_BINDING_TOKEN: "secret", DB: { prepare: () => ({ first: async () => rows.shift(), all: async () => rows.shift(), bind() { return this; } }) } };
+  const env = { DB: { prepare: () => ({ first: async () => rows.shift(), all: async () => rows.shift(), bind() { return this; } }) } };
   const response = await pacingOverview(new Request("https://cp/internal/ui/pacing", { headers }), env);
   const body = await response.json();
   assert.equal(response.headers.get("cache-control"), "no-store");
@@ -23,7 +23,7 @@ test("overview distinguishes local estimates from unknown provider state and nev
 });
 
 test("reset requires fresh binding authorization and explicit confirmation", async () => {
-  const env = { UI_BINDING_TOKEN: "secret" };
+  const env = {};
   let response = await resetPacingWindow(new Request("https://cp/reset", { method: "POST", body: "{}" }), env, async () => {});
   assert.equal(response.status, 401);
   response = await resetPacingWindow(new Request("https://cp/reset", { method: "POST", headers: { ...headers, "Idempotency-Key": "key" }, body: "{}" }), env, async () => {});
@@ -34,7 +34,7 @@ test("reset requires fresh binding authorization and explicit confirmation", asy
 test("an idempotent reset returns immutable audit evidence without reconciling twice", async () => {
   let reconciled = 0;
   const audit = { source_window_id: "window-1", new_window_id: "window-2", created_at: 1_700_000_000 };
-  const env = { UI_BINDING_TOKEN: "secret", DB: { prepare: () => ({ bind() { return this; }, first: async () => audit }) } };
+  const env = { DB: { prepare: () => ({ bind() { return this; }, first: async () => audit }) } };
   const request = new Request("https://cp/reset", { method: "POST", headers: { ...headers, "content-type": "application/json", "Idempotency-Key": "same-key" }, body: JSON.stringify({ confirmation: RESET_CONFIRMATION, expected_window_id: "window-1", request_id: "request-1", reason: "Operator-requested retry" }) });
   const response = await resetPacingWindow(request, env, async () => { reconciled += 1; });
   assert.equal(response.status, 200);

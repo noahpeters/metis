@@ -12,17 +12,14 @@ import { ingestOpenAIAnalytics } from "./openai-analytics.mjs";
 import { reconcileManagedTasks } from "./reconciliation.mjs";
 import { observeManagedPullRequestMergeability } from "./merge-conflicts.mjs";
 import { pacingOverview, resetPacingWindow } from "./pacing-api.mjs";
+import { authorizeUiBinding } from "./ui-binding-auth.mjs";
+
+export { authorizeUiBinding } from "./ui-binding-auth.mjs";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
-export function authorizeUiBinding(request, env) {
-  const email = request.headers.get("X-Metis-Verified-Email")?.toLowerCase();
-  const token = request.headers.get("X-Metis-UI-Binding");
-  return Boolean(env.UI_BINDING_TOKEN && token === env.UI_BINDING_TOKEN && email && /^[^@]+@from-trees\.com$/.test(email));
-}
-
 function uiStatus(request, env) {
-  if (!authorizeUiBinding(request, env)) return new Response(JSON.stringify({ error: { code: "unauthorized", message: "Service binding authorization required" } }), { status: 401, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  if (!authorizeUiBinding(request)) return new Response(JSON.stringify({ error: { code: "unauthorized", message: "Service binding authorization required" } }), { status: 401, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   return new Response(JSON.stringify({ service: "metis", status: "operational" }), { headers: { "content-type": "application/json", "cache-control": "no-store" } });
 }
 
