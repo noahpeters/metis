@@ -117,6 +117,7 @@ export function readyForPrCodexFromWebhook(event, payload) {
     body,
     comment_url: payload.comment?.html_url || null,
     task_url: taskUrl,
+    lease_id: body.match(/metis-codex-dispatch:([A-Za-z0-9-]+)/)?.[1] || null,
   };
 }
 
@@ -334,13 +335,7 @@ async function handleWorkflowCompletion(env, workflow) {
   return { accepted: true, state: "complete", task_id: task.id };
 }
 
-async function receiveWebhook(request, env) {
-  const body = await request.text();
-  if (!await verifySignature(env.GITHUB_WEBHOOK_SECRET, request.headers.get("x-hub-signature-256"), body)) return json({ error: "invalid signature" }, 401);
-  const delivery = request.headers.get("x-github-delivery");
-  const event = request.headers.get("x-github-event");
-  if (event === "ping") return json({ ok: true });
-  const payload = JSON.parse(body);
+async function processWebhook(event, payload, env) {
   // Project reconciliation is the sole normal admission path. Lifecycle label
   // webhooks remain useful visibility signals but can never create a task.
   const task = null;
@@ -357,12 +352,6 @@ async function receiveWebhook(request, env) {
   if (!task && !blocked && !readyForPr && !connectorAck && !revisionResult && !pullRequest && !pullRequestLifecycle && !unmarkedRevisionPr && !reviewLifecycle && !checkSuiteLifecycle && !workflowRun) return json({ accepted: false }, 202);
   const repository = task?.repository || blocked?.repository || readyForPr?.repository || connectorAck?.repository || revisionResult?.repository || pullRequest?.repository || pullRequestLifecycle?.repository || unmarkedRevisionPr?.repository || reviewLifecycle?.repository || checkSuiteLifecycle?.repository || workflowRun?.repository;
   if (!repositoryAllowed(env, repository)) return json({ error: "repository not allowed" }, 403);
-  try {
-    await env.DB.prepare("INSERT INTO webhook_deliveries (delivery_id, event_name, received_at) VALUES (?, ?, unixepoch())").bind(delivery, event).run();
-  } catch (error) {
-    if (String(error).includes("UNIQUE")) return json({ accepted: true, duplicate: true }, 202);
-    throw error;
-  }
   if (!pullRequestLifecycle && unmarkedRevisionPr) {
     const candidates = await env.DB.prepare("SELECT t.id,t.issue_number FROM tasks t JOIN revision_dispatches r ON r.task_id=t.id AND r.state='awaiting_pr_creation' WHERE t.repository=? AND t.state='awaiting_revision_pr' AND r.updated_at >= unixepoch()-7200").bind(unmarkedRevisionPr.repository).all();
     if (candidates.results.length !== 1) return json({ accepted: false, reason: "unmarked revision PR is ambiguous or has no active revision" }, 202);
@@ -556,13 +545,18 @@ async function receiveWebhook(request, env) {
       await resumeReadyBacklog(env);
       return json({ accepted: true, task_id: id, state: "awaiting_revision_pr" }, 202);
     }
-    if (!existing || existing.state !== "running") return json({ accepted: false, reason: "task is not running" }, 202);
-    const result = JSON.stringify({ status: "awaiting_pr_creation", summary: readyForPr.summary, comment_url: readyForPr.comment_url, task_url: readyForPr.task_url });
+    if (existing?.state === "awaiting_pr_creation") return json({ accepted: true, task_id: id, state: "awaiting_pr_creation", duplicate: true }, 202);
+    if (!existing || !["pending_connector_ack", "running"].includes(existing.state)) return json({ accepted: false, reason: "task has no active coding dispatch" }, 202);
+    const dispatch = await env.DB.prepare("SELECT * FROM dispatches WHERE task_id=? ORDER BY id DESC LIMIT 1").bind(id).first();
+    if (!dispatch || !["pending_connector_ack", "running"].includes(dispatch.state)) return json({ accepted: false, reason: "no correlated active dispatch" }, 202);
+    if (readyForPr.lease_id && readyForPr.lease_id !== dispatch.lease_id) return json({ accepted: false, reason: "READY_FOR_PR lease mismatch" }, 202);
+    const acceptedWithoutAck = dispatch.state === "pending_connector_ack";
+    const result = JSON.stringify({ status: "awaiting_pr_creation", summary: readyForPr.summary, comment_url: readyForPr.comment_url, task_url: readyForPr.task_url, dispatch_id: dispatch.id, lease_id: dispatch.lease_id, accepted_without_separate_ack: acceptedWithoutAck });
     await env.DB.batch([
-      env.DB.prepare("UPDATE dispatches SET state='awaiting_pr_creation', result_json=?, updated_at=unixepoch() WHERE task_id=? AND state='running'").bind(result, id),
-      env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(id),
-      env.DB.prepare("UPDATE tasks SET state='awaiting_pr_creation', blocker_reason=NULL, updated_at=unixepoch() WHERE id=?").bind(id),
-      env.DB.prepare("INSERT INTO usage_events (task_id, provider, operation, legacy_estimated_workload_units, metadata_json, created_at) VALUES (?, 'codex_included', 'coding_prepared', 0, ?, unixepoch())").bind(id, result),
+      env.DB.prepare("UPDATE dispatches SET external_id=COALESCE(?,external_id),state='awaiting_pr_creation',result_json=?,updated_at=unixepoch() WHERE id=? AND state IN ('pending_connector_ack','running')").bind(readyForPr.task_url, result, dispatch.id),
+      env.DB.prepare("DELETE FROM task_leases WHERE task_id=? AND lease_id=?").bind(id, dispatch.lease_id),
+      env.DB.prepare("UPDATE tasks SET state='awaiting_pr_creation',blocker_reason=NULL,updated_at=unixepoch() WHERE id=? AND state IN ('pending_connector_ack','running')").bind(id),
+      env.DB.prepare("INSERT INTO usage_events (task_id,provider,operation,legacy_estimated_workload_units,metadata_json,created_at) SELECT ?,'codex_included',?,0,?,unixepoch() WHERE NOT EXISTS (SELECT 1 FROM usage_events WHERE task_id=? AND operation='coding_prepared' AND metadata_json=?)").bind(id, acceptedWithoutAck ? "connector_completed_without_ack" : "coding_prepared", result, id, result),
     ]);
     await setState(env, readyForPr.repository, readyForPr.issue_number, "metis:awaiting-pr");
     await comment(env, readyForPr.repository, readyForPr.issue_number, [
@@ -582,6 +576,56 @@ async function receiveWebhook(request, env) {
     .bind(id, task.repository, task.issue_number, task.issue_node_id, task.title, task.body, task.actor, task.size_class, task.max_workload_units, task.budget_approved).run();
   await env.DISPATCH_QUEUE.send({ type: "intake", taskId: id });
   return json({ accepted: true, task_id: id }, 202);
+}
+
+async function receiveWebhook(request, env) {
+  const body = await request.text();
+  if (!await verifySignature(env.GITHUB_WEBHOOK_SECRET, request.headers.get("x-hub-signature-256"), body)) return json({ error: "invalid signature" }, 401);
+  const delivery = request.headers.get("x-github-delivery");
+  const event = request.headers.get("x-github-event");
+  if (event === "ping") return json({ ok: true });
+
+  const payload = JSON.parse(body);
+  const normalized = JSON.stringify({ event, payload });
+  let duplicate = false;
+  try {
+    await env.DB.prepare("INSERT INTO webhook_deliveries(delivery_id,event_name,received_at,state,payload_json,updated_at) VALUES(?,?,unixepoch(),'queued',?,unixepoch())")
+      .bind(delivery, event, normalized).run();
+  } catch (error) {
+    if (!String(error).includes("UNIQUE")) throw error;
+    duplicate = true;
+    const prior = await env.DB.prepare("SELECT state FROM webhook_deliveries WHERE delivery_id=?").bind(delivery).first();
+    if (prior?.state === "completed") return json({ accepted: true, duplicate: true }, 202);
+    await env.DB.prepare("UPDATE webhook_deliveries SET state='queued',error=NULL,updated_at=unixepoch() WHERE delivery_id=? AND state!='completed'").bind(delivery).run();
+  }
+
+  // The persisted normalized payload is the durable queue. Processing may happen
+  // immediately, but an interrupted delivery remains resumable on GitHub retry.
+  await env.DB.prepare("UPDATE webhook_deliveries SET state='processing',updated_at=unixepoch() WHERE delivery_id=? AND state='queued'").bind(delivery).run();
+  try {
+    const response = await processWebhook(event, payload, env);
+    await env.DB.prepare("UPDATE webhook_deliveries SET state='completed',error=NULL,updated_at=unixepoch() WHERE delivery_id=?").bind(delivery).run();
+    if (!duplicate) return response;
+    const result = await response.json();
+    return json({ ...result, duplicate: true }, response.status);
+  } catch (error) {
+    await env.DB.prepare("UPDATE webhook_deliveries SET state='failed',error=?,updated_at=unixepoch() WHERE delivery_id=?").bind(String(error).slice(0, 1000), delivery).run();
+    throw error;
+  }
+}
+
+async function resumeIncompleteWebhookDeliveries(env, limit = 20) {
+  const deliveries = await env.DB.prepare("SELECT delivery_id,payload_json FROM webhook_deliveries WHERE state IN ('queued','failed') OR (state='processing' AND updated_at < unixepoch()-300) ORDER BY received_at LIMIT ?").bind(limit).all();
+  for (const delivery of deliveries.results) {
+    try {
+      const normalized = JSON.parse(delivery.payload_json);
+      await env.DB.prepare("UPDATE webhook_deliveries SET state='processing',error=NULL,updated_at=unixepoch() WHERE delivery_id=? AND state!='completed'").bind(delivery.delivery_id).run();
+      await processWebhook(normalized.event, normalized.payload, env);
+      await env.DB.prepare("UPDATE webhook_deliveries SET state='completed',updated_at=unixepoch() WHERE delivery_id=?").bind(delivery.delivery_id).run();
+    } catch (error) {
+      await env.DB.prepare("UPDATE webhook_deliveries SET state='failed',error=?,updated_at=unixepoch() WHERE delivery_id=?").bind(String(error).slice(0, 1000), delivery.delivery_id).run();
+    }
+  }
 }
 
 async function handleIntake(env, message) {
@@ -718,6 +762,7 @@ export default {
   },
   async scheduled(_controller, env) {
     await pruneSchedulerSignals(env);
+    await resumeIncompleteWebhookDeliveries(env);
     // GitHub is authoritative: repair missed/out-of-order lifecycle webhooks
     // before an expired local lease is allowed to change task state.
     await reconcileManagedTasks(env, { onDeploymentFailure: (task, workflow) => beginRecovery(env, task, workflow) });
@@ -734,7 +779,7 @@ export default {
         continue;
       }
       await env.DB.batch([
-        env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(row.task_id),
+        env.DB.prepare("DELETE FROM task_leases WHERE task_id=? AND EXISTS (SELECT 1 FROM tasks WHERE id=? AND state IN ('pending_connector_ack','dispatching','running'))").bind(row.task_id, row.task_id),
         env.DB.prepare("UPDATE dispatches SET state='ack_timeout',result_json=?,updated_at=unixepoch() WHERE task_id=? AND state='pending_connector_ack'").bind(JSON.stringify({ reason: "connector acknowledgment timed out" }), row.task_id),
         env.DB.prepare("UPDATE pacing_windows SET tasks_started=MAX(0,tasks_started-1),estimated_workload_units_used=MAX(0,estimated_workload_units_used-?) WHERE window_key=date('now') AND EXISTS (SELECT 1 FROM dispatches WHERE task_id=? AND state='ack_timeout')").bind(row.estimated_workload_units_reserved, row.task_id),
         env.DB.prepare("UPDATE tasks SET state='blocked',blocker_reason='Codex connector acknowledgment timed out before task acceptance.',updated_at=unixepoch() WHERE id=? AND state='pending_connector_ack'").bind(row.task_id),
@@ -745,7 +790,7 @@ export default {
       if (timedOut?.state === "blocked") {
         const task = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(row.task_id).first();
         if (task) await setState(env, task.repository, task.issue_number, "metis:blocked");
-      } else await env.DISPATCH_QUEUE.send({ type: "dispatch", taskId: row.task_id });
+      } else if (timedOut?.state !== "complete") await env.DISPATCH_QUEUE.send({ type: "dispatch", taskId: row.task_id });
     }
     await resumeReadyBacklog(env);
   },

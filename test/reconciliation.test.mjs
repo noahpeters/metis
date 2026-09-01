@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { managedTaskMarker, selectWorkflowRuns } from "../src/reconciliation.mjs";
+import { managedTaskMarker, RECONCILABLE_STATES, selectWorkflowRuns } from "../src/reconciliation.mjs";
+
+test("reconciliation includes dispatches still waiting for connector acknowledgment", () => {
+  assert.ok(RECONCILABLE_STATES.includes("pending_connector_ack"));
+});
 
 test("managed task markers require the exact repository and issue identity", () => {
   const marker = managedTaskMarker("owner/repo", 48);

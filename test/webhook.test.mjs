@@ -48,7 +48,12 @@ test("accepts ready-for-PR results only from the Codex connector", () => {
     body: payload.comment.body,
     comment_url: payload.comment.html_url,
     task_url: "https://chatgpt.com/s/cd_test",
+    lease_id: null,
   });
+  assert.equal(readyForPrCodexFromWebhook("issue_comment", {
+    ...payload,
+    comment: { ...payload.comment, body: `${payload.comment.body}\n<!-- metis-codex-dispatch:lease-current -->` },
+  }).lease_id, "lease-current");
   assert.equal(readyForPrCodexFromWebhook("issue_comment", { ...payload, sender: { login: "someone-else" } }), null);
   assert.equal(readyForPrCodexFromWebhook("issue_comment", {
     ...payload,
