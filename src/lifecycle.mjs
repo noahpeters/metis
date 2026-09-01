@@ -11,7 +11,7 @@ export function lifecyclePolicy(env, repository) {
   try {
     supplied = JSON.parse(env.METIS_LIFECYCLE_POLICY_JSON || "{}");
   } catch {
-    return { requiredApprovals: 1, requiredChecks: true, maxRevisionAttempts: 2, deploymentWorkflows: [], maxRecoveryAttempts: 2 };
+    return { requiredApprovals: 1, requiredChecks: true, maxRevisionAttempts: 2, deploymentWorkflows: [], maxRecoveryAttempts: 2, maxMergeConflictAttempts: 2 };
   }
   const defaults = supplied.defaults || {};
   const selected = supplied.repositories?.[repository] || {};
@@ -21,13 +21,14 @@ export function lifecyclePolicy(env, repository) {
     maxRevisionAttempts: 2,
     deploymentWorkflows: [],
     maxRecoveryAttempts: 2,
+    maxMergeConflictAttempts: 2,
     ...defaults,
     ...selected,
   };
 }
 
 export function pullRequestLifecycleFromWebhook(event, payload) {
-  if (event !== "pull_request" || !["opened", "reopened", "synchronize", "closed"].includes(payload.action)) return null;
+  if (event !== "pull_request" || !["opened", "reopened", "synchronize", "edited", "ready_for_review", "closed"].includes(payload.action)) return null;
   const repository = payload.repository?.full_name;
   const issueNumber = taskMarker(repository, payload.pull_request?.body);
   if (!issueNumber) return null;
@@ -94,10 +95,10 @@ export function checksPassed(checkRuns) {
     && checkRuns.every((check) => check.status === "completed" && SUCCESS_CONCLUSIONS.has(check.conclusion));
 }
 
-export function approvalCount(reviews) {
+export function approvalCount(reviews, headSha = null) {
   const latestByUser = new Map();
   for (const review of reviews) {
-    if (review.user?.login) latestByUser.set(review.user.login, review.state?.toLowerCase());
+    if (review.user?.login && (!headSha || review.commit_id === headSha)) latestByUser.set(review.user.login, review.state?.toLowerCase());
   }
   return [...latestByUser.values()].filter((state) => state === "approved").length;
 }
