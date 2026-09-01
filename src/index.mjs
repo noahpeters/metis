@@ -27,27 +27,6 @@ async function verifySignature(secret, signature, body) {
   return bytes ? crypto.subtle.verify("HMAC", key, new Uint8Array(bytes), new TextEncoder().encode(body)) : false;
 }
 
-export function readyIssueFromWebhook(event, payload) {
-  if (event !== "issues" || payload.action !== "labeled" || payload.label?.name !== "metis:ready") return null;
-  // Ready is a human authority boundary. Metis restores this label when work is
-  // deferred, so bot-authored label events must not enqueue intake again.
-  if (payload.sender?.type === "Bot") return null;
-  const labels = (payload.issue?.labels || []).map((label) => typeof label === "string" ? label : label.name);
-  const sizeLabel = labels.find((label) => /^metis:size-(small|medium|large|unknown)$/.test(label));
-  const maxCostLabel = labels.find((label) => /^metis:max-cost-\d+$/.test(label));
-  return {
-    repository: payload.repository?.full_name,
-    issue_number: payload.issue?.number,
-    issue_node_id: payload.issue?.node_id,
-    title: payload.issue?.title || "",
-    body: payload.issue?.body || "",
-    actor: payload.sender?.login || "unknown",
-    size_class: sizeLabel?.slice("metis:size-".length) || null,
-    max_workload_units: maxCostLabel ? Number(maxCostLabel.slice("metis:max-cost-".length)) : null,
-    budget_approved: labels.includes("metis:budget-approved") ? 1 : 0,
-  };
-}
-
 function isOfficialCodexConnector(payload) {
   return payload.sender?.login === "chatgpt-codex-connector[bot]"
     && payload.sender?.type === "Bot"
@@ -342,7 +321,9 @@ async function receiveWebhook(request, env) {
   const event = request.headers.get("x-github-event");
   if (event === "ping") return json({ ok: true });
   const payload = JSON.parse(body);
-  const task = env.METIS_READY_LABEL_COMPATIBILITY === "true" ? readyIssueFromWebhook(event, payload) : null;
+  // Project reconciliation is the sole normal admission path. Lifecycle label
+  // webhooks remain useful visibility signals but can never create a task.
+  const task = null;
   const blocked = blockedCodexFromWebhook(event, payload);
   const readyForPr = readyForPrCodexFromWebhook(event, payload);
   const connectorAck = connectorAcknowledgmentFromWebhook(event, payload);
@@ -690,6 +671,9 @@ export default {
   async queue(batch, env) {
     for (const message of batch.messages) {
       try {
+        if (["intake", "dispatch"].includes(message.body.type)) {
+          await env.DB.prepare("DELETE FROM project_queue_signals WHERE task_id=? AND message_type=?").bind(message.body.taskId, message.body.type).run();
+        }
         if (message.body.type === "intake") await handleIntake(env, message.body);
         else if (message.body.type === "dispatch") await handleDispatch(env, message.body);
         else if (message.body.type === "revision") await handleRevisionDispatch(env, message.body);
