@@ -1,0 +1,1 @@
+const target=document.querySelector('#runtime');fetch('/api/status',{headers:{accept:'application/json'}}).then(async response=>{const body=await response.json();if(!response.ok)throw new Error(body.error?.message||'Status unavailable');target.textContent=`${body.service} is ${body.status}.`;}).catch(()=>{target.textContent='Operational status is currently unavailable.';});
