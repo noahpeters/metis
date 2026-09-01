@@ -1,5 +1,61 @@
 export const CAPACITY_OUTCOMES = new Set(["accepted", "rejected", "exhausted", "unavailable", "unknown"]);
 
+export const OBSERVATION_CLASSIFICATIONS = new Set(["actual", "estimated", "unattributed", "stale", "unavailable", "unknown"]);
+export const OBSERVATION_FRESHNESS = new Set(["fresh", "stale", "unknown"]);
+export const RECONCILIATION_STATES = new Set(["pending", "reconciled", "superseded", "conflict"]);
+const OPTIONAL_PROVIDER_FIELDS = ["input_tokens", "output_tokens", "total_tokens", "credits", "model", "reset_at", "execution_surface"];
+const CORRELATIONS = ["task_id", "repository", "issue_number", "pull_request_number", "dispatch_id", "lease_id"];
+const FORBIDDEN_KEYS = /(^|_)(prompt|source_code|credential|secret|token_value|response_value)s?$/i;
+
+function required(value, name) {
+  if (value === undefined || value === null || value === "") throw new Error(`Missing provider observation ${name}`);
+  return value;
+}
+
+function assertPrivateDataAbsent(value, path = "observation") {
+  if (!value || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value)) {
+    if (FORBIDDEN_KEYS.test(key)) throw new Error(`Provider observation contains forbidden private field: ${path}.${key}`);
+    assertPrivateDataAbsent(child, `${path}.${key}`);
+  }
+}
+
+// Provider values are copied, never defaulted. In particular, absent numbers remain NULL rather than zero.
+export function providerObservation(input) {
+  assertPrivateDataAbsent(input);
+  const classification = required(input.classification, "classification");
+  const freshness = required(input.freshness, "freshness");
+  const reconciliationState = input.reconciliation_state ?? "pending";
+  if (!OBSERVATION_CLASSIFICATIONS.has(classification)) throw new Error(`Invalid provider observation classification: ${classification}`);
+  if (!OBSERVATION_FRESHNESS.has(freshness)) throw new Error(`Invalid provider observation freshness: ${freshness}`);
+  if (!RECONCILIATION_STATES.has(reconciliationState)) throw new Error(`Invalid provider observation reconciliation state: ${reconciliationState}`);
+
+  const observation = {
+    provider: required(input.provider, "provider"), workspace_ref: input.workspace_ref ?? null,
+    provider_ref: input.provider_ref ?? null, event_class: required(input.event_class, "event_class"),
+    classification, observed_at: required(input.observed_at, "observed_at"),
+    provider_window_start: input.provider_window_start ?? null, provider_window_end: input.provider_window_end ?? null,
+    provider_timezone: input.provider_timezone ?? null, freshness, sanitized_status: input.sanitized_status ?? null,
+  };
+  for (const field of OPTIONAL_PROVIDER_FIELDS) observation[field] = Object.hasOwn(input, field) ? input[field] : null;
+  for (const field of CORRELATIONS) observation[field] = input.correlations?.[field]?.proven === true ? input.correlations[field].value : null;
+  return {
+    ...observation,
+    deduplication_key: required(input.deduplication_key, "deduplication_key"),
+    source_revision: required(input.source_revision, "source_revision"),
+    pagination_checkpoint: input.pagination_checkpoint ?? null,
+    reconciliation_state: reconciliationState,
+    derived_metrics: input.derived_metrics ?? {},
+  };
+}
+
+export function providerObservationStatement(env, input) {
+  const value = providerObservation(input);
+  const columns = ["provider", "workspace_ref", "provider_ref", "event_class", "classification", "observed_at", "provider_window_start", "provider_window_end", "provider_timezone", "freshness", "sanitized_status", ...OPTIONAL_PROVIDER_FIELDS, ...CORRELATIONS, "deduplication_key", "source_revision", "pagination_checkpoint", "reconciliation_state", "derived_metrics_json"];
+  const values = columns.map((column) => column === "derived_metrics_json" ? JSON.stringify(value.derived_metrics) : value[column]);
+  return env.DB.prepare(`INSERT INTO provider_observations(${columns.join(",")},created_at) VALUES(${columns.map(() => "?").join(",")},unixepoch()) ON CONFLICT DO NOTHING`).bind(...values);
+}
+
 export function capacityObservation(acknowledgment) {
   const outcome = acknowledgment.capacity_outcome;
   if (!CAPACITY_OUTCOMES.has(outcome)) throw new Error(`Invalid provider-capacity outcome: ${outcome}`);
