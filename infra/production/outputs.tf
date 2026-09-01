@@ -12,3 +12,8 @@ output "access_audience" {
   description = "Access application audience to configure as the UI Worker variable."
   value       = cloudflare_zero_trust_access_application.metis_ui.aud
 }
+
+output "access_team_domain" {
+  description = "Authoritative Zero Trust team domain to configure as the UI Worker variable."
+  value       = var.cloudflare_access_team_domain
+}

@@ -10,4 +10,11 @@ test("routine production deployment preserves secrets and deploys both Workers",
   assert.match(workflow, /npm run db:migrate:production/);
   assert.match(workflow, /npm run deploy:production/);
   assert.match(workflow, /npm run deploy:ui:production/);
+  assert.match(workflow, /terraform-plan:/);
+  assert.match(workflow, /terraform-apply:/);
+  assert.match(workflow, /needs: \[verify, terraform-apply\]/);
+  assert.match(workflow, /environment: production/);
+  assert.match(workflow, /production\/terraform\.tfstate/);
+  assert.match(workflow, /needs\.terraform-apply\.outputs\.access_audience/);
+  assert.match(workflow, /GITHUB_STEP_SUMMARY/);
 });

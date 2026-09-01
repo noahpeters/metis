@@ -15,6 +15,16 @@ variable "cloudflare_zone_id" {
   type        = string
 }
 
+variable "cloudflare_access_team_domain" {
+  description = "Authoritative Zero Trust team domain (for example, team.cloudflareaccess.com). Read it from the existing Cloudflare organization; do not guess it."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+\\.cloudflareaccess\\.com$", var.cloudflare_access_team_domain))
+    error_message = "cloudflare_access_team_domain must be the authoritative *.cloudflareaccess.com organization domain."
+  }
+}
+
 variable "allowed_repositories" {
   description = "Comma-separated repositories accepted by the production webhook. Empty keeps production inert."
   type        = string

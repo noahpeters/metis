@@ -1,17 +1,44 @@
 # Metis production infrastructure
 
-Terraform describes the D1 database, Queues, queue consumer, cron trigger, DNS, Worker route, workers.dev subdomain, and Cloudflare Access policy. Wrangler owns Worker code and bindings so Terraform cannot deploy a Worker version. State remains local and ignored by Git while the infrastructure backend is being bootstrapped.
+Terraform describes the D1 database, Queues, queue consumer, cron trigger, DNS, Worker route, workers.dev subdomain, and Cloudflare Access policy. Wrangler owns Worker code, encrypted secrets, and bindings so Terraform cannot overwrite a Worker version or secret. Terraform uses the pre-provisioned private `metis-terraform-state` R2 bucket, the `production/terraform.tfstate` object, and native S3 lock files. The checked-in backend contains identifiers only; R2 credentials live in the GitHub `production` environment.
 
-Production deployments happen only through `.github/workflows/ci.yml` after verification succeeds on `main`. The workflow applies D1 migrations and deploys the Worker with the checked-in Wrangler configuration, matching the FTOPS/msgstats release model. The repository deployment scripts fail outside GitHub Actions. Do not run `terraform apply` or `wrangler deploy` locally.
+Pull requests format, validate, and generate a read-only plan. After human merge, `.github/workflows/ci.yml` creates a fresh plan for the exact merge SHA, rejects replacement of persistent resources, applies it under the `production` environment, and only then migrates D1 and deploys both Workers. The repository deployment scripts fail outside GitHub Actions. Do not run `terraform apply` or `wrangler deploy` locally.
 
 Use the repository-local Terraform toolchain only for formatting, validation, and read-only planning:
 
 ```sh
-./scripts/terraform -chdir=infra/production init
+AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... ./scripts/terraform -chdir=infra/production init
 TF_VAR_cloudflare_api_token=... ./scripts/terraform -chdir=infra/production plan
 ```
 
-Never commit the API token, Terraform state, `.tools`, or `.build`. Any future infrastructure apply workflow must first move Terraform state to a durable remote backend; local applies are not an accepted deployment path.
+Never commit API or backend credentials, Terraform state, plans, `.tools`, or `.build`. Local applies are not an accepted deployment path.
+
+## Inventory, import, and recovery
+
+Before the first remote-state apply, use a read-only Cloudflare token to inventory Workers, versions, encrypted-secret **names**, D1 IDs, queues and consumers, cron triggers, routes, DNS, and Access applications. Save the sanitized inventory in the protected workflow summary; never print secret values. Back up the prior state, then migrate it rather than initializing an empty production state:
+
+```sh
+terraform -chdir=infra/production init -migrate-state
+terraform -chdir=infra/production state pull > secure-offline-backup.tfstate
+terraform -chdir=infra/production state list
+```
+
+The backup is sensitive and must remain outside Git and workflow artifacts. Import only an address absent from `state list`, using the provider's account/zone-qualified ID from the inventory:
+
+```sh
+terraform -chdir=infra/production import cloudflare_d1_database.metis '<account-id>/<d1-id>'
+terraform -chdir=infra/production import cloudflare_queue.dispatch '<account-id>/<queue-id>'
+terraform -chdir=infra/production import cloudflare_queue.dead_letter '<account-id>/<queue-id>'
+terraform -chdir=infra/production import cloudflare_queue_consumer.dispatch '<account-id>/<queue-id>/<consumer-id>'
+terraform -chdir=infra/production import cloudflare_workers_cron_trigger.lease_recovery '<account-id>/metis-control-plane/*/10 * * * *'
+terraform -chdir=infra/production import cloudflare_workers_script_subdomain.metis '<account-id>/metis-control-plane'
+```
+
+Worker scripts and the UI `CONTROL_PLANE` service binding are inventoried and preserved by Wrangler, not adopted into Terraform, because importing a script into Terraform would allow infrastructure apply to replace code, bindings, and encrypted secrets. The DNS record, route, and Access resources are imported in the same way if inventory finds that they already exist. Run `plan -detailed-exitcode`, inspect every change, and require the repository plan guard to pass. A create for an existing object means its import is missing; stop. Any D1, queue, consumer, cron, or subdomain delete/replacement is automatically rejected.
+
+To recover state, freeze normal dispatch, restore a versioned R2 state object while no lock exists, run `state list`, refresh-only plan, and the guarded normal plan. Never force-unlock until the owning GitHub run is conclusively terminated; record the lock ID and workflow URL when a force-unlock is unavoidable.
+
+The Access audience is read from the Terraform-created application. `cloudflare_access_team_domain` must be copied from the existing Zero Trust organization settings into the GitHub environment; validation deliberately rejects guesses outside Cloudflare's team-domain form. Terraform outputs both values and the deploy job passes those exact outputs to the UI Worker.
 
 Codex cloud dispatch remains fail-closed until `codex_dispatch_mode` is set to `github_integration`, `codex_github_integration_enabled` is true, the encrypted Worker secret `GITHUB_DISPATCH_USER_TOKEN` is present, the target repository is allowlisted and connected to Codex cloud, and included capacity is enabled in policy and D1. The dispatch token must be a fine-grained GitHub user token restricted to the target repository with Issues read/write; keep it out of Terraform variables and state.
 
