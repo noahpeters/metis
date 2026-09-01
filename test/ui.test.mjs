@@ -47,8 +47,18 @@ test("authenticated shell exposes accessible pacing and confirmation states", as
   const response = await uiWorker.fetch(new Request("https://ui/"), { ENVIRONMENT: "local", LOCAL_AUTH_ENABLED: "true", LOCAL_AUTH_EMAIL: "admin@from-trees.com" });
   const html = await response.text();
   assert.match(html, /Loading pacing status/);
+  assert.match(html, /href="\/app\.css"/);
+  assert.match(html, /src="\/app\.js"/);
+  assert.doesNotMatch(html, /\/assets\/app\.(?:css|js)/);
   assert.match(html, /<dialog id="reset-dialog"/);
   assert.match(html, /does not reset ChatGPT or Codex/);
   assert.match(html, /minlength="8"/);
   assert.match(html, /aria-live="assertive"/);
+});
+
+test("UI serves every referenced asset from the asset binding", async () => {
+  const seen = [];
+  const env = { ASSETS: { fetch(request) { seen.push(new URL(request.url).pathname); return new Response("asset"); } } };
+  for (const path of ["/app.css", "/app.js", "/pacing.js"]) assert.equal((await uiWorker.fetch(new Request(`https://ui${path}`), env)).status, 200);
+  assert.deepEqual(seen, ["/app.css", "/app.js", "/pacing.js"]);
 });

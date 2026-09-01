@@ -56,7 +56,7 @@ Local `wrangler deploy`, D1 migration, and `terraform apply` operations are not 
 The administration shell runs as the dedicated `metis-ui` Worker and reaches the control plane only through its `CONTROL_PLANE` service binding. Before the first GitHub-Actions deployment, the operator must:
 
 1. configure a Cloudflare Access identity provider that returns verified email claims;
-2. protect `metis_ui_hostname` with Cloudflare Access and allow verified `from-trees.com` identities; and
+2. protect the fixed `metis.from-trees.com` hostname with Cloudflare Access and allow verified `from-trees.com` identities; and
 3. create the same encrypted `UI_BINDING_TOKEN` secret on the UI and control-plane Workers (never put it in Terraform variables or state).
 
 Access permits only verified `from-trees.com` identities. The UI verifies the signed Access JWT rather than trusting the convenience email header. Local authentication requires both `ENVIRONMENT=local` and `LOCAL_AUTH_ENABLED=true`; deployed configuration fixes the latter to `false`.

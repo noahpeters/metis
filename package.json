@@ -12,9 +12,11 @@
     "deploy:production": "node scripts/require-github-actions.mjs && wrangler deploy",
     "deploy:ui:production": "node scripts/require-github-actions.mjs && wrangler deploy --config wrangler.ui.jsonc",
     "test": "node --test test/*.test.mjs",
+    "test:ui:visual": "node scripts/capture-ui.mjs",
     "verify": "npm run check && npm test"
   },
   "devDependencies": {
+    "playwright": "^1.62.1",
     "wrangler": "^4.127.1"
   }
 }
