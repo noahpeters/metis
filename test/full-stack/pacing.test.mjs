@@ -117,7 +117,7 @@ test("D1 observations round-trip through control-plane RPC and the rendered UI",
   await open({ used: 5, starts: 2 });
   const source = (await db.prepare("SELECT current_window_id FROM pacing_window_control").first()).current_window_id;
   await page.getByRole("button", { name: "Reset budget" }).click();
-  await page.getByLabel("Reason").fill("Full-stack reset verification");
+  await page.locator("#reset-dialog").getByLabel("Reason").fill("Full-stack reset verification");
   const resetResponse = page.waitForResponse((response) => response.url().endsWith("/api/pacing/reset"));
   await page.getByRole("button", { name: "Start new window" }).click();
   assert.equal((await resetResponse).status(), 201);
