@@ -27,6 +27,8 @@ const env = {
   ENVIRONMENT: "local",
   LOCAL_AUTH_ENABLED: "true",
   LOCAL_AUTH_EMAIL: "noah@from-trees.com",
+  UI_STREAM_INTERVAL_MS: "100",
+  UI_STREAM_LIFETIME_MS: "300",
   ASSETS: {
     async fetch(request) {
       const pathname = new URL(request.url).pathname.slice(1);
@@ -65,7 +67,7 @@ try {
   const failures = [];
   page.on("console", (message) => { if (message.type() === "error") failures.push(message.text()); });
   page.on("pageerror", (error) => failures.push(error.message));
-  await page.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "networkidle" });
+  await page.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "domcontentloaded" });
   await page.getByRole("heading", { name: "Ready work is waiting" }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Nudge" }).isVisible(), true);
   assert.equal(await page.getByRole("button", { name: "Reset budget" }).isVisible(), true);
