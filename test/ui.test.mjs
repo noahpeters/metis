@@ -30,6 +30,15 @@ test("API allowlist permits only read-only status", () => {
   assert.equal(allowedApiRequest("GET", "/api/pacing"), true);
   assert.equal(allowedApiRequest("GET", "/api/stream"), true);
   assert.equal(allowedApiRequest("POST", "/api/pacing/reset"), true);
+  assert.equal(allowedApiRequest("POST", "/api/pacing/nudge"), true);
+});
+
+test("nudge proxy forwards only the authenticated identity", async () => {
+  const calls = [];
+  const env = { CONTROL_PLANE: { async nudgeReadyWork(email) { calls.push(email); return { status: 200, body: JSON.stringify({ reconciled: true, admitted: 1 }) }; } } };
+  const response = await proxyApi(new Request("https://ui/api/pacing/nudge", { method: "POST" }), env, { email: "admin@from-trees.com" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, ["admin@from-trees.com"]);
 });
 
 test("snapshot stream is identity scoped and carries monotonic revisions", async () => {
@@ -74,6 +83,8 @@ test("authenticated shell exposes accessible pacing and confirmation states", as
   assert.match(html, /src="\/app\.js"/);
   assert.doesNotMatch(html, /\/assets\/app\.(?:css|js)/);
   assert.match(html, /<dialog id="reset-dialog"/);
+  assert.match(html, /<button id="nudge" type="button" hidden>Nudge<\/button>/);
+  assert.match(html, /id="open-reset" class="secondary"/);
   assert.match(html, /does not reset ChatGPT or Codex/);
   assert.match(html, /minlength="8"/);
   assert.match(html, /aria-live="assertive"/);

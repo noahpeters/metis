@@ -314,38 +314,12 @@ async function beginRecovery(env, task, workflow) {
 }
 
 async function handleWorkflowCompletion(env, workflow) {
-  const health = await env.DB.prepare("SELECT * FROM repository_health WHERE repository=? AND blocking_sha=?").bind(workflow.repository, workflow.head_sha).first();
-  if (!health || health.state !== "deploying") return { accepted: false, reason: "workflow is not for the active deployment SHA" };
   const policy = lifecyclePolicy(env, workflow.repository);
   if (!policy.deploymentWorkflows.includes(workflow.workflow_name)) return { accepted: false, reason: "workflow is not required by lifecycle policy" };
   await env.DB.prepare("INSERT INTO deployment_runs (repository,head_sha,workflow_name,conclusion,workflow_url,updated_at) VALUES (?,?,?,?,?,unixepoch()) ON CONFLICT(repository,head_sha,workflow_name) DO UPDATE SET conclusion=excluded.conclusion, workflow_url=excluded.workflow_url, updated_at=unixepoch()")
     .bind(workflow.repository, workflow.head_sha, workflow.workflow_name, workflow.conclusion, workflow.workflow_url).run();
-  const task = await env.DB.prepare("SELECT * FROM tasks WHERE repository=? AND merge_sha=? ORDER BY updated_at DESC LIMIT 1").bind(workflow.repository, workflow.head_sha).first();
-  if (!task) return { accepted: false, reason: "no task for deployment SHA" };
-  if (!["success", "neutral", "skipped"].includes(workflow.conclusion)) {
-    await beginRecovery(env, task, workflow);
-    return { accepted: true, state: "recovery", task_id: task.id };
-  }
-  const runs = await env.DB.prepare("SELECT workflow_name,conclusion FROM deployment_runs WHERE repository=? AND head_sha=?").bind(workflow.repository, workflow.head_sha).all();
-  const byName = new Map(runs.results.map((run) => [run.workflow_name, run.conclusion]));
-  if (!policy.deploymentWorkflows.every((name) => ["success", "neutral", "skipped"].includes(byName.get(name)))) {
-    return { accepted: true, state: "deploying", task_id: task.id };
-  }
-  await env.DB.batch([
-    env.DB.prepare("UPDATE repository_health SET state='healthy', blocking_sha=NULL, workflow_url=NULL, recovery_attempts=0, updated_at=unixepoch() WHERE repository=?").bind(workflow.repository),
-    env.DB.prepare("UPDATE tasks SET state='complete', blocker_reason=NULL, updated_at=unixepoch() WHERE id=?").bind(task.id),
-  ]);
-  await setState(env, task.repository, task.issue_number, "metis:complete");
-  await comment(env, task.repository, task.issue_number, `## Metis verified deployment\n\nAll required deployment workflows succeeded for merge commit \`${workflow.head_sha}\`. Repository health is restored and normal dispatch may resume.`);
-  if (health.root_task_id && health.root_task_id !== task.id) {
-    const rootTask = await env.DB.prepare("SELECT id,issue_number FROM tasks WHERE id=?").bind(health.root_task_id).first();
-    if (rootTask) {
-      await env.DB.prepare("UPDATE tasks SET state='complete', blocker_reason=NULL, updated_at=unixepoch() WHERE id=? AND state='recovery'").bind(rootTask.id).run();
-      await setState(env, workflow.repository, rootTask.issue_number, "metis:complete");
-      await comment(env, workflow.repository, rootTask.issue_number, `## Metis verified corrective deployment\n\nThe bounded recovery chain succeeded at \`${workflow.head_sha}\`. Repository health is restored.`);
-    }
-  }
-  return { accepted: true, state: "complete", task_id: task.id };
+  const results = await reconcileManagedTasks(env, { repository: workflow.repository, maxTasks: 100, onDeploymentFailure: (task, failed) => beginRecovery(env, task, failed) });
+  return { accepted: true, reconciled: results };
 }
 
 async function processWebhook(event, payload, env) {

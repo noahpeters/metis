@@ -17,7 +17,7 @@ const overview = {
     estimated_workload_units: { used: 32, limit: 64 },
     task_starts: { used: 8, limit: 24 },
   },
-  active_tasks: { count: 1 },
+  active_tasks: { count: 0 },
   executable_ready: { count: 5 },
   provider_capacity: { state: "available" },
 };
@@ -36,6 +36,7 @@ const env = {
   },
   CONTROL_PLANE: {
     async pacingOverview() { return { status: 200, body: JSON.stringify(overview) }; },
+    async nudgeReadyWork() { return { status: 200, body: JSON.stringify({ reconciled: true, observed: 5, admitted: 1 }) }; },
   },
 };
 
@@ -60,7 +61,9 @@ try {
   page.on("console", (message) => { if (message.type() === "error") failures.push(message.text()); });
   page.on("pageerror", (error) => failures.push(error.message));
   await page.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "networkidle" });
-  await page.getByRole("heading", { name: "Actively implementing" }).waitFor();
+  await page.getByRole("heading", { name: "Ready work is waiting" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Nudge" }).isVisible(), true);
+  assert.equal(await page.getByRole("button", { name: "Reset budget" }).isVisible(), true);
   const circle = await page.locator(".status-circle").boundingBox();
   const cardDisplay = await page.locator("#pacing-card").evaluate((element) => getComputedStyle(element).display);
   assert.equal(cardDisplay, "grid", "pacing card CSS did not load");
