@@ -20,6 +20,31 @@ export function selectWorkflowRuns(configured, mergeSha, runs) {
   return byWorkflow;
 }
 
+export function compareShowsAncestor(comparison) {
+  return comparison?.status === "ahead" || comparison?.status === "identical";
+}
+
+export async function selectContainingWorkflowRuns(repository, configured, mergeSha, runs, compare) {
+  const latestByDeployment = new Map();
+  for (const run of runs) {
+    if (!configured.includes(run.name) || !run.head_sha || run.status !== "completed") continue;
+    const key = `${run.name}:${run.head_sha}`;
+    const prior = latestByDeployment.get(key);
+    if (!prior || (run.run_attempt || 1) > (prior.run_attempt || 1) || run.id > prior.id) latestByDeployment.set(key, run);
+  }
+  const selected = new Map();
+  for (const name of configured) {
+    const candidates = [...latestByDeployment.values()].filter((run) => run.name === name && SUCCESS.has(run.conclusion)).sort((a, b) => (b.id || 0) - (a.id || 0));
+    for (const run of candidates) {
+      if (run.head_sha === mergeSha || compareShowsAncestor(await compare(repository, mergeSha, run.head_sha))) {
+        selected.set(name, run);
+        break;
+      }
+    }
+  }
+  return selected;
+}
+
 async function boundedPages(env, path, limit = 3) {
   const separator = path.includes("?") ? "&" : "?";
   const values = [];
@@ -57,18 +82,25 @@ async function discoverPullRequest(env, task) {
   return candidates[0] || null;
 }
 
-async function workflowEvidence(env, task, mergeSha) {
+async function workflowEvidence(env, task, mergeSha, comparisonCache) {
   const configured = lifecyclePolicy(env, task.repository).deploymentWorkflows;
   if (!configured.length) throw new Error("no required deployment workflows are configured");
-  const runs = await boundedPages(env, `/repos/${task.repository}/actions/runs?head_sha=${encodeURIComponent(mergeSha)}&event=push`);
-  const byWorkflow = selectWorkflowRuns(configured, mergeSha, runs);
+  const runs = await boundedPages(env, `/repos/${task.repository}/actions/runs?event=push`);
+  const compare = async (repository, base, head) => {
+    const key = `${repository}:${base}:${head}`;
+    if (!comparisonCache.has(key)) comparisonCache.set(key, githubRequest(env, `/repos/${repository}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`));
+    return comparisonCache.get(key);
+  };
+  const byWorkflow = await selectContainingWorkflowRuns(task.repository, configured, mergeSha, runs, compare);
   return { configured, byWorkflow };
 }
 
-export async function reconcileManagedTasks(env, { maxTasks = 20, onDeploymentFailure } = {}) {
+export async function reconcileManagedTasks(env, { maxTasks = 20, repository = null, onDeploymentFailure } = {}) {
   const placeholders = RECONCILABLE_STATES.map(() => "?").join(",");
-  const tasks = await env.DB.prepare(`SELECT * FROM tasks WHERE state IN (${placeholders}) ORDER BY updated_at LIMIT ?`).bind(...RECONCILABLE_STATES, maxTasks).all();
+  const repositoryClause = repository ? " AND repository=?" : "";
+  const tasks = await env.DB.prepare(`SELECT * FROM tasks WHERE state IN (${placeholders})${repositoryClause} ORDER BY updated_at LIMIT ?`).bind(...RECONCILABLE_STATES, ...(repository ? [repository] : []), maxTasks).all();
   const results = [];
+  const comparisonCache = new Map();
   for (const task of tasks.results) {
     try {
       let pr = task.pull_request_number ? await githubRequest(env, `/repos/${task.repository}/pulls/${task.pull_request_number}`) : await discoverPullRequest(env, task);
@@ -86,20 +118,23 @@ export async function reconcileManagedTasks(env, { maxTasks = 20, onDeploymentFa
         continue;
       }
       const mergeSha = pr.merge_commit_sha;
-      const evidence = await workflowEvidence(env, task, mergeSha);
+      const evidence = await workflowEvidence(env, task, mergeSha, comparisonCache);
       await env.DB.batch([
         env.DB.prepare("UPDATE tasks SET state='deploying',merge_sha=?,pull_request_number=?,pull_request_url=?,updated_at=unixepoch() WHERE id=? AND state!='complete'").bind(mergeSha, pr.number, pr.html_url, task.id),
         env.DB.prepare("INSERT INTO repository_health(repository,state,blocking_sha,root_task_id,recovery_attempts,updated_at) VALUES(?,'deploying',?,?,0,unixepoch()) ON CONFLICT(repository) DO UPDATE SET state=CASE WHEN repository_health.state='healthy' THEN 'deploying' ELSE repository_health.state END,blocking_sha=excluded.blocking_sha,root_task_id=excluded.root_task_id,updated_at=unixepoch()").bind(task.repository, mergeSha, task.id),
       ]);
-      const failed = evidence.configured.map((name) => evidence.byWorkflow.get(name)).find((run) => run && FAILURE.has(run.conclusion));
+      const missing = evidence.configured.find((name) => !evidence.byWorkflow.has(name));
+      const exactRuns = missing
+        ? selectWorkflowRuns(evidence.configured, mergeSha, await boundedPages(env, `/repos/${task.repository}/actions/runs?head_sha=${encodeURIComponent(mergeSha)}&event=push`))
+        : new Map();
+      const failed = missing ? exactRuns.get(missing) : null;
       if (failed) {
         await audit(env, task, "deployment-failed", { merge_sha: mergeSha, workflow: failed.name, run_id: failed.id, run_attempt: failed.run_attempt });
         if (onDeploymentFailure) await onDeploymentFailure({ ...task, merge_sha: mergeSha }, { repository: task.repository, head_sha: mergeSha, workflow_name: failed.name, conclusion: failed.conclusion, workflow_url: failed.html_url });
         results.push({ task_id: task.id, state: "recovery" });
         continue;
       }
-      const missing = evidence.configured.find((name) => !evidence.byWorkflow.has(name));
-      if (missing && Math.floor(Date.now() / 1000) - task.updated_at > 3600 && onDeploymentFailure) {
+      if (missing && !failed && Math.floor(Date.now() / 1000) - task.updated_at > 3600 && onDeploymentFailure) {
         await audit(env, task, "deployment-missing", { merge_sha: mergeSha, workflow: missing });
         await onDeploymentFailure({ ...task, merge_sha: mergeSha }, { repository: task.repository, head_sha: mergeSha, workflow_name: missing, conclusion: "missing", workflow_url: pr.html_url });
         results.push({ task_id: task.id, state: "recovery" });
@@ -107,6 +142,7 @@ export async function reconcileManagedTasks(env, { maxTasks = 20, onDeploymentFa
       }
       const complete = evidence.configured.every((name) => SUCCESS.has(evidence.byWorkflow.get(name)?.conclusion));
       if (!complete) { results.push({ task_id: task.id, state: "deploying" }); continue; }
+      const deployedShas = [...new Set(evidence.configured.map((name) => evidence.byWorkflow.get(name).head_sha))];
       const eventKey = `${task.id}:complete:${mergeSha}`;
       const existing = await env.DB.prepare("SELECT reported_at FROM reconciliation_events WHERE event_key=?").bind(eventKey).first();
       await env.DB.batch([
@@ -114,12 +150,12 @@ export async function reconcileManagedTasks(env, { maxTasks = 20, onDeploymentFa
         env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(task.id),
         env.DB.prepare("UPDATE dispatches SET state='completed',updated_at=unixepoch() WHERE task_id=? AND state NOT IN ('completed','failed')").bind(task.id),
         env.DB.prepare("UPDATE repository_health SET state='healthy',blocking_sha=NULL,workflow_url=NULL,recovery_attempts=0,updated_at=unixepoch() WHERE repository=? AND blocking_sha=?").bind(task.repository, mergeSha),
-        env.DB.prepare("INSERT INTO reconciliation_events(event_key,task_id,transition,evidence_json,created_at) VALUES(?,?,'complete',?,unixepoch()) ON CONFLICT(event_key) DO NOTHING").bind(eventKey, task.id, JSON.stringify({ pull_request_number: pr.number, merge_sha: mergeSha, workflows: evidence.configured.map((name) => ({ name, run_id: evidence.byWorkflow.get(name).id, run_attempt: evidence.byWorkflow.get(name).run_attempt || 1 })) })),
+        env.DB.prepare("INSERT INTO reconciliation_events(event_key,task_id,transition,evidence_json,created_at) VALUES(?,?,'complete',?,unixepoch()) ON CONFLICT(event_key) DO NOTHING").bind(eventKey, task.id, JSON.stringify({ pull_request_number: pr.number, merge_sha: mergeSha, deployed_shas: deployedShas, workflows: evidence.configured.map((name) => ({ name, deployed_sha: evidence.byWorkflow.get(name).head_sha, run_id: evidence.byWorkflow.get(name).id, run_attempt: evidence.byWorkflow.get(name).run_attempt || 1 })) })),
       ]);
       await setState(env, task.repository, task.issue_number, "metis:complete");
       await githubRequest(env, `/repos/${task.repository}/issues/${task.issue_number}`, { method: "PATCH", body: JSON.stringify({ state: "closed", state_reason: "completed" }) });
       if (!existing?.reported_at) {
-        await comment(env, task.repository, task.issue_number, `## Metis reconciled authoritative completion\n\nPull request #${pr.number} merged as exact SHA \`${mergeSha}\`, and every configured deployment workflow succeeded for that SHA. Metis repaired the runtime chain and closed this task.`);
+        await comment(env, task.repository, task.issue_number, `## Metis reconciled authoritative completion\n\nPull request #${pr.number} merged as \`${mergeSha}\`. GitHub commit ancestry proves that every configured deployment workflow succeeded on a containing deployed commit (${deployedShas.map((sha) => `\`${sha}\``).join(", ")}). Metis repaired the runtime chain and closed this task.`);
         await env.DB.prepare("UPDATE reconciliation_events SET reported_at=unixepoch() WHERE event_key=?").bind(eventKey).run();
       }
       results.push({ task_id: task.id, state: "complete" });
