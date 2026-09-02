@@ -53,7 +53,7 @@ test("D1 observations round-trip through control-plane RPC and the rendered UI",
     compatibilityDate: "2026-08-30", cf: false, log: new Log(LogLevel.WARN),
     workers: [
       { name: "control-plane", compatibilityFlags: ["rpc"], modules: controlPlaneModules, modulesRoot: root, d1Databases: { DB: "round-trip" }, bindings: { METIS_POLICY_JSON: policy, DEPLOYMENT_VERSION: "full-stack-test" } },
-      { name: "ui", compatibilityFlags: ["rpc"], modules: uiModules, modulesRoot: root, serviceBindings: { CONTROL_PLANE: "control-plane" }, assets: { directory: join(root, "ui-assets"), binding: "ASSETS", run_worker_first: true }, bindings: { ENVIRONMENT: "local", LOCAL_AUTH_ENABLED: "true", LOCAL_AUTH_EMAIL: "tester@from-trees.com" } },
+      { name: "ui", compatibilityFlags: ["rpc"], modules: uiModules, modulesRoot: root, serviceBindings: { CONTROL_PLANE: "control-plane" }, assets: { directory: join(root, "ui-assets"), binding: "ASSETS", run_worker_first: true }, bindings: { ENVIRONMENT: "local", LOCAL_AUTH_ENABLED: "true", LOCAL_AUTH_EMAIL: "tester@from-trees.com", UI_STREAM_INTERVAL_MS: "100", UI_STREAM_LIFETIME_MS: "300" } },
       { name: "unauthorized-ui", compatibilityFlags: ["rpc"], modules: uiModules, modulesRoot: root, serviceBindings: { CONTROL_PLANE: "control-plane" }, assets: { directory: join(root, "ui-assets"), binding: "ASSETS", run_worker_first: true }, bindings: { ENVIRONMENT: "production", LOCAL_AUTH_ENABLED: "false" } },
     ],
   }));
@@ -95,6 +95,13 @@ test("D1 observations round-trip through control-plane RPC and the rendered UI",
   assert.equal(await page.locator(".amount").innerText(), "3 / 8");
   assert.match(await page.locator(".reset-time").innerText(), /Next scheduled reset/);
   assert.equal(await page.locator("#pacing-card").getAttribute("data-state"), "active");
+
+  await db.prepare("UPDATE pacing_windows SET estimated_workload_units_used=6 WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1)").run();
+  await page.locator(".amount").getByText("6", { exact: true }).waitFor();
+  assert.match(await page.locator("#live-status").innerText(), /^(Live|Reconnecting…)$/);
+  await db.prepare("UPDATE pacing_windows SET estimated_workload_units_used=7 WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1)").run();
+  await page.locator(".amount").getByText("7", { exact: true }).waitFor();
+  await page.screenshot({ path: join(artifacts, "live-update.png"), fullPage: true });
 
   await open({ used: 2, starts: 1 });
   await page.getByRole("heading", { name: "Available and idle" }).waitFor();

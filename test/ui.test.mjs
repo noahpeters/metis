@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowedApiRequest } from "../src/ui/api.mjs";
+import { allowedApiRequest, streamSnapshots } from "../src/ui/api.mjs";
 import { authenticate, emailAllowed } from "../src/ui/auth.mjs";
 import { uiStatusForIdentity } from "../src/index.mjs";
 import { proxyApi } from "../src/ui/api.mjs";
@@ -28,7 +28,25 @@ test("API allowlist permits only read-only status", () => {
   assert.equal(allowedApiRequest("POST", "/api/status"), false);
   assert.equal(allowedApiRequest("GET", "/api/tasks"), false);
   assert.equal(allowedApiRequest("GET", "/api/pacing"), true);
+  assert.equal(allowedApiRequest("GET", "/api/stream"), true);
   assert.equal(allowedApiRequest("POST", "/api/pacing/reset"), true);
+});
+
+test("snapshot stream is identity scoped and carries monotonic revisions", async () => {
+  const calls = [];
+  const request = new Request("https://ui/api/stream");
+  const response = streamSnapshots(request, {
+    UI_STREAM_INTERVAL_MS: "100",
+    UI_STREAM_LIFETIME_MS: "220",
+    CONTROL_PLANE: { async pacingOverview(email) { calls.push(email); return { status: 200, body: JSON.stringify({ pacing: { value: calls.length } }) }; } },
+  }, { email: "admin@from-trees.com" });
+  assert.match(response.headers.get("content-type"), /^text\/event-stream/);
+  const payload = await response.text();
+  const events = [...payload.matchAll(/^data: (.+)$/gm)].map((match) => JSON.parse(match[1]));
+  assert.ok(events.length >= 2);
+  assert.deepEqual(events.slice(0, 2).map(({ revision }) => revision), [1, 2]);
+  assert.equal(events[0].stream_id, events[1].stream_id);
+  assert.ok(calls.every((email) => email === "admin@from-trees.com"));
 });
 
 test("control plane RPC re-authorizes the forwarded identity", async () => {
