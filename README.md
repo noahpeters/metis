@@ -73,13 +73,17 @@ Metis is itself an allowlisted target. Its `.metis.yml` requires explicit budget
 
 ## Pacing and provider capacity
 
-`METIS_POLICY_JSON` controls operator pacing and execution envelopes. The conservative defaults allow two concurrent tasks, four starts and 20 estimated workload units per daily UTC window, two dispatch attempts, automatic small/medium tasks, and approval-required large/unknown tasks. `maxTasksPerWindow` is optional operator pacing, not evidence about a provider account.
+`METIS_POLICY_JSON` controls operator pacing and execution envelopes. The conservative defaults allow two concurrent tasks, four starts per daily UTC window, two dispatch attempts, automatic small/medium tasks, and approval-required large/unknown tasks. `maxTasksPerWindow` is optional operator pacing, not evidence about a provider account. The legacy estimated-workload window setting remains configuration-compatible but no longer gates dispatch or acts as accounting.
 
 D1's `provider_capacity.available` flag is an explicit operator gate. Set `codex_included.available = 0` to stop new coding work. Metis treats actual provider capacity as unknown unless the provider reports it; local workload estimates never establish or consume provider capacity. A closed gate or exhausted pacing window leaves tasks Ready and records one scheduler-level deferral signal; it never creates a task attempt, lease, blocker label, or human question. Task-specific approval and workload ceilings remain enforced, and paid API or purchased-credit fallback stays disabled.
 
 Issue labels can explicitly set `metis:size-small`, `metis:size-medium`, `metis:size-large`, or `metis:size-unknown`; approve an otherwise approval-required envelope with `metis:budget-approved`; and cap a task with the legacy `metis:max-cost-N` label. Existing policy keys, labels, and migrated records using “cost units” remain readable only as legacy estimated workload—not provider accounting. The configured size-class ceiling still wins over a larger per-task number.
 
 Provider reporting is intentionally separate from local pacing. The supported-signal, privacy, and ledger boundary is documented in [`docs/chatgpt-codex-analytics-audit.md`](docs/chatgpt-codex-analytics-audit.md).
+
+The operations UI reports the provider gate directly and shows completed work as rolling size-point totals for the last 1, 8, and 24 hours. It does not expose legacy workload-unit balances or a manual budget reset. Provider-confirmed exhaustion is shown separately from ordinary unavailability and includes an expected-availability time only when the provider supplied one.
+
+Exhausted capacity is automatically reenergized by the ten-minute scheduled reconciler when the provider-supplied reset time arrives, or 60 minutes after the exhaustion observation when no reset time was supplied. Reenergization reopens the gate and immediately reconsiders Ready work; a repeated exhaustion response safely closes it again. While exhausted, an authenticated operator can use **Reenergize** to perform the same audited reopen-and-reconsider action immediately.
 
 ## Local verification
 
@@ -97,8 +101,8 @@ npm run test:full-stack
 The suite starts the actual control-plane and UI entrypoints in one multi-Worker
 Miniflare runtime, migrates an isolated local D1 database, and connects the
 Workers with the real `CONTROL_PLANE` RPC service binding. Chromium covers local
-authentication, rendered pacing states, and a reset initiated through the UI;
-the test then verifies the new window and audit row directly in local D1. It
+authentication, rendered capacity states, and rolling completed-work totals;
+the test then verifies the authorized RPC boundary and fail-closed unknown state. It
 configures no remote Worker or database. Failure evidence is saved under
 `output/full-stack/` for CI artifact upload.
 

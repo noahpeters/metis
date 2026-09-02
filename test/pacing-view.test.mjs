@@ -2,19 +2,29 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { derivePacingView, formatExactTime, relativeUntil } from "../ui-assets/pacing.js";
 
-const overview = (changes = {}) => ({ semantics: "estimated_local_pacing", pacing: { state: "available", limiting_dimension: null, estimated_workload_units: { used: 3, limit: 8 }, task_starts: { used: 1, limit: 4 } }, active_tasks: { count: 0 }, executable_ready: { count: 0 }, provider_capacity: { state: "available" }, ...changes });
+const overview = (changes = {}) => ({ semantics: "operational_capacity", pacing: { state: "available", limiting_dimension: null, task_starts: { used: 1, limit: 4 } }, work_completed: { unit: "size_points", last_1_hour: 2, last_8_hours: 7, last_24_hours: 15 }, active_tasks: { count: 0 }, executable_ready: { count: 0 }, provider_capacity: { state: "available", expected_available_at: null }, ...changes });
 
-test("active execution takes precedence over exhausted pacing", () => {
-  const view = derivePacingView(overview({ active_tasks: { count: 2 }, pacing: { ...overview().pacing, state: "exhausted", limiting_dimension: "task_starts" } }));
+test("active execution keeps the available green state", () => {
+  const view = derivePacingView(overview({ active_tasks: { count: 2 } }));
   assert.equal(view.tone, "active");
   assert.match(view.reason, /2 tasks/);
+  assert.deepEqual([view.completed1h, view.completed8h, view.completed24h], ["2", "7", "15"]);
 });
 
-test("exhaustion names task-start and workload dimensions", () => {
-  for (const [dimension, label] of [["task_starts", "Task-start"], ["estimated_workload_units", "Workload-unit"]]) {
-    const view = derivePacingView(overview({ pacing: { ...overview().pacing, state: "exhausted", limiting_dimension: dimension } }));
-    assert.match(view.label, new RegExp(label));
-  }
+test("provider exhaustion takes precedence and reports accurate availability timing", () => {
+  const timed = derivePacingView(overview({ active_tasks: { count: 1 }, provider_capacity: { state: "exhausted", expected_available_at: "2026-09-02T00:00:00.000Z" } }));
+  assert.equal(timed.tone, "exhausted");
+  assert.equal(timed.label, "Codex capacity exhausted");
+  assert.equal(timed.expectedAvailableAt, "2026-09-02T00:00:00.000Z");
+  assert.equal(timed.reenergizeAllowed, true);
+  const unknown = derivePacingView(overview({ provider_capacity: { state: "exhausted", expected_available_at: null } }));
+  assert.match(unknown.reason, /automatically retry capacity after 60 minutes/);
+});
+
+test("task-start pacing remains distinct from provider exhaustion", () => {
+  const view = derivePacingView(overview({ pacing: { state: "exhausted", limiting_dimension: "task_starts", task_starts: { used: 4, limit: 4 } } }));
+  assert.equal(view.tone, "paced");
+  assert.equal(view.label, "Task-start pacing reached");
 });
 
 test("ready work is never described as idle and explains verified waiting", () => {

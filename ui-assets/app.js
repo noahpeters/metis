@@ -1,24 +1,13 @@
-import { derivePacingView, formatExactTime, relativeUntil } from "./pacing.js";
+import { derivePacingView, formatExactTime } from "./pacing.js";
 
 const card = document.querySelector("#pacing-card");
-const dialog = document.querySelector("#reset-dialog");
-const form = document.querySelector("#reset-form");
 const announcement = document.querySelector("#announcement");
-const resetButton = document.querySelector("#open-reset");
 const repositoryCards = document.querySelector("#repository-cards");
 const revalidateDialog = document.querySelector("#revalidate-dialog");
 const revalidateForm = document.querySelector("#revalidate-form");
-const nudgeButton = document.querySelector("#nudge") || document.createElement("button");
-const actions = document.querySelector("#pacing-actions") || document.createElement("div");
-if (!actions.id) {
-  actions.id = "pacing-actions";
-  actions.className = "pacing-actions";
-  nudgeButton.id = "nudge";
-  nudgeButton.type = "button";
-  nudgeButton.textContent = "Nudge";
-  resetButton.className = "secondary";
-  actions.append(nudgeButton, resetButton);
-}
+const nudgeButton = document.querySelector("#nudge");
+const reenergizeButton = document.querySelector("#reenergize");
+const actions = document.querySelector("#pacing-actions");
 let verifiedOverview = null;
 let selectedRepository = null;
 
@@ -61,22 +50,21 @@ function render(overview, stale = false, error = "") {
 
   const details = document.createElement("div");
   details.className = "status-details";
-  text(details, "p", "LOCAL PACING ESTIMATE").className = "eyebrow";
-  const amount = document.createElement("p");
-  amount.className = "amount";
-  text(amount, "strong", view.used);
-  text(amount, "span", ` / ${view.limit}`);
-  details.append(amount);
+  text(details, "p", "CODEX CAPACITY").className = "eyebrow";
   text(details, "h1", view.label);
   text(details, "p", view.reason).className = view.warning ? "reason warning" : "reason";
-
-  const reset = document.createElement("p");
-  reset.className = "reset-time";
-  text(reset, "span", "Next scheduled reset ");
-  const time = text(reset, "time", formatExactTime(overview?.window?.next_scheduled_reset_at));
-  if (overview?.window?.next_scheduled_reset_at) time.dateTime = overview.window.next_scheduled_reset_at;
-  text(reset, "span", ` (${relativeUntil(overview?.window?.next_scheduled_reset_at)})`);
-  details.append(reset);
+  if (view.expectedAvailableAt) {
+    const expected = document.createElement("p"); expected.className = "reset-time";
+    text(expected, "span", "Expected availability ");
+    const time = text(expected, "time", formatExactTime(view.expectedAvailableAt)); time.dateTime = view.expectedAvailableAt;
+    details.append(expected);
+  }
+  text(details, "p", "WORK COMPLETED · SIZE POINTS").className = "completion-label";
+  const completion = document.createElement("dl"); completion.className = "completion-grid";
+  for (const [label, value] of [["Last hour", view.completed1h], ["Last 8 hours", view.completed8h], ["Last 24 hours", view.completed24h]]) {
+    const item = document.createElement("div"); text(item, "dt", label); text(item, "dd", value); completion.append(item);
+  }
+  details.append(completion);
 
   const meta = document.createElement("p");
   meta.className = "meta";
@@ -85,9 +73,8 @@ function render(overview, stale = false, error = "") {
   if (error) text(details, "p", error).className = "error";
   details.append(actions);
   card.append(visual, details);
-  resetButton.hidden = false;
   nudgeButton.hidden = !view.nudgeAllowed;
-  resetButton.disabled = !overview?.window?.id;
+  reenergizeButton.hidden = !view.reenergizeAllowed;
 }
 
 async function refresh() {
@@ -99,7 +86,7 @@ async function refresh() {
     if (verifiedOverview) render(verifiedOverview, true, "Refresh failed. Last verified values are preserved; retry when ready.");
     else {
       card.dataset.state = "unknown";
-      card.innerHTML = '<div class="status-details"><p class="eyebrow">LOCAL PACING ESTIMATE</p><h1>Status unknown</h1><p class="reason">No verified pacing observation is available.</p><button id="retry" type="button">Retry</button></div>';
+      card.innerHTML = '<div class="status-details"><p class="eyebrow">CODEX CAPACITY</p><h1>Status unknown</h1><p class="reason">No verified pacing observation is available.</p><button id="retry" type="button">Retry</button></div>';
       card.querySelector("#retry").addEventListener("click", refresh);
     }
   }
@@ -124,41 +111,23 @@ nudgeButton.addEventListener("click", async () => {
   }
 });
 
-resetButton.addEventListener("click", () => {
-  const view = derivePacingView(verifiedOverview);
-  document.querySelector("#current-window").textContent = verifiedOverview.window.id;
-  document.querySelector("#current-counters").textContent = `${view.used} / ${view.limit} workload units; ${view.startsUsed} / ${view.startsLimit} task starts`;
-  dialog.showModal();
-  form.elements.reason.focus();
-});
-document.querySelector("#cancel-reset").addEventListener("click", () => dialog.close());
-
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const submit = form.querySelector('[type="submit"]');
-  const reason = new FormData(form).get("reason");
-  submit.disabled = true;
-  form.setAttribute("aria-busy", "true");
+reenergizeButton.addEventListener("click", async () => {
+  reenergizeButton.disabled = true;
+  reenergizeButton.textContent = "Reenergizing…";
+  announcement.textContent = "Reenergizing capacity and reconsidering Ready work.";
   try {
-    const result = await api("/api/pacing/reset", {
-      method: "POST",
-      headers: { "content-type": "application/json", "Idempotency-Key": crypto.randomUUID() },
-      body: JSON.stringify({ confirmation: "START_NEW_PACING_WINDOW", expected_window_id: verifiedOverview.window.id, request_id: crypto.randomUUID(), reason }),
-    });
-    form.reset();
-    dialog.close();
-    announcement.textContent = result.duplicate ? "Reset already applied. Pacing status refreshed." : "Reset succeeded. A new local pacing window is active.";
+    const result = await api("/api/capacity/reenergize", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ confirmation: "REENERGIZE_CAPACITY", request_id: crypto.randomUUID() }) });
+    announcement.textContent = result.reconciliation_completed === false ? "Capacity reenergized, but Ready-work reconciliation did not complete and will retry on the next schedule." : "Capacity reenergized. Ready work was reconsidered.";
     await refresh();
   } catch (error) {
-    const stale = !error.code || error.code === "stale_window" || error.status >= 500 || error.code === "request_failed";
-    render(verifiedOverview, stale, `${error.message}. Verified values were not changed.`);
-    dialog.close();
-    announcement.textContent = `Reset failed: ${error.message}. You can safely retry.`;
+    announcement.textContent = `Reenergize failed: ${error.message}.`;
+    await refresh();
   } finally {
-    submit.disabled = false;
-    form.removeAttribute("aria-busy");
+    reenergizeButton.disabled = false;
+    reenergizeButton.textContent = "Reenergize";
   }
 });
+
 
 refresh();
 

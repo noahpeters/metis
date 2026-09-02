@@ -32,14 +32,19 @@ async function modulesFor(entrypoint) {
   return [entry, ...paths.filter((path) => path !== entry)].map((path) => ({ type: "ESModule", path }));
 }
 
-async function seed(db, { used = 3, starts = 1, taskState = null, reconciled = true, provider = 1 } = {}) {
+async function seed(db, { starts = 1, taskState = null, reconciled = true, provider = 1, exhausted = false, completed = [] } = {}) {
   await sql(db, [
-    "DELETE FROM dependencies", "DELETE FROM tasks", "DELETE FROM project_reconciliation_checkpoint",
-    `UPDATE pacing_windows SET estimated_workload_units_used=${used}, tasks_started=${starts} WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1)`,
-    `UPDATE provider_capacity SET available=${provider}, updated_at=unixepoch(), resets_at=unixepoch()+3600 WHERE provider='codex_included'`,
+    "DELETE FROM usage_events", "DELETE FROM dependencies", "DELETE FROM tasks", "DELETE FROM project_reconciliation_checkpoint",
+    `UPDATE pacing_windows SET tasks_started=${starts} WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1)`,
+    `UPDATE provider_capacity SET available=${provider}, metadata_json='${exhausted ? '{"outcome":"exhausted","limit_reason":"weekly limit"}' : '{}'}', updated_at=unixepoch(), resets_at=unixepoch()+3600 WHERE provider='codex_included'`,
   ]);
   if (reconciled) await db.prepare("INSERT INTO project_reconciliation_checkpoint(project_id,last_successful_at,updated_at) VALUES ('full-stack',?,unixepoch())").bind(Math.floor(Date.now() / 1000)).run();
   if (taskState) await db.prepare("INSERT INTO tasks(id,repository,issue_number,title,state,estimated_workload_units,budget_approved,dependencies_json,created_at,updated_at) VALUES ('round-trip','noahpeters/example',72,'Seeded through D1',?,1,1,'[]',unixepoch(),unixepoch())").bind(taskState).run();
+  for (const [index, points] of completed.entries()) {
+    const id = `completed-${index}`;
+    await db.prepare("INSERT INTO tasks(id,repository,issue_number,title,state,estimated_workload_units,budget_approved,dependencies_json,created_at,updated_at) VALUES (?, 'noahpeters/example', ?, 'Completed work', 'awaiting_pr_creation', ?, 1, '[]', unixepoch(), unixepoch())").bind(id, 100 + index, points).run();
+    await db.prepare("INSERT INTO usage_events(task_id,provider,operation,legacy_estimated_workload_units,metadata_json,created_at) VALUES (?,'codex_included','coding_prepared',0,'{}',unixepoch())").bind(id).run();
+  }
 }
 
 test("D1 observations round-trip through control-plane RPC and the rendered UI", { timeout: 120_000 }, async (t) => {
@@ -90,34 +95,31 @@ test("D1 observations round-trip through control-plane RPC and the rendered UI",
     }
   });
 
-  await open({ used: 3, starts: 1, taskState: "running" });
+  await open({ starts: 1, taskState: "running", completed: [2, 5] });
   await page.getByRole("heading", { name: "Actively implementing" }).waitFor();
-  assert.equal(await page.locator(".amount").innerText(), "3 / 8");
-  assert.match(await page.locator(".reset-time").innerText(), /Next scheduled reset/);
+  assert.deepEqual(await page.locator(".completion-grid dd").allInnerTexts(), ["7", "7", "7"]);
   assert.equal(await page.locator("#pacing-card").getAttribute("data-state"), "active");
 
-  await open({ used: 2, starts: 1 });
+  await open({ starts: 1 });
   await page.getByRole("heading", { name: "Available and idle" }).waitFor();
-  assert.equal(await page.locator("#pacing-card").getAttribute("data-state"), "idle");
+  assert.equal(await page.locator("#pacing-card").getAttribute("data-state"), "available");
 
-  await open({ used: 8, starts: 2 });
-  await page.getByRole("heading", { name: "Workload-unit limit exhausted" }).waitFor();
+  await open({ provider: 0, exhausted: true });
+  await page.getByRole("heading", { name: "Codex capacity exhausted" }).waitFor();
   assert.equal(await page.locator("#pacing-card").getAttribute("data-state"), "exhausted");
+  assert.match(await page.locator(".reset-time").innerText(), /Expected availability/);
+  await page.screenshot({ path: join(artifacts, "capacity-exhausted.png"), fullPage: true });
+  const reenergizeResponse = page.waitForResponse((response) => response.url().endsWith("/api/capacity/reenergize"));
+  await page.getByRole("button", { name: "Reenergize" }).click();
+  assert.equal((await reenergizeResponse).status(), 200);
+  await page.getByRole("heading", { name: "Available and idle" }).waitFor();
+  assert.equal((await db.prepare("SELECT available FROM provider_capacity WHERE provider='codex_included'").first()).available, 1);
+  assert.equal((await db.prepare("SELECT mode,actor FROM capacity_reenergizations ORDER BY created_at DESC LIMIT 1").first()).mode, "operator");
 
   await open({ reconciled: false });
   await page.getByRole("heading", { name: "Status unknown" }).waitFor();
 
-  await open({ used: 5, starts: 2 });
-  const source = (await db.prepare("SELECT current_window_id FROM pacing_window_control").first()).current_window_id;
-  await page.getByRole("button", { name: "Reset budget" }).click();
-  await page.locator("#reset-dialog").getByLabel("Reason").fill("Full-stack reset verification");
-  const resetResponse = page.waitForResponse((response) => response.url().endsWith("/api/pacing/reset"));
-  await page.getByRole("button", { name: "Start new window" }).click();
-  assert.equal((await resetResponse).status(), 201);
-  await page.getByText("Reset succeeded", { exact: false }).waitFor();
-  assert.equal((await db.prepare("SELECT estimated_workload_units_used,tasks_started FROM pacing_windows WHERE window_key=(SELECT current_window_id FROM pacing_window_control)").first()).estimated_workload_units_used, 0);
-  const audit = await db.prepare("SELECT actor_email,source_window_id,reason,outcome FROM pacing_reset_audit ORDER BY id DESC LIMIT 1").first();
-  assert.deepEqual(audit, { actor_email: "tester@from-trees.com", source_window_id: source, reason: "Full-stack reset verification", outcome: "reset" });
+  assert.equal(await page.getByRole("button", { name: "Reset budget" }).count(), 0);
 
   const unauthorized = await unauthorizedUi.fetch("https://ui/");
   assert.equal(unauthorized.status, 401);
