@@ -7,7 +7,7 @@ export function derivePacingView(overview) {
   const active = overview?.active_tasks?.count;
   const ready = overview?.executable_ready?.count;
   const dimension = overview?.pacing?.limiting_dimension;
-  const base = { used: display(workload.used), limit: display(workload.limit), startsUsed: display(starts.used), startsLimit: display(starts.limit), warning: false };
+  const base = { used: display(workload.used), limit: display(workload.limit), startsUsed: display(starts.used), startsLimit: display(starts.limit), warning: false, nudgeAllowed: false };
   if (!overview || overview.semantics !== "estimated_local_pacing" || !known(active) || overview.pacing?.state === "unknown") {
     return { ...base, tone: "unknown", label: "Status unknown", reason: "The local pacing observation is incomplete or unknown." };
   }
@@ -20,7 +20,7 @@ export function derivePacingView(overview) {
   if (known(ready) && ready > 0) {
     const provider = overview.provider_capacity?.state;
     const reason = provider === "unavailable" ? "Provider capacity is unavailable." : provider === "unknown" ? "Provider capacity data is unknown." : "Dispatch is waiting on repository health, concurrency reconciliation, or a fresh control-plane observation.";
-    return { ...base, tone: "waiting", label: "Ready work is waiting", reason: `${ready} executable Ready ${ready === 1 ? "task exists" : "tasks exist"}. ${reason}`, warning: true };
+    return { ...base, tone: "waiting", label: "Ready work is waiting", nudgeAllowed: true, reason: `${ready} executable Ready ${ready === 1 ? "task exists" : "tasks exist"}. ${reason}`, warning: true };
   }
   return { ...base, tone: "unknown", label: "Status unknown", reason: "Executable-work freshness is unavailable; Metis cannot verify that it is idle." };
 }

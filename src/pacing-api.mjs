@@ -48,6 +48,13 @@ export async function resetPacingWindow(request, env, reconcile) {
   return resetPacingWindowForIdentity(request.headers.get("X-Metis-Verified-Email"), request, env, reconcile);
 }
 
+export async function nudgeReadyWorkForIdentity(email, reconcile) {
+  if (!identityAllowed(email)) return error("unauthorized", "Verified identity required", 401);
+  const result = await reconcile();
+  if (result == null) return error("reconciliation_failed", "The fresh control-plane reconciliation did not complete", 503);
+  return noStore({ reconciled: true, observed: result.observed ?? null, admitted: result.admitted ?? null });
+}
+
 export async function resetPacingWindowForIdentity(email, request, env, reconcile = async () => {}) {
   if (!identityAllowed(email)) return error("unauthorized", "Verified identity required", 401);
   const idempotencyKey = request.headers.get("Idempotency-Key")?.trim();

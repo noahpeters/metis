@@ -1,6 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import worker, { resumeReadyBacklog, uiStatusForIdentity } from "./index.mjs";
-import { pacingOverviewForIdentity, resetPacingWindowForIdentity } from "./pacing-api.mjs";
+import { nudgeReadyWorkForIdentity, pacingOverviewForIdentity, resetPacingWindowForIdentity } from "./pacing-api.mjs";
 
 async function rpcResult(response) {
   return { status: response.status, body: await response.text() };
@@ -17,6 +17,10 @@ export default class MetisControlPlane extends WorkerEntrypoint {
 
   async pacingOverview(email) {
     return rpcResult(await pacingOverviewForIdentity(email, this.env));
+  }
+
+  async nudgeReadyWork(email) {
+    return rpcResult(await nudgeReadyWorkForIdentity(email, () => resumeReadyBacklog(this.env)));
   }
 
   async resetPacingWindow(email, body, idempotencyKey) {

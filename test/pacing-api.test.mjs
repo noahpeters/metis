@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { pacingOverview, resetPacingWindow, RESET_CONFIRMATION } from "../src/pacing-api.mjs";
+import { nudgeReadyWorkForIdentity, pacingOverview, resetPacingWindow, RESET_CONFIRMATION } from "../src/pacing-api.mjs";
 
 const headers = { "X-Metis-Verified-Email": "admin@from-trees.com" };
 
@@ -29,6 +29,27 @@ test("reset requires fresh binding authorization and explicit confirmation", asy
   response = await resetPacingWindow(new Request("https://cp/reset", { method: "POST", headers: { ...headers, "Idempotency-Key": "key" }, body: "{}" }), env, async () => {});
   assert.equal(response.status, 400);
   assert.equal((await response.json()).error.code, "confirmation_required");
+});
+
+test("nudge re-authorizes identity and runs exactly one fresh scheduler reconciliation", async () => {
+  let calls = 0;
+  let response = await nudgeReadyWorkForIdentity("attacker@example.com", async () => { calls += 1; });
+  assert.equal(response.status, 401);
+  assert.equal(calls, 0);
+
+  response = await nudgeReadyWorkForIdentity("admin@from-trees.com", async () => {
+    calls += 1;
+    return { observed: 4, admitted: 1 };
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { reconciled: true, observed: 4, admitted: 1 });
+  assert.equal(calls, 1);
+});
+
+test("nudge reports a failed reconciliation instead of claiming success", async () => {
+  const response = await nudgeReadyWorkForIdentity("admin@from-trees.com", async () => null);
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, "reconciliation_failed");
 });
 
 test("an idempotent reset returns immutable audit evidence without reconciling twice", async () => {
