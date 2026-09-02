@@ -22,6 +22,21 @@ const UPDATE_STATUS_MUTATION = `mutation MetisMirrorProjectStatus($project: ID!,
   updateProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field, value: {singleSelectOptionId: $option}}) { projectV2Item { id } }
 }`;
 
+const ISSUE_HIERARCHY_QUERY = `query MetisIssueHierarchy($issue: ID!, $cursor: String) {
+  node(id: $issue) {
+    ... on Issue {
+      id number repository { nameWithOwner }
+      parent { id number repository { nameWithOwner } }
+      subIssues(first: 100, after: $cursor) {
+        nodes { id number repository { nameWithOwner } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`;
+
+const MAX_HIERARCHY_DEPTH = 8;
+
 export const PROJECT_STATUS_NAMES = ["Backlog", "Ready", "In progress", "Awaiting human", "Blocked", "Deploying", "Done"];
 
 export function projectStatusForState(state) {
@@ -136,6 +151,94 @@ export async function reconcileProjectStatuses(env, queue, options = {}) {
   return { repaired };
 }
 
+async function readIssueHierarchy(env, graphql, issueNodeId) {
+  let cursor = null;
+  let issue = null;
+  const children = [];
+  const seenCursors = new Set();
+  do {
+    const data = await graphql(env, ISSUE_HIERARCHY_QUERY, { issue: issueNodeId, cursor });
+    const pageIssue = data?.node;
+    if (!pageIssue || pageIssue.id !== issueNodeId || !pageIssue.repository?.nameWithOwner) {
+      throw new ProjectAdmissionError(`Issue hierarchy for ${issueNodeId} is inaccessible`);
+    }
+    if (!repositoryAllowed(env, pageIssue.repository.nameWithOwner)) throw new ProjectAdmissionError(`Issue hierarchy includes disallowed repository ${pageIssue.repository.nameWithOwner}`);
+    const connection = pageIssue.subIssues;
+    if (!connection?.nodes || !connection.pageInfo) throw new ProjectAdmissionError(`Sub-issue pagination for ${issueNodeId} is incomplete`);
+    for (const child of connection.nodes) {
+      if (!child?.id || !child.repository?.nameWithOwner) throw new ProjectAdmissionError(`Sub-issue data for ${issueNodeId} is incomplete`);
+      if (!repositoryAllowed(env, child.repository.nameWithOwner)) throw new ProjectAdmissionError(`Issue hierarchy includes disallowed repository ${child.repository.nameWithOwner}`);
+      children.push(child);
+    }
+    if (connection.pageInfo.hasNextPage && !connection.pageInfo.endCursor) throw new ProjectAdmissionError(`Sub-issue pagination for ${issueNodeId} did not return an end cursor`);
+    if (connection.pageInfo.hasNextPage && seenCursors.has(connection.pageInfo.endCursor)) throw new ProjectAdmissionError(`Sub-issue pagination for ${issueNodeId} repeated an end cursor`);
+    if (connection.pageInfo.endCursor) seenCursors.add(connection.pageInfo.endCursor);
+    cursor = connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
+    issue ||= pageIssue;
+  } while (cursor);
+  return { issue, children };
+}
+
+async function orderByHierarchy(env, graphql, flatItems) {
+  const represented = new Map(flatItems.map((item) => [item.issueNodeId, item]));
+  const hierarchy = new Map();
+  const loading = new Set();
+  async function load(nodeId, depth = 0) {
+    if (depth > MAX_HIERARCHY_DEPTH) throw new ProjectAdmissionError(`Issue hierarchy depth exceeds ${MAX_HIERARCHY_DEPTH}`);
+    if (loading.has(nodeId)) throw new ProjectAdmissionError(`Issue hierarchy contains a cycle at ${nodeId}`);
+    if (hierarchy.has(nodeId)) return;
+    loading.add(nodeId);
+    const value = await readIssueHierarchy(env, graphql, nodeId);
+    hierarchy.set(nodeId, value);
+    for (const child of value.children) await load(child.id, depth + 1);
+    loading.delete(nodeId);
+  }
+  for (const item of flatItems) await load(item.issueNodeId);
+
+  const claimedParent = new Map();
+  for (const [parentId, value] of hierarchy) {
+    for (const child of value.children) {
+      const prior = claimedParent.get(child.id);
+      if (prior && prior !== parentId) throw new ProjectAdmissionError(`Issue hierarchy has conflicting ancestry for ${child.id}`);
+      claimedParent.set(child.id, parentId);
+      if (hierarchy.get(child.id)?.issue.parent?.id !== parentId) throw new ProjectAdmissionError(`Issue hierarchy has conflicting parent data for ${child.id}`);
+    }
+  }
+
+  const emitted = new Set();
+  const ordered = [];
+  const reconciledAt = new Date().toISOString();
+  function visit(nodeId, rootPosition, ancestry = [], siblingPosition = null) {
+    if (ancestry.includes(nodeId)) throw new ProjectAdmissionError(`Issue hierarchy contains a cycle at ${nodeId}`);
+    const item = represented.get(nodeId);
+    if (item) {
+      if (emitted.has(nodeId)) throw new ProjectAdmissionError(`Issue hierarchy contains duplicate ${item.repository}#${item.issueNumber}`);
+      emitted.add(nodeId);
+      ordered.push({ ...item, orderIndex: ordered.length, rootPosition, ancestry: ancestry.map((id) => {
+        const ancestor = hierarchy.get(id)?.issue;
+        return { issueNodeId: id, repository: ancestor.repository.nameWithOwner, issueNumber: ancestor.number };
+      }), siblingPosition, reconciledAt });
+    }
+    hierarchy.get(nodeId)?.children.forEach((child, index) => visit(child.id, rootPosition, [...ancestry, nodeId], index));
+  }
+
+  for (const item of flatItems) {
+    if (emitted.has(item.issueNodeId)) continue;
+    let ancestor = claimedParent.get(item.issueNodeId);
+    let hasRepresentedAncestor = false;
+    const seen = new Set([item.issueNodeId]);
+    while (ancestor) {
+      if (seen.has(ancestor)) throw new ProjectAdmissionError(`Issue hierarchy contains a cycle at ${ancestor}`);
+      seen.add(ancestor);
+      if (represented.has(ancestor)) { hasRepresentedAncestor = true; break; }
+      ancestor = claimedParent.get(ancestor);
+    }
+    if (!hasRepresentedAncestor) visit(item.issueNodeId, item.flatPosition);
+  }
+  if (emitted.size !== represented.size) throw new ProjectAdmissionError("Issue hierarchy could not deterministically place every Project issue");
+  return ordered;
+}
+
 export async function readProjectQueue(env, graphql = projectGraphql, onPage = null) {
   const policy = loadProjectPolicy(env.METIS_PROJECT_POLICY_JSON);
   const ordered = [];
@@ -158,7 +261,7 @@ export async function readProjectQueue(env, graphql = projectGraphql, onPage = n
 
   const seenItems = new Set();
   const seenIssues = new Set();
-  return ordered.map((item, orderIndex) => {
+  const flatItems = ordered.map((item, orderIndex) => {
     if (!item?.id || seenItems.has(item.id)) throw new ProjectAdmissionError("Project contains a duplicate item");
     seenItems.add(item.id);
     if (item.isArchived || item.content?.__typename !== "Issue") return null;
@@ -168,8 +271,9 @@ export async function readProjectQueue(env, graphql = projectGraphql, onPage = n
     if (seenIssues.has(issueKey)) throw new ProjectAdmissionError(`Project contains duplicate issue ${issueKey}`);
     seenIssues.add(issueKey);
     const values = new Map((item.fieldValues?.nodes || []).filter((value) => value?.field?.id).map((value) => [value.field.id, value.optionId]));
-    return { projectItemId: item.id, orderIndex, repository, issueNumber: item.content.number, issueNodeId: item.content.id, ownerOptionId: values.get(policy.executionOwnerFieldId), statusOptionId: values.get(policy.statusFieldId), eligible: values.get(policy.executionOwnerFieldId) === policy.metisOwnerOptionId && values.get(policy.statusFieldId) === policy.readyStatusOptionId };
+    return { projectItemId: item.id, flatPosition: orderIndex, repository, issueNumber: item.content.number, issueNodeId: item.content.id, ownerOptionId: values.get(policy.executionOwnerFieldId), statusOptionId: values.get(policy.statusFieldId), eligible: values.get(policy.executionOwnerFieldId) === policy.metisOwnerOptionId && values.get(policy.statusFieldId) === policy.readyStatusOptionId };
   }).filter(Boolean);
+  return orderByHierarchy(env, graphql, flatItems);
 }
 
 function labelsOf(issue) { return (issue.labels || []).map((label) => typeof label === "string" ? label : label.name); }
@@ -263,7 +367,7 @@ export async function reconcileProject(env, options = {}) {
     }
   }
   await env.DB.batch([
-    env.DB.prepare("UPDATE project_reconciliation_runs SET state='succeeded',completed_at=unixepoch(),items_observed=?,items_admitted=?,last_cursor=? WHERE id=?").bind(queue.length, admitted, lastCursor, runId),
+    env.DB.prepare("UPDATE project_reconciliation_runs SET state='succeeded',completed_at=unixepoch(),items_observed=?,items_admitted=?,last_cursor=?,hierarchy_snapshot_json=? WHERE id=?").bind(queue.length, admitted, lastCursor, JSON.stringify(queue.map(({ repository, issueNumber, rootPosition, ancestry, siblingPosition, reconciledAt }) => ({ repository, issueNumber, rootPosition, ancestry, siblingPosition, reconciledAt }))), runId),
     env.DB.prepare("INSERT INTO project_reconciliation_checkpoint(project_id,last_successful_run_id,last_successful_at,last_cursor,updated_at) VALUES(?,?,unixepoch(),?,unixepoch()) ON CONFLICT(project_id) DO UPDATE SET last_successful_run_id=excluded.last_successful_run_id,last_successful_at=excluded.last_successful_at,last_cursor=excluded.last_cursor,updated_at=excluded.updated_at").bind(policy.projectId, runId, lastCursor),
   ]);
   return { runId, observed: queue.length, scanned: candidates.length, admitted, statusRepaired: status.repaired };

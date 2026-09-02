@@ -21,7 +21,14 @@ test("ready work is never described as idle and explains verified waiting", () =
   const view = derivePacingView(overview({ executable_ready: { count: 3 }, provider_capacity: { state: "unavailable" } }));
   assert.equal(view.tone, "waiting");
   assert.equal(view.warning, true);
+  assert.equal(view.nudgeAllowed, true);
   assert.match(view.reason, /Provider capacity/);
+});
+
+test("nudge is restricted to the Ready-work waiting state", () => {
+  assert.equal(derivePacingView(overview()).nudgeAllowed, false);
+  assert.equal(derivePacingView(overview({ active_tasks: { count: 1 }, executable_ready: { count: 3 } })).nudgeAllowed, false);
+  assert.equal(derivePacingView(overview({ executable_ready: { count: 1 } })).nudgeAllowed, true);
 });
 
 test("missing freshness produces an honest unknown state", () => {

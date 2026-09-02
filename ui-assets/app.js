@@ -8,6 +8,17 @@ const resetButton = document.querySelector("#open-reset");
 const repositoryCards = document.querySelector("#repository-cards");
 const revalidateDialog = document.querySelector("#revalidate-dialog");
 const revalidateForm = document.querySelector("#revalidate-form");
+const nudgeButton = document.querySelector("#nudge") || document.createElement("button");
+const actions = document.querySelector("#pacing-actions") || document.createElement("div");
+if (!actions.id) {
+  actions.id = "pacing-actions";
+  actions.className = "pacing-actions";
+  nudgeButton.id = "nudge";
+  nudgeButton.type = "button";
+  nudgeButton.textContent = "Nudge";
+  resetButton.className = "secondary";
+  actions.append(nudgeButton, resetButton);
+}
 let verifiedOverview = null;
 let selectedRepository = null;
 
@@ -72,9 +83,10 @@ function render(overview, stale = false, error = "") {
   meta.textContent = `${stale ? "Stale — last verified " : "Observed "}${formatExactTime(overview?.observed_at)} · Task starts ${view.startsUsed} / ${view.startsLimit}`;
   details.append(meta);
   if (error) text(details, "p", error).className = "error";
-  details.append(resetButton);
+  details.append(actions);
   card.append(visual, details);
   resetButton.hidden = false;
+  nudgeButton.hidden = !view.nudgeAllowed;
   resetButton.disabled = !overview?.window?.id;
 }
 
@@ -92,6 +104,25 @@ async function refresh() {
     }
   }
 }
+
+nudgeButton.addEventListener("click", async () => {
+  nudgeButton.disabled = true;
+  nudgeButton.textContent = "Nudging…";
+  announcement.textContent = "Nudge in progress. Metis is checking Ready work.";
+  try {
+    const result = await api("/api/pacing/nudge", { method: "POST" });
+    announcement.textContent = result.admitted > 0
+      ? `Nudge succeeded. ${result.admitted} ${result.admitted === 1 ? "task was" : "tasks were"} admitted.`
+      : "Nudge succeeded. No Ready work was admitted; refreshed status explains what remains waiting.";
+    await refresh();
+  } catch (error) {
+    announcement.textContent = `Nudge failed: ${error.message}. You can safely retry.`;
+    await refresh();
+  } finally {
+    nudgeButton.disabled = false;
+    nudgeButton.textContent = "Nudge";
+  }
+});
 
 resetButton.addEventListener("click", () => {
   const view = derivePacingView(verifiedOverview);
