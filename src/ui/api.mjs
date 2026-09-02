@@ -1,4 +1,4 @@
-export const allowedApiRequest = (method, pathname) => (method === "GET" && ["/api/status", "/api/pacing"].includes(pathname)) || (method === "POST" && pathname === "/api/pacing/reset");
+export const allowedApiRequest = (method, pathname) => (method === "GET" && ["/api/status", "/api/pacing"].includes(pathname)) || (method === "POST" && ["/api/pacing/reset", "/api/pacing/nudge"].includes(pathname));
 
 export async function proxyApi(request, env, identity) {
   const url = new URL(request.url);
@@ -6,6 +6,7 @@ export async function proxyApi(request, env, identity) {
   let upstream;
   if (url.pathname === "/api/status") upstream = await env.CONTROL_PLANE.uiStatus(identity.email);
   else if (url.pathname === "/api/pacing") upstream = await env.CONTROL_PLANE.pacingOverview(identity.email);
+  else if (url.pathname === "/api/pacing/nudge") upstream = await env.CONTROL_PLANE.nudgeReadyWork(identity.email);
   else {
     let body;
     try { body = await request.json(); }

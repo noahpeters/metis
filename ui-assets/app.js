@@ -5,6 +5,8 @@ const dialog = document.querySelector("#reset-dialog");
 const form = document.querySelector("#reset-form");
 const announcement = document.querySelector("#announcement");
 const resetButton = document.querySelector("#open-reset");
+const nudgeButton = document.querySelector("#nudge");
+const actions = document.querySelector("#pacing-actions");
 let verifiedOverview = null;
 
 class ApiError extends Error {
@@ -68,9 +70,10 @@ function render(overview, stale = false, error = "") {
   meta.textContent = `${stale ? "Stale — last verified " : "Observed "}${formatExactTime(overview?.observed_at)} · Task starts ${view.startsUsed} / ${view.startsLimit}`;
   details.append(meta);
   if (error) text(details, "p", error).className = "error";
-  details.append(resetButton);
+  details.append(actions);
   card.append(visual, details);
   resetButton.hidden = false;
+  nudgeButton.hidden = !view.nudgeAllowed;
   resetButton.disabled = !overview?.window?.id;
 }
 
@@ -88,6 +91,25 @@ async function refresh() {
     }
   }
 }
+
+nudgeButton.addEventListener("click", async () => {
+  nudgeButton.disabled = true;
+  nudgeButton.textContent = "Nudging…";
+  announcement.textContent = "Nudge in progress. Metis is checking Ready work.";
+  try {
+    const result = await api("/api/pacing/nudge", { method: "POST" });
+    announcement.textContent = result.admitted > 0
+      ? `Nudge succeeded. ${result.admitted} ${result.admitted === 1 ? "task was" : "tasks were"} admitted.`
+      : "Nudge succeeded. No Ready work was admitted; refreshed status explains what remains waiting.";
+    await refresh();
+  } catch (error) {
+    announcement.textContent = `Nudge failed: ${error.message}. You can safely retry.`;
+    await refresh();
+  } finally {
+    nudgeButton.disabled = false;
+    nudgeButton.textContent = "Nudge";
+  }
+});
 
 resetButton.addEventListener("click", () => {
   const view = derivePacingView(verifiedOverview);
