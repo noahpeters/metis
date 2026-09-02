@@ -23,14 +23,16 @@ test("local auth is explicit and cannot be enabled in a deployed environment", a
   assert.equal((await authenticate(new Request("https://ui/"), { ENVIRONMENT: "local", LOCAL_AUTH_ENABLED: "true", LOCAL_AUTH_EMAIL: "dev@from-trees.com" })).email, "dev@from-trees.com");
 });
 
-test("API allowlist permits only read-only status", () => {
+test("API allowlist preserves streaming and pacing actions", () => {
   assert.equal(allowedApiRequest("GET", "/api/status"), true);
   assert.equal(allowedApiRequest("POST", "/api/status"), false);
   assert.equal(allowedApiRequest("GET", "/api/tasks"), false);
   assert.equal(allowedApiRequest("GET", "/api/pacing"), true);
   assert.equal(allowedApiRequest("GET", "/api/stream"), true);
+  assert.equal(allowedApiRequest("POST", "/api/stream"), false);
   assert.equal(allowedApiRequest("POST", "/api/pacing/reset"), true);
   assert.equal(allowedApiRequest("POST", "/api/pacing/nudge"), true);
+  assert.equal(allowedApiRequest("GET", "/api/pacing/nudge"), false);
 });
 
 test("nudge proxy forwards only the authenticated identity", async () => {
@@ -83,6 +85,7 @@ test("authenticated shell exposes accessible pacing and confirmation states", as
   assert.match(html, /src="\/app\.js"/);
   assert.doesNotMatch(html, /\/assets\/app\.(?:css|js)/);
   assert.match(html, /<dialog id="reset-dialog"/);
+  assert.match(html, /id="live-status"[^>]*data-state="connecting"/);
   assert.match(html, /<button id="nudge" type="button" hidden>Nudge<\/button>/);
   assert.match(html, /id="open-reset" class="secondary"/);
   assert.match(html, /does not reset ChatGPT or Codex/);
