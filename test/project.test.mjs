@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PROJECT_STATUS_NAMES, ProjectAdmissionError, boundedEligibleItems, loadProjectPolicy, planProjectStatusSchema, projectStatusForState, projectTaskNeedsDispatch, readProjectQueue, reconcileProjectStatuses, recoverInterruptedIntakes } from "../src/project.mjs";
+import { PROJECT_STATUS_NAMES, ProjectAdmissionError, boundedEligibleItems, loadProjectPolicy, planProjectStatusSchema, projectStatusForState, projectTaskNeedsDispatch, readProjectQueue, readProjectStatusCounts, reconcileProjectStatuses, recoverInterruptedIntakes } from "../src/project.mjs";
 
 const policy = {
   projectId: "PVT_kwHOAA6eJM4Bh81k",
@@ -34,10 +34,33 @@ function page(nodes, hasNextPage = false, endCursor = null) {
 }
 
 function item(id, number, owner = "metis-option", status = "ready-option", repository = "noahpeters/metis") {
-  return { id, isArchived: false, content: { __typename: "Issue", id: `ISSUE_${number}`, number, repository: { nameWithOwner: repository } }, fieldValues: { nodes: [
+  return { id, isArchived: false, content: { __typename: "Issue", id: `ISSUE_${number}`, number, repository: { nameWithOwner: repository }, labels: { nodes: [] } }, fieldValues: { nodes: [
     { optionId: owner, field: { id: "owner-field" } }, { optionId: status, field: { id: "status-field" } },
   ] } };
 }
+
+test("Project status aggregates use every page and isolate repositories, owners, and content", async () => {
+  const labeled = (value, labels) => ({ ...value, content: { ...value.content, labels: { nodes: labels.map((name) => ({ name })) } } });
+  const ignored = { ...item("draft", 90), content: { __typename: "DraftIssue" } };
+  const graphql = async (_env, _query, variables) => variables.cursor === null
+    ? page([
+      item("ready-1", 1),
+      item("human", 2, "human-option"),
+      item("backlog", 3, "metis-option", policy.statusOptions.Backlog),
+      labeled(item("awaiting-1", 4, "metis-option", policy.statusOptions["Awaiting human"]), ["metis:awaiting-pr"]),
+      ignored,
+    ], true, "page-2")
+    : page([
+      labeled(item("awaiting-2", 5, "metis-option", policy.statusOptions["Awaiting human"], "noahpeters/metis-sandbox"), ["metis:reviewing"]),
+      item("awaiting-3", 6, "metis-option", policy.statusOptions["Awaiting human"], "noahpeters/metis-sandbox"),
+      item("done", 7, "metis-option", policy.statusOptions.Done, "noahpeters/metis-sandbox"),
+      { ...item("unset", 8), fieldValues: { nodes: [{ optionId: "metis-option", field: { id: "owner-field" } }] } },
+    ]);
+  assert.deepEqual(await readProjectStatusCounts(env, graphql), {
+    "noahpeters/metis": { statuses: { Ready: 1, "Awaiting human": 1 }, awaiting_human_reasons: { "Awaiting PR": 1 } },
+    "noahpeters/metis-sandbox": { statuses: { "Awaiting human": 2, Done: 1 }, awaiting_human_reasons: { Reviewing: 1, Unclassified: 1 } },
+  });
+});
 
 function withHierarchy(projectGraphql, children = {}, parents = {}) {
   return async (requestEnv, query, variables) => {

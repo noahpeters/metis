@@ -1,5 +1,6 @@
 import { githubRequest } from "./github.mjs";
 import { lifecyclePolicy } from "./lifecycle.mjs";
+import { readProjectStatusCounts } from "./project.mjs";
 
 const SUCCESS = new Set(["success", "neutral", "skipped"]);
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
@@ -31,9 +32,11 @@ async function configuredRepositories(env) {
   return (env.ALLOWED_REPOSITORIES || "").split(",").map((value) => value.trim()).filter(Boolean);
 }
 
-export async function repositoryOverviewForIdentity(email, env) {
+export async function repositoryOverviewForIdentity(email, env, observeProject = readProjectStatusCounts) {
   if (!authorized(email)) return json({ error: { code: "unauthorized", message: "Administrator identity required" } }, 401);
   const repositories = await configuredRepositories(env);
+  let projectCounts = null;
+  try { projectCounts = await observeProject(env); } catch { /* An unavailable observation must not be represented as zero. */ }
   const cards = [];
   for (const repository of repositories) {
     const [health, ready, recoveryTask, recent] = await Promise.all([
@@ -50,7 +53,7 @@ export async function repositoryOverviewForIdentity(email, env) {
       } catch { recoveryPr = { number: recoveryTask.pull_request_number, url: recoveryTask.pull_request_url, state: "inaccessible" }; }
     }
     const state = health?.state || "healthy";
-    cards.push({ repository, state, dispatch_locked: state !== "healthy", blocking_sha: health?.blocking_sha || null, workflow_url: health?.workflow_url || null, root_task_id: health?.root_task_id || null, recovery_attempts: health?.recovery_attempts || 0, updated_at: health?.updated_at || null, ready_count: ready?.count || 0, recovery_task: recoveryTask || null, recovery_pr: recoveryPr, deployment_evidence: recent.results || [], evidence_policy: recoveryEvidencePolicy(env, repository), waiting_reason: state === "healthy" ? null : `Normal dispatch is frozen while recovery for ${health?.blocking_sha || "main"} is unresolved.` });
+    cards.push({ repository, state, dispatch_locked: state !== "healthy", blocking_sha: health?.blocking_sha || null, workflow_url: health?.workflow_url || null, root_task_id: health?.root_task_id || null, recovery_attempts: health?.recovery_attempts || 0, updated_at: health?.updated_at || null, ready_count: ready?.count || 0, project_counts: projectCounts?.[repository] || null, recovery_task: recoveryTask || null, recovery_pr: recoveryPr, deployment_evidence: recent.results || [], evidence_policy: recoveryEvidencePolicy(env, repository), waiting_reason: state === "healthy" ? null : `Normal dispatch is frozen while recovery for ${health?.blocking_sha || "main"} is unresolved.` });
   }
   return json({ repositories: cards, observed_at: new Date().toISOString() });
 }
