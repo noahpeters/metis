@@ -1,5 +1,6 @@
 import { loadPolicy } from "./config.mjs";
 import { reenergizeCapacityForOperator } from "./provider-capacity.mjs";
+import { observeExecutableReady } from "./executable-ready.mjs";
 
 export const PACING_OVERVIEW_SCHEMA_VERSION = 2;
 const ACTIVE_STATES = ["dispatching", "pending_connector_ack", "running", "revising", "recovering"];
@@ -18,14 +19,17 @@ export async function pacingOverview(request, env) {
 export async function pacingOverviewForIdentity(email, env) {
   if (!identityAllowed(email)) return error("unauthorized", "Verified identity required", 401);
   const policy = loadPolicy(env.METIS_POLICY_JSON);
-  const [window, provider, active, executable, checkpoint, completed] = await Promise.all([
+  const [window, provider, active, checkpoint, completed] = await Promise.all([
     env.DB.prepare("SELECT p.*,c.generation FROM pacing_window_control c JOIN pacing_windows p ON p.window_key=c.current_window_id WHERE c.singleton=1").first(),
     env.DB.prepare("SELECT available,resets_at,updated_at,metadata_json FROM provider_capacity WHERE provider='codex_included'").first(),
     env.DB.prepare(`SELECT id,repository,issue_number,state FROM tasks WHERE state IN (${ACTIVE_STATES.map(() => "?").join(",")}) ORDER BY id`).bind(...ACTIVE_STATES).all(),
-    env.DB.prepare("SELECT COUNT(*) AS count FROM tasks t WHERE t.state='ready' AND NOT EXISTS (SELECT 1 FROM dependencies d WHERE d.task_id=t.id AND d.state!='completed') AND NOT EXISTS (SELECT 1 FROM repository_health h WHERE h.repository=t.repository AND h.state!='healthy')").first(),
     env.DB.prepare("SELECT last_successful_at FROM project_reconciliation_checkpoint ORDER BY last_successful_at DESC LIMIT 1").first(),
     env.DB.prepare("SELECT MIN(u.created_at) AS created_at,t.estimated_workload_units,t.size_class FROM usage_events u JOIN tasks t ON t.id=u.task_id WHERE u.created_at>=unixepoch()-86400 AND (u.operation IN ('coding_prepared','connector_completed_without_ack','review_revision_prepared') OR (u.operation='coding' AND json_extract(u.metadata_json,'$.status') IN ('completed','awaiting_pr_creation'))) GROUP BY u.task_id,u.operation,u.metadata_json,t.estimated_workload_units,t.size_class").all(),
   ]);
+  let readiness = null;
+  if (checkpoint) {
+    try { readiness = await observeExecutableReady(env); } catch { /* incomplete authoritative evidence remains unknown */ }
+  }
   const observed = Math.floor(Date.now() / 1000);
   const startsUsed = window?.tasks_started ?? null;
   const startsLimit = policy.global.maxTasksPerWindow ?? null;
@@ -47,7 +51,7 @@ export async function pacingOverviewForIdentity(email, env) {
     pacing: { task_starts: { used: startsUsed, limit: startsLimit }, state: limiting === "unknown" ? "unknown" : limiting ? "exhausted" : "available", limiting_dimension: limiting },
     work_completed: { unit: "size_points", last_1_hour: completedSize(3600), last_8_hours: completedSize(28800), last_24_hours: completedSize(86400) },
     active_tasks: { count: active?.results ? active.results.length : null, references: active?.results?.map(({ id, repository, issue_number, state }) => ({ id, repository, issue_number, state })) ?? null },
-    executable_ready: { count: checkpoint ? executable?.count ?? null : null, authority: "github_project_dependencies_repository_health" },
+    executable_ready: { count: readiness?.executable_ready_count ?? null, authority: "github_project_status_and_dependencies" },
     provider_capacity: provider ? { state: providerState, observed_at: iso(provider.updated_at), expected_available_at: providerState === "exhausted" ? iso(provider.resets_at) : null, limit_reason: providerState === "exhausted" ? providerMetadata.limit_reason || null : null } : { state: "unknown", observed_at: null, expected_available_at: null, limit_reason: null },
     observed_at: iso(observed), freshness: { project_reconciled_at: iso(checkpoint?.last_successful_at) }, configuration: { provenance: env.METIS_POLICY_JSON ? "METIS_POLICY_JSON" : "built_in_defaults" },
   });

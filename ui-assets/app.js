@@ -175,9 +175,11 @@ connect();
 function renderRepositories(overview) {
   repositoryCards.replaceChildren(); repositoryCards.setAttribute("aria-busy", "false");
   for (const repository of overview.repositories) {
-    const item = document.createElement("article"); item.className = "repository-card"; item.dataset.health = repository.dispatch_locked ? "locked" : repository.ready_count ? "ready" : "idle";
-    const heading = document.createElement("div"); heading.className = "repository-heading"; text(heading, "h3", repository.repository); text(heading, "span", repository.dispatch_locked ? "Recovery Locked" : repository.ready_count ? "Backlog ready" : "Backlog idle").className = "state-pill"; item.append(heading);
-    text(item, "p", repository.dispatch_locked ? repository.waiting_reason : `${repository.ready_count} Ready issue${repository.ready_count === 1 ? "" : "s"}.`).className = "reason";
+    const item = document.createElement("article"); item.className = "repository-card"; item.dataset.health = repository.dispatch_locked ? "locked" : repository.ready_count > 0 ? "ready" : "idle";
+    const heading = document.createElement("div"); heading.className = "repository-heading"; text(heading, "h3", repository.repository); text(heading, "span", repository.dispatch_locked ? "Recovery Locked" : repository.ready_count > 0 ? "Work ready" : "Backlog idle").className = "state-pill"; item.append(heading);
+    const readySummary = repository.ready_count == null ? "Executable Ready count unavailable." : `${repository.ready_count} executable Ready issue${repository.ready_count === 1 ? "" : "s"}.`;
+    text(item, "p", repository.dispatch_locked ? repository.waiting_reason : readySummary).className = "reason";
+    if (!repository.dispatch_locked && repository.dependency_waiting_count > 0) text(item, "p", `${repository.dependency_waiting_count} additional Project Ready issue${repository.dependency_waiting_count === 1 ? " is" : "s are"} waiting on dependencies.`).className = "warning";
     if (repository.dispatch_locked) {
       const evidence = document.createElement("dl"); evidence.className = "evidence-list";
       const add = (name, value, href) => { const row = document.createElement("div"); text(row, "dt", name); const dd = document.createElement("dd"); const node = text(dd, href ? "a" : "span", value || "Not observed"); if (href) { node.href = href; node.target = "_blank"; node.rel = "noreferrer"; } row.append(dd); evidence.append(row); };
