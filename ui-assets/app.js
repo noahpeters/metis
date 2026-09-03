@@ -180,6 +180,21 @@ function renderRepositories(overview) {
     const readySummary = repository.ready_count == null ? "Executable Ready count unavailable." : `${repository.ready_count} executable Ready issue${repository.ready_count === 1 ? "" : "s"}.`;
     text(item, "p", repository.dispatch_locked ? repository.waiting_reason : readySummary).className = "reason";
     if (!repository.dispatch_locked && repository.dependency_waiting_count > 0) text(item, "p", `${repository.dependency_waiting_count} additional Project Ready issue${repository.dependency_waiting_count === 1 ? " is" : "s are"} waiting on dependencies.`).className = "warning";
+    if (!repository.project_counts) {
+      text(item, "p", "Project status counts unavailable.").className = "project-counts-unavailable";
+    } else {
+      const counts = document.createElement("dl"); counts.className = "project-counts"; counts.setAttribute("aria-label", "Metis-owned Project issue counts");
+      for (const [status, count] of Object.entries(repository.project_counts.statuses)) {
+        const row = document.createElement("div"); text(row, "dt", status); text(row, "dd", String(count)); counts.append(row);
+      }
+      item.append(counts);
+      const awaiting = repository.project_counts.statuses["Awaiting human"];
+      if (awaiting) {
+        const reasons = document.createElement("ul"); reasons.className = "awaiting-reasons"; reasons.setAttribute("aria-label", "Awaiting human reasons");
+        for (const [reason, count] of Object.entries(repository.project_counts.awaiting_human_reasons)) text(reasons, "li", `${reason}: ${count}`);
+        item.append(reasons);
+      }
+    }
     if (repository.dispatch_locked) {
       const evidence = document.createElement("dl"); evidence.className = "evidence-list";
       const add = (name, value, href) => { const row = document.createElement("div"); text(row, "dt", name); const dd = document.createElement("dd"); const node = text(dd, href ? "a" : "span", value || "Not observed"); if (href) { node.href = href; node.target = "_blank"; node.rel = "noreferrer"; } row.append(dd); evidence.append(row); };

@@ -7,6 +7,7 @@ import uiWorker from "../src/ui/worker.mjs";
 
 const root = new URL("..", import.meta.url).pathname;
 const screenshot = join(root, "output/playwright/metis-pacing.png");
+const mobileScreenshot = join(root, "output/playwright/metis-pacing-mobile.png");
 const overview = {
   semantics: "operational_capacity",
   observed_at: "2026-09-01T08:00:00.000Z",
@@ -39,9 +40,9 @@ const env = {
   CONTROL_PLANE: {
     async pacingOverview() { return { status: 200, body: JSON.stringify(overview) }; },
     async repositoryOverview() { return { status: 200, body: JSON.stringify({ repositories: [
-      { repository: "noahpeters/metis", state: "recovery_blocked", dispatch_locked: true, blocking_sha: "60f1d51885342bfe349ff2c28736ce6b20d84846", workflow_url: "https://github.com/noahpeters/metis/actions/runs/33487414111", root_task_id: "noahpeters/metis#68", recovery_attempts: 2, updated_at: 1788249600, ready_count: 1, recovery_task: { issue_number: 68, state: "recovery_blocked" }, recovery_pr: { number: 73, state: "closed_unmerged", url: "https://github.com/noahpeters/metis/pull/73" }, deployment_evidence: [{ head_sha: "7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b", conclusion: "success" }], evidence_policy: "exact_sha", waiting_reason: "Normal dispatch is frozen while recovery for 60f1d5188534 is unresolved." },
-      { repository: "noahpeters/ftops", state: "healthy", dispatch_locked: false, ready_count: 3, raw_ready_count: 5, dependency_waiting_count: 2 },
-      { repository: "noahpeters/msgstats", state: "healthy", dispatch_locked: false, ready_count: 0, raw_ready_count: 0, dependency_waiting_count: 0 },
+      { repository: "noahpeters/metis", state: "recovery_blocked", dispatch_locked: true, blocking_sha: "60f1d51885342bfe349ff2c28736ce6b20d84846", workflow_url: "https://github.com/noahpeters/metis/actions/runs/33487414111", root_task_id: "noahpeters/metis#68", recovery_attempts: 2, updated_at: 1788249600, ready_count: 1, raw_ready_count: 3, dependency_waiting_count: 2, project_counts: { statuses: { Ready: 3, "In progress": 2, "Awaiting human": 4, Done: 12 }, awaiting_human_reasons: { "Awaiting PR": 2, Reviewing: 1, Unclassified: 1 } }, recovery_task: { issue_number: 68, state: "recovery_blocked" }, recovery_pr: { number: 73, state: "closed_unmerged", url: "https://github.com/noahpeters/metis/pull/73" }, deployment_evidence: [{ head_sha: "7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b", conclusion: "success" }], evidence_policy: "exact_sha", waiting_reason: "Normal dispatch is frozen while recovery for 60f1d5188534 is unresolved." },
+      { repository: "noahpeters/ftops", state: "healthy", dispatch_locked: false, ready_count: 3, raw_ready_count: 5, dependency_waiting_count: 2, project_counts: { statuses: { Ready: 3, Blocked: 1 }, awaiting_human_reasons: {} } },
+      { repository: "noahpeters/msgstats", state: "healthy", dispatch_locked: false, ready_count: 0, raw_ready_count: 0, dependency_waiting_count: 0, project_counts: null },
     ] }) }; },
     async nudgeReadyWork() { return { status: 200, body: JSON.stringify({ reconciled: true, observed: 5, admitted: 1 }) }; },
   },
@@ -80,10 +81,14 @@ try {
   await page.getByText("3 executable Ready issues.").waitFor();
   await page.getByText("2 additional Project Ready issues are waiting on dependencies.").waitFor();
   assert.equal(await page.getByRole("button", { name: "Revalidate" }).count(), 1);
+  assert.deepEqual(await page.getByLabel("Awaiting human reasons").getByRole("listitem").allInnerTexts(), ["Awaiting PR: 2", "Reviewing: 1", "Unclassified: 1"]);
   assert.equal(failures.length, 0, failures.join("\n"));
   await mkdir(join(root, "output/playwright"), { recursive: true });
   await page.screenshot({ path: screenshot, fullPage: true });
-  console.log(`Rendered UI verified: ${screenshot}`);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: mobileScreenshot, fullPage: true });
+  assert.equal(await page.locator(".repository-grid").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 1);
+  console.log(`Rendered UI verified: ${screenshot}, ${mobileScreenshot}`);
 } finally {
   await browser.close();
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

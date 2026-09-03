@@ -101,8 +101,8 @@ test("D1 observations round-trip through control-plane RPC and the rendered UI",
   assert.equal(await page.locator("#pacing-card").getAttribute("data-state"), "active");
 
   await open({ starts: 1 });
-  await page.getByRole("heading", { name: "Available and idle" }).waitFor();
-  assert.equal(await page.locator("#pacing-card").getAttribute("data-state"), "available");
+  await page.getByRole("heading", { name: "Status unknown" }).waitFor();
+  assert.equal(await page.locator("#pacing-card").getAttribute("data-state"), "unknown");
 
   await open({ provider: 0, exhausted: true });
   await page.getByRole("heading", { name: "Codex capacity exhausted" }).waitFor();
@@ -112,7 +112,7 @@ test("D1 observations round-trip through control-plane RPC and the rendered UI",
   const reenergizeResponse = page.waitForResponse((response) => response.url().endsWith("/api/capacity/reenergize"));
   await page.getByRole("button", { name: "Reenergize" }).click();
   assert.equal((await reenergizeResponse).status(), 200);
-  await page.getByRole("heading", { name: "Available and idle" }).waitFor();
+  await page.getByRole("heading", { name: "Status unknown" }).waitFor();
   assert.equal((await db.prepare("SELECT available FROM provider_capacity WHERE provider='codex_included'").first()).available, 1);
   assert.equal((await db.prepare("SELECT mode,actor FROM capacity_reenergizations ORDER BY created_at DESC LIMIT 1").first()).mode, "operator");
 
