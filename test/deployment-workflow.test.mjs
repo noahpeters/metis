@@ -18,6 +18,7 @@ test("routine production deployment preserves secrets and deploys both Workers",
   assert.doesNotMatch(workflow, /TERRAFORM_STATE_ACCESS_KEY_ID|TERRAFORM_STATE_SECRET_ACCESS_KEY/);
   assert.doesNotMatch(workflow, /AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/);
   assert.doesNotMatch(workflow, /CLOUDFLARE_ZONE_ID|CLOUDFLARE_ACCESS_TEAM_DOMAIN|CLOUDFLARE_ACCESS_AUDIENCE/);
+  assert.match(workflow, /curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 --connect-timeout 10 --max-time 15 https:\/\/metis-control-plane\.gr4gwzrfq2\.workers\.dev\/health/);
   assert.match(workflow, /GITHUB_STEP_SUMMARY/);
   assert.doesNotMatch(workflow, /complete-production-cutover/i);
 });
