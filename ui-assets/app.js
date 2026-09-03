@@ -5,21 +5,30 @@ const dialog = document.querySelector("#reset-dialog");
 const form = document.querySelector("#reset-form");
 const announcement = document.querySelector("#announcement");
 const resetButton = document.querySelector("#open-reset");
+const liveStatus = document.querySelector("#live-status");
+const nudgeButton = document.querySelector("#nudge");
+const actions = document.querySelector("#pacing-actions");
+let verifiedOverview = null;
+let streamId = null;
+let streamRevision = 0;
+let staleTimer;
+
+function setLiveState(state, label) {
+  liveStatus.dataset.state = state;
+  liveStatus.textContent = label;
+}
+
+function markFresh() {
+  clearTimeout(staleTimer);
+  setLiveState("live", "Live");
+  staleTimer = setTimeout(() => {
+    setLiveState("stale", "Stale");
+    if (verifiedOverview) render(verifiedOverview, true, "Live updates are delayed; reconnecting automatically.");
+  }, 5_000);
+}
 const repositoryCards = document.querySelector("#repository-cards");
 const revalidateDialog = document.querySelector("#revalidate-dialog");
 const revalidateForm = document.querySelector("#revalidate-form");
-const nudgeButton = document.querySelector("#nudge") || document.createElement("button");
-const actions = document.querySelector("#pacing-actions") || document.createElement("div");
-if (!actions.id) {
-  actions.id = "pacing-actions";
-  actions.className = "pacing-actions";
-  nudgeButton.id = "nudge";
-  nudgeButton.type = "button";
-  nudgeButton.textContent = "Nudge";
-  resetButton.className = "secondary";
-  actions.append(nudgeButton, resetButton);
-}
-let verifiedOverview = null;
 let selectedRepository = null;
 
 class ApiError extends Error {
@@ -160,7 +169,31 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-refresh();
+function connect() {
+  setLiveState(verifiedOverview ? "reconnecting" : "connecting", verifiedOverview ? "Reconnecting…" : "Connecting…");
+  const events = new EventSource("/api/stream");
+  events.addEventListener("snapshot", (event) => {
+    const update = JSON.parse(event.data);
+    if (update.stream_id === streamId && update.revision <= streamRevision) return;
+    streamId = update.stream_id;
+    streamRevision = update.revision;
+    verifiedOverview = update.snapshot;
+    render(verifiedOverview);
+    markFresh();
+  });
+  events.addEventListener("unavailable", () => {
+    setLiveState("stale", "Stale");
+    if (verifiedOverview) render(verifiedOverview, true, "The control plane is temporarily unavailable; retrying automatically.");
+    else refresh();
+  });
+  events.onerror = () => {
+    setLiveState("reconnecting", "Reconnecting…");
+    if (verifiedOverview) render(verifiedOverview, true, "Live updates disconnected; reconnecting automatically.");
+    else refresh();
+  };
+}
+
+connect();
 
 function renderRepositories(overview) {
   repositoryCards.replaceChildren(); repositoryCards.setAttribute("aria-busy", "false");
