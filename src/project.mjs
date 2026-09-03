@@ -339,8 +339,8 @@ export async function readProjectStatusCounts(env, graphql = projectGraphql) {
 
 function labelsOf(issue) { return (issue.labels || []).map((label) => typeof label === "string" ? label : label.name); }
 
-export function boundedEligibleItems(queue, limit = 25) {
-  return queue.filter((item) => item.eligible).slice(0, Math.max(0, Number(limit) || 0));
+export function eligibleProjectItems(queue) {
+  return queue.filter((item) => item.eligible);
 }
 
 async function enqueueOnce(env, type, taskId) {
@@ -383,8 +383,10 @@ export async function reconcileProject(env, options = {}) {
   const max = Number(options.maxConcurrentTasks ?? JSON.parse(env.METIS_POLICY_JSON || "{}").global?.maxConcurrentTasks ?? 2);
   let available = Math.max(0, max - (active?.count || 0));
   let admitted = await recoverInterruptedIntakes(env, queue);
-  const scanLimit = Number(options.scanLimit ?? 25);
-  const candidates = boundedEligibleItems(queue, scanLimit);
+  // GitHub Project pagination is the fetch boundary, not an admission boundary.
+  // Evaluate every eligible item before concluding that no work can dispatch;
+  // otherwise stale tasks near the front of the Project can starve later work.
+  const candidates = eligibleProjectItems(queue);
   const ready = [];
   const dependencyGraph = new Map();
   for (const item of candidates) {

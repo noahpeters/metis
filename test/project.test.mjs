@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PROJECT_STATUS_NAMES, ProjectAdmissionError, boundedEligibleItems, loadProjectPolicy, planProjectStatusSchema, projectStatusForState, projectTaskNeedsDispatch, readProjectQueue, readProjectStatusCounts, reconcileProjectStatuses, recoverInterruptedIntakes } from "../src/project.mjs";
+import { PROJECT_STATUS_NAMES, ProjectAdmissionError, eligibleProjectItems, loadProjectPolicy, planProjectStatusSchema, projectStatusForState, projectTaskNeedsDispatch, readProjectQueue, readProjectStatusCounts, reconcileProjectStatuses, recoverInterruptedIntakes } from "../src/project.mjs";
 
 const policy = {
   projectId: "PVT_kwHOAA6eJM4Bh81k",
@@ -99,14 +99,12 @@ test("Project pages retain connection POSITION order and eligibility", async () 
   ]);
 });
 
-test("scheduler scans are bounded without changing authoritative Project order", () => {
-  const queue = [
-    { id: "blocked-owner", eligible: false },
-    { id: "highest", eligible: true },
-    { id: "second", eligible: true },
-    { id: "outside-bound", eligible: true },
-  ];
-  assert.deepEqual(boundedEligibleItems(queue, 2).map(({ id }) => id), ["highest", "second"]);
+test("scheduler scans every eligible Project item in authoritative order", () => {
+  const queue = Array.from({ length: 46 }, (_, index) => ({ id: index + 1, eligible: index !== 10 }));
+  const eligible = eligibleProjectItems(queue);
+  assert.equal(eligible.length, 45);
+  assert.equal(eligible.at(-1).id, 46);
+  assert.deepEqual(eligible.slice(24, 27).map(({ id }) => id), [26, 27, 28]);
 });
 
 test("Project queue fails closed for schema drift and duplicates but skips ineligible content", async () => {
@@ -128,7 +126,7 @@ test("Project hierarchy groups descendants ahead of the next positioned root", a
   const graphql = withHierarchy(async () => page(flat), { 5: [44, 45, 46], 12: [25] }, { 44: 5, 45: 5, 46: 5, 25: 12 });
   const queue = await readProjectQueue(env, graphql);
   assert.deepEqual(queue.map((entry) => entry.issueNumber), [5, 44, 45, 46, 12, 25]);
-  assert.deepEqual(boundedEligibleItems(queue).map((entry) => entry.issueNumber), [44, 45, 46, 25]);
+  assert.deepEqual(eligibleProjectItems(queue).map((entry) => entry.issueNumber), [44, 45, 46, 25]);
   assert.deepEqual(queue.find((entry) => entry.issueNumber === 44).ancestry.map((entry) => entry.issueNumber), [5]);
   assert.equal(queue.find((entry) => entry.issueNumber === 25).rootPosition, 1);
 });
