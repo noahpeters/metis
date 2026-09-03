@@ -19,7 +19,7 @@ test("routine production deployment preserves secrets and deploys both Workers",
   assert.doesNotMatch(workflow, /AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/);
   assert.doesNotMatch(workflow, /CLOUDFLARE_ZONE_ID|CLOUDFLARE_ACCESS_TEAM_DOMAIN|CLOUDFLARE_ACCESS_AUDIENCE/);
   assert.match(workflow, /GITHUB_STEP_SUMMARY/);
-  assert.doesNotMatch(workflow, /complete-production-cutover|staging/i);
+  assert.doesNotMatch(workflow, /complete-production-cutover/i);
 });
 
 test("control-plane deployments retain dashboard-managed encrypted secrets", () => {

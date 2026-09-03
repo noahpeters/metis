@@ -12,7 +12,7 @@
     {
       "binding": "DB",
       "database_name": "metis-production",
-      "database_id": "fab80b33-f3d1-4fb6-bfa7-05ab613386c5",
+      "database_id": "3b1c9cef-5dd1-43d2-8af3-b72ae06795c7",
       "migrations_dir": "migrations"
     }
   ],
