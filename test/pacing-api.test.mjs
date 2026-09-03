@@ -9,7 +9,6 @@ function overviewEnv({ provider = null, completed = [] } = {}) {
     { window_key: "window-1", generation: 1, started_at: 1_700_000_000, tasks_started: 2 },
     provider,
     { results: [{ id: "o/r#1", repository: "o/r", issue_number: 1, state: "running" }] },
-    { count: 4 },
     { last_successful_at: 1_700_000_010 },
     { results: completed },
   ];
@@ -30,7 +29,7 @@ test("overview reports rolling completed size points without workload units", as
   assert.deepEqual(body.work_completed, { unit: "size_points", last_1_hour: 2, last_8_hours: 7, last_24_hours: 19 });
   assert.equal(Object.hasOwn(body.pacing, "estimated_workload_units"), false);
   assert.equal(body.active_tasks.references[0].id, "o/r#1");
-  assert.equal(body.executable_ready.count, 4);
+  assert.equal(body.executable_ready.count, null);
 });
 
 test("provider exhaustion exposes only provider-supplied availability evidence", async () => {

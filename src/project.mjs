@@ -9,7 +9,7 @@ const ITEMS_QUERY = `query MetisProjectItems($project: ID!, $cursor: String) {
       items(first: 100, after: $cursor, orderBy: {field: POSITION, direction: ASC}) {
         nodes {
           id isArchived
-          content { __typename ... on Issue { id number title body repository { nameWithOwner } labels(first: 100) { nodes { name } } } }
+          content { __typename ... on Issue { id number title body state repository { nameWithOwner } labels(first: 100) { nodes { name } } } }
           fieldValues(first: 100) { nodes { ... on ProjectV2ItemFieldSingleSelectValue { optionId field { ... on ProjectV2SingleSelectField { id } } } } }
         }
         pageInfo { hasNextPage endCursor }
@@ -285,7 +285,7 @@ export async function readProjectQueue(env, graphql = projectGraphql, onPage = n
     if (seenIssues.has(issueKey)) throw new ProjectAdmissionError(`Project contains duplicate issue ${issueKey}`);
     seenIssues.add(issueKey);
     const values = new Map((item.fieldValues?.nodes || []).filter((value) => value?.field?.id).map((value) => [value.field.id, value.optionId]));
-    return { projectItemId: item.id, flatPosition: orderIndex, repository, issueNumber: item.content.number, issueNodeId: item.content.id, ownerOptionId: values.get(policy.executionOwnerFieldId), statusOptionId: values.get(policy.statusFieldId), eligible: values.get(policy.executionOwnerFieldId) === policy.metisOwnerOptionId && values.get(policy.statusFieldId) === policy.readyStatusOptionId };
+    return { projectItemId: item.id, flatPosition: orderIndex, repository, issueNumber: item.content.number, issueNodeId: item.content.id, issueState: item.content.state || null, ownerOptionId: values.get(policy.executionOwnerFieldId), statusOptionId: values.get(policy.statusFieldId), eligible: values.get(policy.executionOwnerFieldId) === policy.metisOwnerOptionId && values.get(policy.statusFieldId) === policy.readyStatusOptionId };
   }).filter(Boolean);
   return orderByHierarchy(env, graphql, flatItems);
 }

@@ -1,5 +1,6 @@
 import { githubRequest } from "./github.mjs";
 import { lifecyclePolicy } from "./lifecycle.mjs";
+import { aggregateExecutableReady, observeExecutableReady } from "./executable-ready.mjs";
 import { readProjectStatusCounts } from "./project.mjs";
 
 const SUCCESS = new Set(["success", "neutral", "skipped"]);
@@ -32,16 +33,17 @@ async function configuredRepositories(env) {
   return (env.ALLOWED_REPOSITORIES || "").split(",").map((value) => value.trim()).filter(Boolean);
 }
 
-export async function repositoryOverviewForIdentity(email, env, observeProject = readProjectStatusCounts) {
+export async function repositoryOverviewForIdentity(email, env, observeProject = readProjectStatusCounts, observeReadiness = observeExecutableReady) {
   if (!authorized(email)) return json({ error: { code: "unauthorized", message: "Administrator identity required" } }, 401);
   const repositories = await configuredRepositories(env);
+  let readiness = null;
+  try { readiness = await observeReadiness(env); } catch { /* Cards report unknown rather than inflating readiness. */ }
   let projectCounts = null;
   try { projectCounts = await observeProject(env); } catch { /* An unavailable observation must not be represented as zero. */ }
   const cards = [];
   for (const repository of repositories) {
-    const [health, ready, recoveryTask, recent] = await Promise.all([
+    const [health, recoveryTask, recent] = await Promise.all([
       env.DB.prepare("SELECT * FROM repository_health WHERE repository=?").bind(repository).first(),
-      env.DB.prepare("SELECT COUNT(*) count FROM tasks WHERE repository=? AND state='ready'").bind(repository).first(),
       env.DB.prepare("SELECT id,issue_number,state,pull_request_number,pull_request_url,blocker_reason,updated_at FROM tasks WHERE repository=? AND is_recovery=1 ORDER BY updated_at DESC LIMIT 1").bind(repository).first(),
       env.DB.prepare("SELECT head_sha,workflow_name,conclusion,workflow_url,updated_at FROM deployment_runs WHERE repository=? ORDER BY updated_at DESC LIMIT 12").bind(repository).all(),
     ]);
@@ -53,7 +55,8 @@ export async function repositoryOverviewForIdentity(email, env, observeProject =
       } catch { recoveryPr = { number: recoveryTask.pull_request_number, url: recoveryTask.pull_request_url, state: "inaccessible" }; }
     }
     const state = health?.state || "healthy";
-    cards.push({ repository, state, dispatch_locked: state !== "healthy", blocking_sha: health?.blocking_sha || null, workflow_url: health?.workflow_url || null, root_task_id: health?.root_task_id || null, recovery_attempts: health?.recovery_attempts || 0, updated_at: health?.updated_at || null, ready_count: ready?.count || 0, project_counts: projectCounts?.[repository] || null, recovery_task: recoveryTask || null, recovery_pr: recoveryPr, deployment_evidence: recent.results || [], evidence_policy: recoveryEvidencePolicy(env, repository), waiting_reason: state === "healthy" ? null : `Normal dispatch is frozen while recovery for ${health?.blocking_sha || "main"} is unresolved.` });
+    const counts = readiness ? aggregateExecutableReady(readiness, repository) : null;
+    cards.push({ repository, state, dispatch_locked: state !== "healthy", blocking_sha: health?.blocking_sha || null, workflow_url: health?.workflow_url || null, root_task_id: health?.root_task_id || null, recovery_attempts: health?.recovery_attempts || 0, updated_at: health?.updated_at || null, ready_count: counts?.executable ?? null, raw_ready_count: counts?.raw ?? null, dependency_waiting_count: counts?.waiting ?? null, project_counts: projectCounts?.[repository] || null, recovery_task: recoveryTask || null, recovery_pr: recoveryPr, deployment_evidence: recent.results || [], evidence_policy: recoveryEvidencePolicy(env, repository), waiting_reason: state === "healthy" ? null : `Normal dispatch is frozen while recovery for ${health?.blocking_sha || "main"} is unresolved.` });
   }
   return json({ repositories: cards, observed_at: new Date().toISOString() });
 }
