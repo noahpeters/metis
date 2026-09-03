@@ -49,6 +49,10 @@ export function projectStatusForState(state) {
   return null;
 }
 
+export function projectTaskNeedsDispatch(state) {
+  return state === "ready" || state === "retrying";
+}
+
 export class ProjectAdmissionError extends Error {
   constructor(message) {
     super(message);
@@ -330,7 +334,7 @@ export async function reconcileProject(env, options = {}) {
   for (const item of candidates) {
     const id = `${item.repository}#${item.issueNumber}`;
     const existing = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(id).first();
-    if (existing?.state !== "ready") continue;
+    if (!projectTaskNeedsDispatch(existing?.state)) continue;
     let dependencies;
     try {
       dependencies = await fetchBlockedBy(env, existing, options.fetchDependencies);
@@ -350,7 +354,7 @@ export async function reconcileProject(env, options = {}) {
     const existing = await env.DB.prepare("SELECT id,state FROM tasks WHERE id=?").bind(id).first();
     if (existing) {
       if (existing.state === "intake") continue;
-      if (existing.state === "ready") {
+      if (projectTaskNeedsDispatch(existing.state)) {
         if (available === 0) continue;
         const observation = ready.find((candidate) => candidate.task.id === id);
         if (!observation || cycleMembers.has(id)) continue;

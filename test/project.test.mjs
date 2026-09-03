@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PROJECT_STATUS_NAMES, ProjectAdmissionError, boundedEligibleItems, loadProjectPolicy, planProjectStatusSchema, projectStatusForState, readProjectQueue, reconcileProjectStatuses, recoverInterruptedIntakes } from "../src/project.mjs";
+import { PROJECT_STATUS_NAMES, ProjectAdmissionError, boundedEligibleItems, loadProjectPolicy, planProjectStatusSchema, projectStatusForState, projectTaskNeedsDispatch, readProjectQueue, reconcileProjectStatuses, recoverInterruptedIntakes } from "../src/project.mjs";
 
 const policy = {
   projectId: "PVT_kwHOAA6eJM4Bh81k",
@@ -143,6 +143,13 @@ test("every lifecycle state maps to its concise Project summary", () => {
   for (const state of ["blocked", "budget_blocked", "failed", "recovery_blocked"]) assert.equal(projectStatusForState(state), "Blocked");
   for (const state of ["deploying", "recovery"]) assert.equal(projectStatusForState(state), "Deploying");
   assert.equal(projectStatusForState("complete"), "Done");
+});
+
+test("Ready and retrying Project tasks both enter dispatch", () => {
+  assert.equal(projectTaskNeedsDispatch("ready"), true);
+  assert.equal(projectTaskNeedsDispatch("retrying"), true);
+  assert.equal(projectTaskNeedsDispatch("intake"), false);
+  assert.equal(projectTaskNeedsDispatch("running"), false);
 });
 
 test("schema bootstrap dry-run plans additions without replacing option IDs", () => {
