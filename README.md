@@ -63,7 +63,7 @@ Access permits only verified `from-trees.com` identities. The UI verifies the si
 
 The Worker updates issue labels/comments. Branch and PR permissions belong to the isolated coding dispatcher.
 
-Production control-plane endpoint: `https://metis-control-plane.gr4gwzrfq2.workers.dev`. The protected administration UI is `https://metis.from-trees.com`. The allowlist contains Metis, `noahpeters/from-trees-studio`, and the disposable `noahpeters/metis-sandbox` integration target; included Codex capacity is enabled while paid API and Perplexity fallback remain disabled.
+Production control-plane endpoint: `https://metis-control-plane.gr4gwzrfq2.workers.dev`. The protected administration UI is `https://metis.from-trees.com`. The allowlist contains Metis, `noahpeters/H2`, and the disposable `noahpeters/metis-sandbox` integration target; included Codex capacity is enabled while paid API and Perplexity fallback remain disabled. `noahpeters/from-trees-studio` is intentionally frozen and excluded while its experience is migrated into H2.
 
 ## Target repository contract
 
