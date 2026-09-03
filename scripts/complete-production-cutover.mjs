@@ -108,7 +108,8 @@ async function finalize() {
   if (database.uuid !== databaseId) throw new Error("Production D1 identity is incorrect after deployment.");
 
   const state = JSON.parse(await readFile(statePath, "utf8"));
-  const schedules = await cf(`/workers/scripts/${productionWorker}/schedules`);
+  const scheduleResult = await cf(`/workers/scripts/${productionWorker}/schedules`);
+  const schedules = Array.isArray(scheduleResult) ? scheduleResult : scheduleResult.schedules || [];
   if (!schedules.some((schedule) => schedule.cron === "*/10 * * * *")) {
     throw new Error("Production scheduler trigger is missing.");
   }
@@ -130,9 +131,8 @@ async function finalize() {
     await new Promise((resolve) => setTimeout(resolve, 30_000));
   }
 
-  if (state.promoted) {
-    await cf(`/workers/workers/${state.replacedWorkerId}`, { method: "DELETE" });
-  }
+  const replaced = await findWorker(replacedWorker);
+  if (replaced) await cf(`/workers/workers/${replaced.id}`, { method: "DELETE" });
   if (await findWorker(credentialWorker)) {
     throw new Error(`${credentialWorker} still exists after promotion.`);
   }
