@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PROJECT_STATUS_NAMES, ProjectAdmissionError, boundedEligibleItems, loadProjectPolicy, planProjectStatusSchema, projectStatusForState, readProjectQueue, reconcileProjectStatuses } from "../src/project.mjs";
-import { readFileSync } from "node:fs";
+import { PROJECT_STATUS_NAMES, ProjectAdmissionError, boundedEligibleItems, loadProjectPolicy, planProjectStatusSchema, projectStatusForState, readProjectQueue, reconcileProjectStatuses, recoverInterruptedIntakes } from "../src/project.mjs";
 
 const policy = {
   projectId: "PVT_kwHOAA6eJM4Bh81k",
@@ -12,12 +11,19 @@ const policy = {
   statusOptions: Object.fromEntries(PROJECT_STATUS_NAMES.map((name) => [name, name === "Ready" ? "ready-option" : `${name.toLowerCase().replaceAll(" ", "-")}-option`])),
 };
 
-test("Project intake is recovered independently of coding concurrency", () => {
-  const source = readFileSync("src/project.mjs", "utf8");
-  const intakeBranch = source.match(/if \(existing\.state === "intake"\) \{([\s\S]*?)continue;/)?.[1];
-  assert.match(intakeBranch, /enqueueOnce\(env, "intake", id\)/);
-  assert.doesNotMatch(intakeBranch, /available/);
-  assert.match(source, /existing\.state === "ready"\) \{\s*if \(available === 0\) continue;/);
+test("Project intake recovery covers eligible tasks outside the dispatch scan", async () => {
+  const states = new Map([["owner/repo#1", "ready"], ["owner/repo#26", "intake"]]);
+  const sent = [];
+  const recoveryEnv = {
+    DB: { prepare(sql) { return { bind(...args) { return {
+      async first() { return { state: states.get(args[0]) }; },
+      async run() { return { meta: { changes: sql.startsWith("INSERT INTO project_queue_signals") ? 1 : 0 } }; },
+    }; } }; } },
+    DISPATCH_QUEUE: { async send(message) { sent.push(message); } },
+  };
+  const queue = Array.from({ length: 26 }, (_, index) => ({ repository: "owner/repo", issueNumber: index + 1, eligible: true }));
+  assert.equal(await recoverInterruptedIntakes(recoveryEnv, queue), 1);
+  assert.deepEqual(sent, [{ type: "intake", taskId: "owner/repo#26" }]);
 });
 
 function page(nodes, hasNextPage = false, endCursor = null) {

@@ -294,6 +294,17 @@ async function enqueueOnce(env, type, taskId) {
   }
 }
 
+export async function recoverInterruptedIntakes(env, queue) {
+  let recovered = 0;
+  for (const item of queue) {
+    if (!item.eligible) continue;
+    const id = `${item.repository}#${item.issueNumber}`;
+    const existing = await env.DB.prepare("SELECT state FROM tasks WHERE id=?").bind(id).first();
+    if (existing?.state === "intake" && await enqueueOnce(env, "intake", id)) recovered += 1;
+  }
+  return recovered;
+}
+
 export async function reconcileProject(env, options = {}) {
   const policy = loadProjectPolicy(env.METIS_PROJECT_POLICY_JSON);
   const runId = crypto.randomUUID();
@@ -310,7 +321,7 @@ export async function reconcileProject(env, options = {}) {
   const active = await env.DB.prepare("SELECT COUNT(*) AS count FROM task_leases WHERE expires_at > unixepoch()").first();
   const max = Number(options.maxConcurrentTasks ?? JSON.parse(env.METIS_POLICY_JSON || "{}").global?.maxConcurrentTasks ?? 2);
   let available = Math.max(0, max - (active?.count || 0));
-  let admitted = 0;
+  let admitted = await recoverInterruptedIntakes(env, queue);
   const scanLimit = Number(options.scanLimit ?? 25);
   const candidates = boundedEligibleItems(queue, scanLimit);
   const ready = [];
@@ -337,10 +348,7 @@ export async function reconcileProject(env, options = {}) {
     const id = `${item.repository}#${item.issueNumber}`;
     const existing = await env.DB.prepare("SELECT id,state FROM tasks WHERE id=?").bind(id).first();
     if (existing) {
-      if (existing.state === "intake") {
-        if (await enqueueOnce(env, "intake", id)) admitted += 1;
-        continue;
-      }
+      if (existing.state === "intake") continue;
       if (existing.state === "ready") {
         if (available === 0) continue;
         const observation = ready.find((candidate) => candidate.task.id === id);
