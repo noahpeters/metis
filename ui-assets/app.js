@@ -5,6 +5,8 @@ const announcement = document.querySelector("#announcement");
 const repositoryCards = document.querySelector("#repository-cards");
 const revalidateDialog = document.querySelector("#revalidate-dialog");
 const revalidateForm = document.querySelector("#revalidate-form");
+const issueActionDialog = document.querySelector("#issue-action-dialog");
+const issueActionForm = document.querySelector("#issue-action-form");
 const nudgeButton = document.querySelector("#nudge");
 const reenergizeButton = document.querySelector("#reenergize");
 const actions = document.querySelector("#pacing-actions");
@@ -28,6 +30,8 @@ function markFresh() {
   }, 5_000);
 }
 let selectedRepository = null;
+let selectedIssue = null;
+let selectedIssueAction = null;
 
 class ApiError extends Error {
   constructor(body, status) {
@@ -203,6 +207,24 @@ function renderRepositories(overview) {
       if (newer) text(item, "p", `Contradictory evidence: newer successful main deployment ${newer.head_sha.slice(0, 12)} is recorded but has not cleared this lock.`).className = "warning";
       const button = text(item, "button", "Revalidate"); button.type = "button"; button.addEventListener("click", () => openRevalidate(repository));
     }
+    if (repository.issues == null) text(item, "p", "Issue details unavailable.").className = "project-counts-unavailable";
+    else if (repository.issues.length) {
+      const issues = document.createElement("ul"); issues.className = "issue-list"; issues.setAttribute("aria-label", `${repository.repository} issues`);
+      for (const issue of repository.issues) {
+        const row = document.createElement("li");
+        const details = document.createElement("div"); details.className = "issue-details";
+        const link = text(details, "a", `#${issue.issue_number} ${issue.title}`); link.href = `https://github.com/${issue.repository}/issues/${issue.issue_number}`; link.target = "_blank"; link.rel = "noreferrer";
+        const tags = document.createElement("div"); tags.className = "issue-tags"; text(tags, "span", issue.project_status || "Status unknown").className = "project-status-tag";
+        for (const tag of issue.status_tags) text(tags, "span", tag.replace("metis:", "")).className = "lifecycle-tag";
+        details.append(tags); row.append(details);
+        const menu = document.createElement("details"); menu.className = "issue-menu";
+        const trigger = document.createElement("summary"); trigger.setAttribute("aria-label", `Actions for issue ${issue.issue_number}`); trigger.textContent = "⋯"; menu.append(trigger);
+        const options = document.createElement("div"); options.className = "issue-menu-options";
+        for (const [action, label] of [["reset_ready", "Reset to Ready"], ["force_complete", "Force Complete"]]) { const button = text(options, "button", label); button.type = "button"; button.disabled = !issue.updated_at; button.addEventListener("click", () => openIssueAction(issue, action)); }
+        menu.append(options); row.append(menu); issues.append(row);
+      }
+      item.append(issues);
+    }
     repositoryCards.append(item);
   }
 }
@@ -228,3 +250,25 @@ revalidateForm.addEventListener("submit", async (event) => {
   finally { submit.disabled = false; }
 });
 refreshRepositories();
+
+function openIssueAction(issue, action) {
+  selectedIssue = issue; selectedIssueAction = action;
+  const force = action === "force_complete";
+  document.querySelector("#issue-action-title").textContent = force ? `Force complete #${issue.issue_number}?` : `Reset #${issue.issue_number} to Ready?`;
+  document.querySelector("#issue-action-summary").textContent = issue.title;
+  document.querySelector("#issue-action-warning").textContent = force ? "This closes the GitHub issue and marks it Done without requiring a PR or verified deployment. Provide the code diff used to justify the decision." : "This supersedes active processing, releases stale leases, clears transient state, and allows Metis to start the issue again. Audit history is retained.";
+  const diff = document.querySelector("#diff-reference"); const diffLabel = document.querySelector("#diff-reference-label"); diff.hidden = diffLabel.hidden = !force; diff.required = force;
+  document.querySelector("#confirm-issue-action").textContent = force ? "Force Complete" : "Reset to Ready";
+  issueActionDialog.showModal(); issueActionForm.elements[force ? "diff_reference" : "reason"].focus();
+}
+document.querySelector("#cancel-issue-action").addEventListener("click", () => issueActionDialog.close());
+issueActionForm.addEventListener("submit", async (event) => {
+  event.preventDefault(); const submit = document.querySelector("#confirm-issue-action"); submit.disabled = true;
+  const force = selectedIssueAction === "force_complete"; const data = new FormData(issueActionForm);
+  try {
+    await api(force ? "/api/issues/force-complete" : "/api/issues/reset-ready", { method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ repository: selectedIssue.repository, issue_number: selectedIssue.issue_number, expected_updated_at: selectedIssue.updated_at, confirmation: force ? "FORCE_COMPLETE" : "RESET_TO_READY", reason: data.get("reason"), diff_reference: force ? data.get("diff_reference") : undefined, request_id: crypto.randomUUID() }) });
+    announcement.textContent = force ? `Issue #${selectedIssue.issue_number} was force completed with deployment verification waived.` : `Issue #${selectedIssue.issue_number} was reset and Ready work was reconsidered.`;
+    issueActionForm.reset(); issueActionDialog.close(); await refreshRepositories();
+  } catch (error) { announcement.textContent = `Issue action failed: ${error.message}`; document.querySelector("#issue-action-warning").textContent = `${error.message}. Refresh before retrying; no success is assumed.`; }
+  finally { submit.disabled = false; }
+});

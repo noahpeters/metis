@@ -112,5 +112,7 @@ test("UI serves every referenced asset from the asset binding", async () => {
 test("UI API exposes only bounded repository diagnostics and revalidation", () => {
   assert.equal(allowedApiRequest("GET", "/api/repositories"), true);
   assert.equal(allowedApiRequest("POST", "/api/repositories/revalidate"), true);
+  assert.equal(allowedApiRequest("POST", "/api/issues/reset-ready"), true);
+  assert.equal(allowedApiRequest("POST", "/api/issues/force-complete"), true);
   assert.equal(allowedApiRequest("DELETE", "/api/repositories"), false);
 });

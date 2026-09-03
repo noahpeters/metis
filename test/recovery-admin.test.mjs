@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { recoveryEvidencePolicy, repositoryOverviewForIdentity, selectRecoveryEvidence } from "../src/recovery-admin.mjs";
+import { recoveryEvidencePolicy, repositoryOverviewForIdentity, selectRecoveryEvidence, visibleOperatorIssues } from "../src/recovery-admin.mjs";
 
 const shaA = "a".repeat(40), shaB = "b".repeat(40);
 const run = (id, name, sha, conclusion, updated_at) => ({ id, name, head_sha: sha, head_branch: "main", event: "push", conclusion, updated_at, html_url: `https://github.test/runs/${id}` });
@@ -46,4 +46,14 @@ test("repository overview reports failed Project observations as unavailable", a
   const response = await repositoryOverviewForIdentity("admin@from-trees.com", overviewEnv(), async () => { throw new Error("GitHub unavailable"); });
   const body = await response.json();
   assert.ok(body.repositories.every(({ project_counts }) => project_counts === null));
+});
+
+test("operator issue lists include open Metis-owned non-Backlog items only", () => {
+  const queue = [
+    { repository: "owner/one", issueNumber: 1, title: "Visible", issueState: "OPEN", projectStatus: "Ready", lifecycleTags: ["metis:blocked"], metisOwned: true },
+    { repository: "owner/one", issueNumber: 2, title: "Backlog", issueState: "OPEN", projectStatus: "Backlog", lifecycleTags: [], metisOwned: true },
+    { repository: "owner/one", issueNumber: 3, title: "Closed", issueState: "CLOSED", projectStatus: "Done", lifecycleTags: ["metis:complete"], metisOwned: true },
+    { repository: "owner/one", issueNumber: 4, title: "Human", issueState: "OPEN", projectStatus: "Ready", lifecycleTags: [], metisOwned: false },
+  ];
+  assert.deepEqual(visibleOperatorIssues(queue, "owner/one", [{ issue_number: 1, state: "retrying", updated_at: 42 }]), [{ repository: "owner/one", issue_number: 1, title: "Visible", issue_state: "OPEN", project_status: "Ready", status_tags: ["metis:blocked"], task_state: "retrying", updated_at: 42 }]);
 });

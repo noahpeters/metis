@@ -1,7 +1,7 @@
 import { githubRequest } from "./github.mjs";
 import { lifecyclePolicy } from "./lifecycle.mjs";
 import { aggregateExecutableReady, observeExecutableReady } from "./executable-ready.mjs";
-import { readProjectStatusCounts } from "./project.mjs";
+import { readProjectIssueSummaries, readProjectStatusCounts } from "./project.mjs";
 
 const SUCCESS = new Set(["success", "neutral", "skipped"]);
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
@@ -33,19 +33,28 @@ async function configuredRepositories(env) {
   return (env.ALLOWED_REPOSITORIES || "").split(",").map((value) => value.trim()).filter(Boolean);
 }
 
-export async function repositoryOverviewForIdentity(email, env, observeProject = readProjectStatusCounts, observeReadiness = observeExecutableReady) {
+export function visibleOperatorIssues(queue, repository, tasks = []) {
+  const byNumber = new Map(tasks.map((task) => [task.issue_number, task]));
+  return queue.filter((item) => item.repository === repository && item.metisOwned && item.issueState === "OPEN" && item.projectStatus !== "Backlog")
+    .map(({ repository: repo, issueNumber, title, issueState, projectStatus, lifecycleTags }) => ({ repository: repo, issue_number: issueNumber, title, issue_state: issueState, project_status: projectStatus, status_tags: lifecycleTags, task_state: byNumber.get(issueNumber)?.state || null, updated_at: byNumber.get(issueNumber)?.updated_at || null }));
+}
+
+export async function repositoryOverviewForIdentity(email, env, observeProject = readProjectStatusCounts, observeReadiness = observeExecutableReady, observeIssues = readProjectIssueSummaries) {
   if (!authorized(email)) return json({ error: { code: "unauthorized", message: "Administrator identity required" } }, 401);
   const repositories = await configuredRepositories(env);
   let readiness = null;
   try { readiness = await observeReadiness(env); } catch { /* Cards report unknown rather than inflating readiness. */ }
   let projectCounts = null;
   try { projectCounts = await observeProject(env); } catch { /* An unavailable observation must not be represented as zero. */ }
+  let projectIssues = null;
+  try { projectIssues = await observeIssues(env); } catch { /* Issue lists fail closed independently of aggregate counts. */ }
   const cards = [];
   for (const repository of repositories) {
-    const [health, recoveryTask, recent] = await Promise.all([
+    const [health, recoveryTask, recent, tasks] = await Promise.all([
       env.DB.prepare("SELECT * FROM repository_health WHERE repository=?").bind(repository).first(),
       env.DB.prepare("SELECT id,issue_number,state,pull_request_number,pull_request_url,blocker_reason,updated_at FROM tasks WHERE repository=? AND is_recovery=1 ORDER BY updated_at DESC LIMIT 1").bind(repository).first(),
       env.DB.prepare("SELECT head_sha,workflow_name,conclusion,workflow_url,updated_at FROM deployment_runs WHERE repository=? ORDER BY updated_at DESC LIMIT 12").bind(repository).all(),
+      env.DB.prepare("SELECT issue_number,state,updated_at FROM tasks WHERE repository=? AND is_recovery=0 ORDER BY issue_number").bind(repository).all(),
     ]);
     let recoveryPr = null;
     if (recoveryTask?.pull_request_number) {
@@ -56,7 +65,7 @@ export async function repositoryOverviewForIdentity(email, env, observeProject =
     }
     const state = health?.state || "healthy";
     const counts = readiness ? aggregateExecutableReady(readiness, repository) : null;
-    cards.push({ repository, state, dispatch_locked: state !== "healthy", blocking_sha: health?.blocking_sha || null, workflow_url: health?.workflow_url || null, root_task_id: health?.root_task_id || null, recovery_attempts: health?.recovery_attempts || 0, updated_at: health?.updated_at || null, ready_count: counts?.executable ?? null, raw_ready_count: counts?.raw ?? null, dependency_waiting_count: counts?.waiting ?? null, project_counts: projectCounts?.[repository] || null, recovery_task: recoveryTask || null, recovery_pr: recoveryPr, deployment_evidence: recent.results || [], evidence_policy: recoveryEvidencePolicy(env, repository), waiting_reason: state === "healthy" ? null : `Normal dispatch is frozen while recovery for ${health?.blocking_sha || "main"} is unresolved.` });
+    cards.push({ repository, state, dispatch_locked: state !== "healthy", blocking_sha: health?.blocking_sha || null, workflow_url: health?.workflow_url || null, root_task_id: health?.root_task_id || null, recovery_attempts: health?.recovery_attempts || 0, updated_at: health?.updated_at || null, ready_count: counts?.executable ?? null, raw_ready_count: counts?.raw ?? null, dependency_waiting_count: counts?.waiting ?? null, project_counts: projectCounts?.[repository] || null, issues: projectIssues ? visibleOperatorIssues(projectIssues, repository, tasks.results || []) : null, recovery_task: recoveryTask || null, recovery_pr: recoveryPr, deployment_evidence: recent.results || [], evidence_policy: recoveryEvidencePolicy(env, repository), waiting_reason: state === "healthy" ? null : `Normal dispatch is frozen while recovery for ${health?.blocking_sha || "main"} is unresolved.` });
   }
   return json({ repositories: cards, observed_at: new Date().toISOString() });
 }
