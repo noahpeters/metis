@@ -144,13 +144,13 @@ async function finalize() {
   }
 
   async function removeConsumer(queue, scriptName) {
-    const consumer = (await consumers(queue)).find((candidate) => candidate.script_name === scriptName);
+    const consumer = (await consumers(queue)).find((candidate) => (candidate.script_name || candidate.script) === scriptName);
     if (consumer) await cf(`/queues/${queue.queue_id || queue.id}/consumers/${consumer.consumer_id}`, { method: "DELETE" });
   }
 
   await removeConsumer(obsoleteQueue, productionWorker);
   await removeConsumer(productionQueue, replacedWorker);
-  if (!(await consumers(productionQueue)).some((consumer) => consumer.script_name === productionWorker)) {
+  if (!(await consumers(productionQueue)).some((consumer) => (consumer.script_name || consumer.script) === productionWorker)) {
     await cf(`/queues/${productionQueue.queue_id || productionQueue.id}/consumers`, {
       method: "POST",
       body: JSON.stringify({
