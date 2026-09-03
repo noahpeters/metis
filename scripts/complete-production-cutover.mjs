@@ -131,13 +131,43 @@ async function finalize() {
     await new Promise((resolve) => setTimeout(resolve, 30_000));
   }
 
+  const queues = await cf("/queues?per_page=100");
+  const queueNamed = (name) => queues.find((queue) => (queue.queue_name || queue.name) === name);
+  const productionQueue = queueNamed("metis-dispatch");
+  const obsoleteQueue = queueNamed("metis-dispatch-staging");
+  if (!productionQueue) throw new Error("Production dispatch queue is missing.");
+
+  async function consumers(queue) {
+    if (!queue) return [];
+    const result = await cf(`/queues/${queue.queue_id || queue.id}/consumers`);
+    return Array.isArray(result) ? result : result.consumers || [];
+  }
+
+  async function removeConsumer(queue, scriptName) {
+    const consumer = (await consumers(queue)).find((candidate) => candidate.script_name === scriptName);
+    if (consumer) await cf(`/queues/${queue.queue_id || queue.id}/consumers/${consumer.consumer_id}`, { method: "DELETE" });
+  }
+
+  await removeConsumer(obsoleteQueue, productionWorker);
+  await removeConsumer(productionQueue, replacedWorker);
+  if (!(await consumers(productionQueue)).some((consumer) => consumer.script_name === productionWorker)) {
+    await cf(`/queues/${productionQueue.queue_id || productionQueue.id}/consumers`, {
+      method: "POST",
+      body: JSON.stringify({
+        script_name: productionWorker,
+        type: "worker",
+        dead_letter_queue: "metis-dead-letter",
+        settings: { batch_size: 5, max_retries: 3, max_wait_time_ms: 5000 },
+      }),
+    });
+  }
+
   const replaced = await findWorker(replacedWorker);
   if (replaced) await cf(`/workers/workers/${replaced.id}`, { method: "DELETE" });
   if (await findWorker(credentialWorker)) {
     throw new Error(`${credentialWorker} still exists after promotion.`);
   }
 
-  const queues = await cf("/queues?per_page=100");
   for (const name of ["metis-dispatch-staging", "metis-dead-letter-staging"]) {
     const queue = queues.find((candidate) => candidate.queue_name === name || candidate.name === name);
     if (queue) await cf(`/queues/${queue.queue_id || queue.id}`, { method: "DELETE" });
