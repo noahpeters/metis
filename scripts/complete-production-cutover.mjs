@@ -12,7 +12,6 @@ const productionWorker = "metis-control-plane";
 const credentialWorker = `${productionWorker}-staging`;
 const replacedWorker = `${productionWorker}-replaced`;
 const databaseId = "fab80b33-f3d1-4fb6-bfa7-05ab613386c5";
-const databaseName = "metis-production";
 const requiredSecrets = [
   "GITHUB_APP_PRIVATE_KEY",
   "GITHUB_DISPATCH_USER_TOKEN",
@@ -100,23 +99,13 @@ async function prepare() {
   }
 
   const database = await cf(`/d1/database/${databaseId}`);
-  if (database.name !== databaseName) {
-    const renamed = await cf(`/d1/database/${databaseId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ name: databaseName }),
-    });
-    if (renamed.name !== databaseName || renamed.uuid !== databaseId) {
-      throw new Error("D1 rename did not preserve the authoritative database identity.");
-    }
-  }
+  if (database.uuid !== databaseId) throw new Error("Authoritative D1 identity changed during cutover.");
 }
 
 async function finalize() {
   requireSecrets(await secretNames(productionWorker), productionWorker);
   const database = await cf(`/d1/database/${databaseId}`);
-  if (database.name !== databaseName || database.uuid !== databaseId) {
-    throw new Error("Production D1 identity or name is incorrect after deployment.");
-  }
+  if (database.uuid !== databaseId) throw new Error("Production D1 identity is incorrect after deployment.");
 
   const state = JSON.parse(await readFile(statePath, "utf8"));
   const schedules = await cf(`/workers/scripts/${productionWorker}/schedules`);
