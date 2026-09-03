@@ -8,15 +8,15 @@ import uiWorker from "../src/ui/worker.mjs";
 const root = new URL("..", import.meta.url).pathname;
 const screenshot = join(root, "output/playwright/metis-pacing.png");
 const overview = {
-  semantics: "estimated_local_pacing",
+  semantics: "operational_capacity",
   observed_at: "2026-09-01T08:00:00.000Z",
   window: { id: "2026-09-01", next_scheduled_reset_at: "2026-09-01T10:00:00.000Z" },
   pacing: {
     state: "available",
     limiting_dimension: null,
-    estimated_workload_units: { used: 32, limit: 64 },
     task_starts: { used: 8, limit: 24 },
   },
+  work_completed: { unit: "size_points", last_1_hour: 5, last_8_hours: 18, last_24_hours: 32 },
   active_tasks: { count: 0 },
   executable_ready: { count: 5 },
   provider_capacity: { state: "available" },
@@ -70,13 +70,12 @@ try {
   await page.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "domcontentloaded" });
   await page.getByRole("heading", { name: "Ready work is waiting" }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Nudge" }).isVisible(), true);
-  assert.equal(await page.getByRole("button", { name: "Reset budget" }).isVisible(), true);
+  assert.equal(await page.getByRole("button", { name: "Reset budget" }).count(), 0);
   const circle = await page.locator(".status-circle").boundingBox();
   const cardDisplay = await page.locator("#pacing-card").evaluate((element) => getComputedStyle(element).display);
   assert.equal(cardDisplay, "grid", "pacing card CSS did not load");
   assert.ok(circle?.width >= 250 && circle?.height >= 250, "status circle is not rendered at the intended desktop size");
-  assert.equal(await page.locator(".amount strong").textContent(), "32");
-  assert.equal(await page.locator(".amount span").textContent(), " / 64");
+  assert.deepEqual(await page.locator(".completion-grid dd").allInnerTexts(), ["5", "18", "32"]);
   await page.getByRole("heading", { name: "noahpeters/metis" }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Revalidate" }).count(), 1);
   assert.equal(failures.length, 0, failures.join("\n"));

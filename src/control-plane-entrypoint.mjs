@@ -1,6 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import worker, { resumeReadyBacklog, uiStatusForIdentity } from "./index.mjs";
-import { nudgeReadyWorkForIdentity, pacingOverviewForIdentity, resetPacingWindowForIdentity } from "./pacing-api.mjs";
+import { nudgeReadyWorkForIdentity, pacingOverviewForIdentity, reenergizeCapacityForIdentity } from "./pacing-api.mjs";
 import { repositoryOverviewForIdentity, revalidateRepositoryForIdentity } from "./recovery-admin.mjs";
 
 async function rpcResult(response) {
@@ -24,13 +24,9 @@ export default class MetisControlPlane extends WorkerEntrypoint {
     return rpcResult(await nudgeReadyWorkForIdentity(email, () => resumeReadyBacklog(this.env)));
   }
 
-  async resetPacingWindow(email, body, idempotencyKey) {
-    const request = new Request("https://rpc.invalid/internal/ui/pacing/reset", {
-      method: "POST",
-      headers: { "content-type": "application/json", "Idempotency-Key": idempotencyKey || "" },
-      body: JSON.stringify(body),
-    });
-    return rpcResult(await resetPacingWindowForIdentity(email, request, this.env, () => resumeReadyBacklog(this.env)));
+  async reenergizeCapacity(email, body) {
+    const request = new Request("https://rpc.invalid/internal/ui/capacity/reenergize", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    return rpcResult(await reenergizeCapacityForIdentity(email, request, this.env, () => resumeReadyBacklog(this.env)));
   }
 
   async repositoryOverview(email) { return rpcResult(await repositoryOverviewForIdentity(email, this.env)); }

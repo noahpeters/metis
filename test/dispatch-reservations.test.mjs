@@ -21,6 +21,7 @@ test("release statements are state-guarded, window-specific, and idempotently au
   releaseReservationStatements(env, "lease-1", "authorization", "GitHub POST failed (403)");
   assert.match(env.statements[0].sql, /state='reserved'/);
   assert.match(env.statements[0].sql, /window_key=\(SELECT window_key/);
+  assert.doesNotMatch(env.statements[0].sql, /estimated_workload_units_used/);
   assert.match(env.statements[2].sql, /WHERE lease_id=\? AND state='reserved'/);
   assert.match(env.statements[3].sql, /ON CONFLICT\(lease_id,operation\) DO NOTHING/);
 });

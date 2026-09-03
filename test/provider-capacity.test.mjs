@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { capacityObservation, capacityObservationStatements, providerObservation, providerObservationStatement } from "../src/provider-capacity.mjs";
+import { capacityObservation, capacityObservationStatements, providerObservation, providerObservationStatement, reenergizeCapacityForOperator, reenergizeExpiredCapacity } from "../src/provider-capacity.mjs";
 
 test("capacity evidence preserves only provider-supplied exhaustion fields", () => {
   assert.deepEqual(capacityObservation({ capacity_outcome: "exhausted", observed_at: 20, reset_at: 30, limit_reason: "weekly limit", comment_url: "https://github.test/1" }), {
@@ -21,6 +21,31 @@ test("capacity observations are idempotent and only authoritative outcomes updat
   assert.equal(capacityObservationStatements(env, 7, { capacity_outcome: "accepted", observed_at: 21, comment_id: "10" }).length, 2);
   assert.match(calls[1].sql, /updated_at<=\?/);
   assert.deepEqual(calls[1].values.slice(0, 2), [1, null]);
+});
+
+test("expired exhaustion automatically reenergizes with a 60-minute fallback", async () => {
+  const calls = [];
+  const env = { DB: {
+    prepare(sql) { const call = { sql, values: [] }; calls.push(call); return { bind(...values) { call.values = values; return this; }, first: async () => ({ updated_at: 100 }) }; },
+    batch: async () => [{ meta: { changes: 1 } }, { meta: { changes: 1 } }],
+  } };
+  assert.equal(await reenergizeExpiredCapacity(env, 3700), true);
+  assert.match(calls[0].sql, /COALESCE\(resets_at,updated_at\+3600\)<=\?/);
+  assert.match(calls[2].sql, /available=1/);
+  assert.equal(calls[1].values[0], "automatic:codex_included:100");
+});
+
+test("operator reenergization is audited and state guarded", async () => {
+  let reads = 0;
+  const calls = [];
+  const env = { DB: {
+    prepare(sql) { const call = { sql, values: [] }; calls.push(call); return { bind(...values) { call.values = values; return this; }, first: async () => reads++ === 0 ? null : ({ updated_at: 200 }) }; },
+    batch: async () => [{ meta: { changes: 1 } }, { meta: { changes: 1 } }],
+  } };
+  const result = await reenergizeCapacityForOperator(env, { requestId: "request-1", actor: "admin@from-trees.com", reason: "Retest" }, 250);
+  assert.deepEqual(result, { reenergized: true, duplicate: false, reenergized_at: 250 });
+  assert.match(calls[3].sql, /available=1/);
+  assert.deepEqual(calls[2].values.slice(0, 3), ["request-1", "admin@from-trees.com", "Retest"]);
 });
 
 test("provider ledger preserves missing and raw fields without inventing attribution", () => {

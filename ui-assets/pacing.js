@@ -2,21 +2,23 @@ const known = (value) => value !== null && value !== undefined;
 const display = (value) => known(value) ? String(value) : "unknown";
 
 export function derivePacingView(overview) {
-  const workload = overview?.pacing?.estimated_workload_units || {};
   const starts = overview?.pacing?.task_starts || {};
+  const completed = overview?.work_completed || {};
   const active = overview?.active_tasks?.count;
   const ready = overview?.executable_ready?.count;
-  const dimension = overview?.pacing?.limiting_dimension;
-  const base = { used: display(workload.used), limit: display(workload.limit), startsUsed: display(starts.used), startsLimit: display(starts.limit), warning: false, nudgeAllowed: false };
-  if (!overview || overview.semantics !== "estimated_local_pacing" || !known(active) || overview.pacing?.state === "unknown") {
-    return { ...base, tone: "unknown", label: "Status unknown", reason: "The local pacing observation is incomplete or unknown." };
+  const base = { completed1h: display(completed.last_1_hour), completed8h: display(completed.last_8_hours), completed24h: display(completed.last_24_hours), startsUsed: display(starts.used), startsLimit: display(starts.limit), warning: false, nudgeAllowed: false, reenergizeAllowed: false, expectedAvailableAt: null };
+  if (!overview || overview.semantics !== "operational_capacity" || !known(active) || overview.pacing?.state === "unknown") {
+    return { ...base, tone: "unknown", label: "Status unknown", reason: "The operational capacity observation is incomplete or unknown." };
+  }
+  if (overview.provider_capacity?.state === "exhausted") {
+    const expected = overview.provider_capacity.expected_available_at;
+    return { ...base, tone: "exhausted", label: "Codex capacity exhausted", reenergizeAllowed: true, expectedAvailableAt: expected, reason: expected ? `Additional capacity is expected ${relativeUntil(expected)}.` : "No reset time was supplied; Metis will automatically retry capacity after 60 minutes." };
   }
   if (active > 0) return { ...base, tone: "active", label: "Actively implementing", reason: `${active} ${active === 1 ? "task is" : "tasks are"} in an active execution state.` };
   if (overview.pacing.state === "exhausted") {
-    const named = dimension === "task_starts" ? "Task-start limit exhausted" : dimension === "estimated_workload_units" ? "Workload-unit limit exhausted" : "Pacing exhausted";
-    return { ...base, tone: "exhausted", label: named, reason: "No task is executing. Work can resume after the next scheduled reset." };
+    return { ...base, tone: "paced", label: "Task-start pacing reached", reason: "No task is executing. New dispatches can resume in the next automatic pacing window." };
   }
-  if (ready === 0) return { ...base, tone: "idle", label: "Available and idle", reason: "Pacing is available and no executable Ready work exists." };
+  if (ready === 0) return { ...base, tone: "available", label: "Available and idle", reason: "Codex dispatch is available and no executable Ready work exists." };
   if (known(ready) && ready > 0) {
     const provider = overview.provider_capacity?.state;
     const reason = provider === "unavailable" ? "Provider capacity is unavailable." : provider === "unknown" ? "Provider capacity data is unknown." : "Dispatch is waiting on repository health, concurrency reconciliation, or a fresh control-plane observation.";

@@ -28,10 +28,11 @@ test("API allowlist preserves streaming and pacing actions", () => {
   assert.equal(allowedApiRequest("POST", "/api/status"), false);
   assert.equal(allowedApiRequest("GET", "/api/tasks"), false);
   assert.equal(allowedApiRequest("GET", "/api/pacing"), true);
+  assert.equal(allowedApiRequest("POST", "/api/pacing/reset"), false);
+  assert.equal(allowedApiRequest("POST", "/api/pacing/nudge"), true);
+  assert.equal(allowedApiRequest("POST", "/api/capacity/reenergize"), true);
   assert.equal(allowedApiRequest("GET", "/api/stream"), true);
   assert.equal(allowedApiRequest("POST", "/api/stream"), false);
-  assert.equal(allowedApiRequest("POST", "/api/pacing/reset"), true);
-  assert.equal(allowedApiRequest("POST", "/api/pacing/nudge"), true);
   assert.equal(allowedApiRequest("GET", "/api/pacing/nudge"), false);
 });
 
@@ -41,6 +42,15 @@ test("nudge proxy forwards only the authenticated identity", async () => {
   const response = await proxyApi(new Request("https://ui/api/pacing/nudge", { method: "POST" }), env, { email: "admin@from-trees.com" });
   assert.equal(response.status, 200);
   assert.deepEqual(calls, ["admin@from-trees.com"]);
+});
+
+test("reenergize proxy forwards authenticated identity and bounded body", async () => {
+  const calls = [];
+  const env = { CONTROL_PLANE: { async reenergizeCapacity(email, body) { calls.push({ email, body }); return { status: 200, body: JSON.stringify({ reenergized: true }) }; } } };
+  const body = { confirmation: "REENERGIZE_CAPACITY", request_id: "request-1" };
+  const response = await proxyApi(new Request("https://ui/api/capacity/reenergize", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }), env, { email: "admin@from-trees.com" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, [{ email: "admin@from-trees.com", body }]);
 });
 
 test("snapshot stream is identity scoped and carries monotonic revisions", async () => {
@@ -77,18 +87,17 @@ test("SSR fails closed and never caches unauthorized state", async () => {
   assert.match(await response.text(), /Access denied/);
 });
 
-test("authenticated shell exposes accessible pacing and confirmation states", async () => {
+test("authenticated shell exposes capacity status without a budget reset", async () => {
   const response = await uiWorker.fetch(new Request("https://ui/"), { ENVIRONMENT: "local", LOCAL_AUTH_ENABLED: "true", LOCAL_AUTH_EMAIL: "admin@from-trees.com" });
   const html = await response.text();
-  assert.match(html, /Loading pacing status/);
+  assert.match(html, /Loading capacity status/);
   assert.match(html, /href="\/app\.css"/);
   assert.match(html, /src="\/app\.js"/);
   assert.doesNotMatch(html, /\/assets\/app\.(?:css|js)/);
-  assert.match(html, /<dialog id="reset-dialog"/);
   assert.match(html, /id="live-status"[^>]*data-state="connecting"/);
   assert.match(html, /<button id="nudge" type="button" hidden>Nudge<\/button>/);
-  assert.match(html, /id="open-reset" class="secondary"/);
-  assert.match(html, /does not reset ChatGPT or Codex/);
+  assert.match(html, /<button id="reenergize" type="button" hidden>Reenergize<\/button>/);
+  assert.doesNotMatch(html, /Reset budget|reset-dialog|open-reset/);
   assert.match(html, /minlength="8"/);
   assert.match(html, /aria-live="assertive"/);
 });

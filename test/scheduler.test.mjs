@@ -20,10 +20,11 @@ function dbWith({ health = null, capacity = { available: 1 }, window = { estimat
   };
 }
 
-test("estimated-workload pacing exhaustion defers Ready work without task mutation", async () => {
+test("historic estimated workload does not gate Ready work", async () => {
   const task = { id: "owner/repo#15", repository: "owner/repo", size_class: "small", attempt_count: 0 };
   const decision = await admissionDecision({ DB: dbWith() }, task);
-  assert.deepEqual(decision, schedulerDeferral("workload-pacing", "Operator estimated-workload pacing limit reached."));
+  assert.equal(decision.admitted, true);
+  assert.equal(decision.estimatedWorkloadUnits, 2);
   assert.equal(task.attempt_count, 0);
 });
 
@@ -76,5 +77,6 @@ test("a successful claim clears resolved signals for the current window", async 
   assert.match(statements[0], /t\.state IN \('ready','retrying'\)/);
   assert.match(statements[0], /COUNT\(\*\) FROM task_leases/);
   assert.match(statements[0], /tasks_started/);
+  assert.doesNotMatch(statements[0], /estimated_workload_units_used/);
   assert.ok(statements.some((sql) => sql.startsWith("DELETE FROM scheduler_signals WHERE window_key=(SELECT current_window_id")));
 });

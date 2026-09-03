@@ -15,12 +15,11 @@ export async function admissionDecision(env, task) {
   }
   const capacity = await env.DB.prepare("SELECT available,dispatch_slots_limit,dispatch_slots_available FROM provider_capacity WHERE provider = 'codex_included'").first();
   if (!capacity?.available || (capacity.dispatch_slots_limit != null && capacity.dispatch_slots_available <= 0)) return schedulerDeferral("provider", "Codex dispatch is disabled by the operator capacity gate.");
-  const window = await env.DB.prepare("SELECT estimated_workload_units_used,tasks_started FROM pacing_windows WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1)").first();
+  const window = await env.DB.prepare("SELECT tasks_started FROM pacing_windows WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1)").first();
   const active = await env.DB.prepare("SELECT COUNT(*) AS count FROM task_leases WHERE expires_at > unixepoch()").first();
   const estimatedWorkloadUnits = Math.min(task.estimated_workload_units || sizePolicy.estimatedWorkloadUnits, taskWorkloadLimit(policy, task.size_class, task.max_workload_units));
   if ((active?.count || 0) >= policy.global.maxConcurrentTasks) return schedulerDeferral("concurrency", "Maximum concurrent tasks reached.");
   if (policy.global.maxTasksPerWindow != null && (window?.tasks_started || 0) >= policy.global.maxTasksPerWindow) return schedulerDeferral("task-start-pacing", "Operator task-start pacing limit reached.");
-  if ((window?.estimated_workload_units_used || 0) + estimatedWorkloadUnits > policy.global.maxEstimatedWorkloadUnitsPerWindow) return schedulerDeferral("workload-pacing", "Operator estimated-workload pacing limit reached.");
   return {
     admitted: true,
     estimatedWorkloadUnits,
@@ -28,7 +27,6 @@ export async function admissionDecision(env, task) {
     leaseSeconds: policy.global.leaseSeconds,
     maxConcurrentTasks: policy.global.maxConcurrentTasks,
     maxTasksPerWindow: policy.global.maxTasksPerWindow,
-    maxEstimatedWorkloadUnitsPerWindow: policy.global.maxEstimatedWorkloadUnitsPerWindow,
   };
 }
 
@@ -68,10 +66,10 @@ export async function claimTask(env, task, decision) {
     // predicates make concurrent queue deliveries harmless and prevent two
     // different tasks from crossing the concurrency limit after both observed
     // the same available slot.
-    env.DB.prepare("INSERT INTO task_leases (task_id,lease_id,provider,estimated_workload_units_reserved,expires_at) SELECT t.id,?,'codex_included',?,unixepoch()+? FROM tasks t WHERE t.id=? AND t.state IN ('ready','retrying') AND EXISTS (SELECT 1 FROM provider_capacity WHERE provider='codex_included' AND available=1 AND (dispatch_slots_limit IS NULL OR dispatch_slots_available>0)) AND (SELECT COUNT(*) FROM task_leases WHERE expires_at>unixepoch()) < ? AND (? IS NULL OR COALESCE((SELECT tasks_started FROM pacing_windows WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1)),0) < ?) AND COALESCE((SELECT estimated_workload_units_used FROM pacing_windows WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1)),0)+? <= ?").bind(leaseId, decision.estimatedWorkloadUnits, decision.leaseSeconds, task.id, decision.maxConcurrentTasks, decision.maxTasksPerWindow, decision.maxTasksPerWindow, decision.estimatedWorkloadUnits, decision.maxEstimatedWorkloadUnitsPerWindow),
-    env.DB.prepare("INSERT INTO dispatch_reservations(lease_id,task_id,provider,window_key,workload_units,task_starts,provider_slots,state,attempt_number,created_at,updated_at) SELECT ?,?,'codex_included',(SELECT current_window_id FROM pacing_window_control WHERE singleton=1),?,1,CASE WHEN dispatch_slots_limit IS NULL THEN 0 ELSE 1 END,'reserved',COALESCE((SELECT attempt_count FROM tasks WHERE id=?),0)+1,unixepoch(),unixepoch() FROM provider_capacity WHERE provider='codex_included' AND EXISTS(SELECT 1 FROM task_leases WHERE lease_id=?)").bind(leaseId, task.id, decision.estimatedWorkloadUnits, task.id, leaseId),
+    env.DB.prepare("INSERT INTO task_leases (task_id,lease_id,provider,legacy_estimated_workload_units_reserved,expires_at) SELECT t.id,?,'codex_included',?,unixepoch()+? FROM tasks t WHERE t.id=? AND t.state IN ('ready','retrying') AND EXISTS (SELECT 1 FROM provider_capacity WHERE provider='codex_included' AND available=1 AND (dispatch_slots_limit IS NULL OR dispatch_slots_available>0)) AND (SELECT COUNT(*) FROM task_leases WHERE expires_at>unixepoch()) < ? AND (? IS NULL OR COALESCE((SELECT tasks_started FROM pacing_windows WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1)),0) < ?)").bind(leaseId, decision.estimatedWorkloadUnits, decision.leaseSeconds, task.id, decision.maxConcurrentTasks, decision.maxTasksPerWindow, decision.maxTasksPerWindow),
+    env.DB.prepare("INSERT INTO dispatch_reservations(lease_id,task_id,provider,window_key,legacy_estimated_workload_units,task_starts,provider_slots,state,attempt_number,created_at,updated_at) SELECT ?,?,'codex_included',(SELECT current_window_id FROM pacing_window_control WHERE singleton=1),?,1,CASE WHEN dispatch_slots_limit IS NULL THEN 0 ELSE 1 END,'reserved',COALESCE((SELECT attempt_count FROM tasks WHERE id=?),0)+1,unixepoch(),unixepoch() FROM provider_capacity WHERE provider='codex_included' AND EXISTS(SELECT 1 FROM task_leases WHERE lease_id=?)").bind(leaseId, task.id, decision.estimatedWorkloadUnits, task.id, leaseId),
     env.DB.prepare("UPDATE provider_capacity SET dispatch_slots_available=dispatch_slots_available-1,updated_at=unixepoch() WHERE provider='codex_included' AND dispatch_slots_limit IS NOT NULL AND dispatch_slots_available>0 AND EXISTS(SELECT 1 FROM dispatch_reservations WHERE lease_id=? AND provider_slots=1)").bind(leaseId),
-    env.DB.prepare("UPDATE pacing_windows SET estimated_workload_units_used=estimated_workload_units_used+?,tasks_started=tasks_started+1 WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1) AND EXISTS (SELECT 1 FROM task_leases WHERE lease_id=?)").bind(decision.estimatedWorkloadUnits, leaseId),
+    env.DB.prepare("UPDATE pacing_windows SET tasks_started=tasks_started+1 WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1) AND EXISTS (SELECT 1 FROM task_leases WHERE lease_id=?)").bind(leaseId),
     env.DB.prepare("UPDATE tasks SET state = 'dispatching', attempt_count = attempt_count + 1, updated_at = unixepoch() WHERE id = ? AND state IN ('ready','retrying') AND EXISTS (SELECT 1 FROM task_leases WHERE lease_id=?)").bind(task.id, leaseId),
     env.DB.prepare("DELETE FROM scheduler_signals WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1) AND EXISTS (SELECT 1 FROM task_leases WHERE lease_id=?)").bind(leaseId),
   ]);
@@ -82,8 +80,8 @@ export async function claimTask(env, task, decision) {
 export async function claimRevision(env, task, decision) {
   const leaseId = crypto.randomUUID();
   await env.DB.batch([
-    env.DB.prepare("UPDATE pacing_windows SET estimated_workload_units_used=estimated_workload_units_used+?,tasks_started=tasks_started+1 WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1)").bind(decision.estimatedWorkloadUnits),
-    env.DB.prepare("INSERT INTO task_leases (task_id, lease_id, provider, estimated_workload_units_reserved, expires_at) VALUES (?, ?, 'codex_included', ?, unixepoch() + ?)").bind(task.id, leaseId, decision.estimatedWorkloadUnits, decision.leaseSeconds),
+    env.DB.prepare("UPDATE pacing_windows SET tasks_started=tasks_started+1 WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1)"),
+    env.DB.prepare("INSERT INTO task_leases (task_id, lease_id, provider, legacy_estimated_workload_units_reserved, expires_at) VALUES (?, ?, 'codex_included', ?, unixepoch() + ?)").bind(task.id, leaseId, decision.estimatedWorkloadUnits, decision.leaseSeconds),
     env.DB.prepare("UPDATE tasks SET state='revising', attempt_count=attempt_count+1, updated_at=unixepoch() WHERE id=? AND state='reviewing'").bind(task.id),
     env.DB.prepare("DELETE FROM scheduler_signals WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1)"),
   ]);

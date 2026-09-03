@@ -87,3 +87,26 @@ export function capacityObservationStatements(env, dispatchId, acknowledgment) {
   }
   return statements;
 }
+
+export async function reenergizeExpiredCapacity(env, now = Math.floor(Date.now() / 1000)) {
+  const exhausted = await env.DB.prepare("SELECT updated_at FROM provider_capacity WHERE provider='codex_included' AND available=0 AND json_extract(metadata_json,'$.outcome')='exhausted' AND COALESCE(resets_at,updated_at+3600)<=?").bind(now).first();
+  if (!exhausted) return false;
+  const requestId = `automatic:codex_included:${exhausted.updated_at}`;
+  const results = await env.DB.batch([
+    env.DB.prepare("INSERT INTO capacity_reenergizations(request_id,provider,mode,actor,source_observed_at,reason,created_at) SELECT ?,'codex_included','automatic',NULL,updated_at,'Provider reset interval elapsed.',? FROM provider_capacity WHERE provider='codex_included' AND available=0 AND updated_at=? AND json_extract(metadata_json,'$.outcome')='exhausted' AND COALESCE(resets_at,updated_at+3600)<=? ON CONFLICT(request_id) DO NOTHING").bind(requestId, now, exhausted.updated_at, now),
+    env.DB.prepare("UPDATE provider_capacity SET available=1,resets_at=NULL,metadata_json=json_object('source','automatic_reenergization','previous_outcome','exhausted','source_observed_at',updated_at),updated_at=? WHERE provider='codex_included' AND available=0 AND updated_at=? AND EXISTS(SELECT 1 FROM capacity_reenergizations WHERE request_id=?)").bind(now, exhausted.updated_at, requestId),
+  ]);
+  return Boolean(results[1]?.meta?.changes ?? results[1]?.changes);
+}
+
+export async function reenergizeCapacityForOperator(env, { requestId, actor, reason }, now = Math.floor(Date.now() / 1000)) {
+  const duplicate = await env.DB.prepare("SELECT request_id,created_at FROM capacity_reenergizations WHERE request_id=? AND mode='operator'").bind(requestId).first();
+  if (duplicate) return { reenergized: true, duplicate: true, reenergized_at: duplicate.created_at };
+  const exhausted = await env.DB.prepare("SELECT updated_at FROM provider_capacity WHERE provider='codex_included' AND available=0 AND json_extract(metadata_json,'$.outcome')='exhausted'").first();
+  if (!exhausted) return null;
+  const results = await env.DB.batch([
+    env.DB.prepare("INSERT INTO capacity_reenergizations(request_id,provider,mode,actor,source_observed_at,reason,created_at) SELECT ?,'codex_included','operator',?,updated_at,?,? FROM provider_capacity WHERE provider='codex_included' AND available=0 AND updated_at=? AND json_extract(metadata_json,'$.outcome')='exhausted' ON CONFLICT(request_id) DO NOTHING").bind(requestId, actor, reason, now, exhausted.updated_at),
+    env.DB.prepare("UPDATE provider_capacity SET available=1,resets_at=NULL,metadata_json=json_object('source','operator_reenergization','previous_outcome','exhausted','source_observed_at',updated_at),updated_at=? WHERE provider='codex_included' AND available=0 AND updated_at=? AND EXISTS(SELECT 1 FROM capacity_reenergizations WHERE request_id=?)").bind(now, exhausted.updated_at, requestId),
+  ]);
+  return Boolean(results[1]?.meta?.changes ?? results[1]?.changes) ? { reenergized: true, duplicate: false, reenergized_at: now } : null;
+}

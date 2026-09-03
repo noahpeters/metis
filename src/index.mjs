@@ -8,7 +8,7 @@ import { dispatchViaGithubCodexRevision } from "./github-codex-adapter.mjs";
 import { approvalCount, checksPassed, checkSuiteLifecycleFromWebhook, lifecyclePolicy, pullRequestLifecycleFromWebhook, reviewLifecycleFromWebhook, workflowRunFromWebhook } from "./lifecycle.mjs";
 import { reconcileProject } from "./project.mjs";
 import { dependencyDecision, recordDependencyEvent } from "./dependencies.mjs";
-import { capacityObservationStatements } from "./provider-capacity.mjs";
+import { capacityObservationStatements, reenergizeExpiredCapacity } from "./provider-capacity.mjs";
 import { ingestOpenAIAnalytics } from "./openai-analytics.mjs";
 import { reconcileManagedTasks } from "./reconciliation.mjs";
 import { observeManagedPullRequestMergeability } from "./merge-conflicts.mjs";
@@ -246,7 +246,7 @@ async function handleRevisionDispatch(env, message) {
   } catch (error) {
     await env.DB.batch([
       env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(task.id),
-      env.DB.prepare("UPDATE pacing_windows SET estimated_workload_units_used=MAX(0,estimated_workload_units_used-?),tasks_started=MAX(0,tasks_started-1) WHERE window_key=date('now')").bind(decision.estimatedWorkloadUnits),
+      env.DB.prepare("UPDATE pacing_windows SET tasks_started=MAX(0,tasks_started-1) WHERE window_key=(SELECT current_window_id FROM pacing_window_control WHERE singleton=1)"),
       env.DB.prepare("UPDATE tasks SET state=?,attempt_count=MAX(0,attempt_count-1),blocker_reason=?,updated_at=unixepoch() WHERE id=?")
         .bind([401, 403].includes(error.status) ? "blocked" : "reviewing", [401, 403].includes(error.status) ? "GitHub revision dispatch credential lacks pull-request comment permission." : null, task.id),
     ]);
@@ -457,7 +457,7 @@ async function processWebhook(event, payload, env) {
   }
   if (connectorAck && !blocked) {
     const id = `${connectorAck.repository}#${connectorAck.issue_number}`;
-    const pending = await env.DB.prepare("SELECT d.*,l.estimated_workload_units_reserved FROM dispatches d LEFT JOIN task_leases l ON l.lease_id=d.lease_id WHERE d.task_id=? ORDER BY d.id DESC LIMIT 1").bind(id).first();
+    const pending = await env.DB.prepare("SELECT d.*,l.legacy_estimated_workload_units_reserved FROM dispatches d LEFT JOIN task_leases l ON l.lease_id=d.lease_id WHERE d.task_id=? ORDER BY d.id DESC LIMIT 1").bind(id).first();
     if (!pending) return json({ accepted: false, reason: "no correlated dispatch" }, 202);
     if (connectorAck.lease_id && connectorAck.lease_id !== pending.lease_id) return json({ accepted: false, reason: "connector acknowledgment lease mismatch" }, 202);
     const audit = JSON.stringify(connectorAck);
@@ -497,18 +497,17 @@ async function processWebhook(event, payload, env) {
     const id = `${blocked.repository}#${blocked.issue_number}`;
     const existing = await env.DB.prepare("SELECT id FROM tasks WHERE id=?").bind(id).first();
     if (!existing) return json({ accepted: false, reason: "unknown task" }, 202);
-    const pending = await env.DB.prepare("SELECT d.id,d.lease_id,l.estimated_workload_units_reserved FROM dispatches d LEFT JOIN task_leases l ON l.lease_id=d.lease_id WHERE d.task_id=? AND d.state='pending_connector_ack' ORDER BY d.id DESC LIMIT 1").bind(id).first();
+    const pending = await env.DB.prepare("SELECT d.id,d.lease_id,l.legacy_estimated_workload_units_reserved FROM dispatches d LEFT JOIN task_leases l ON l.lease_id=d.lease_id WHERE d.task_id=? AND d.state='pending_connector_ack' ORDER BY d.id DESC LIMIT 1").bind(id).first();
     const result = JSON.stringify({ status: "blocked", question: blocked.question, comment_url: blocked.comment_url });
     const statements = [
       env.DB.prepare("UPDATE dispatches SET state='blocked', result_json=?, updated_at=unixepoch() WHERE task_id=? AND state IN ('pending_connector_ack','running')").bind(result, id),
-      env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(id),
       env.DB.prepare("UPDATE tasks SET state='blocked', blocker_reason=?, updated_at=unixepoch() WHERE id=?").bind(blocked.question, id),
       env.DB.prepare("INSERT INTO usage_events(task_id,provider,operation,legacy_estimated_workload_units,metadata_json,created_at) VALUES(?,'codex_included',?,0,?,unixepoch())").bind(id, pending ? "connector_rejected_refund" : "coding_blocked", result),
     ];
     if (pending) {
-      statements.push(env.DB.prepare("UPDATE pacing_windows SET tasks_started=MAX(0,tasks_started-1),estimated_workload_units_used=MAX(0,estimated_workload_units_used-?) WHERE window_key=date('now')").bind(pending.estimated_workload_units_reserved));
+      statements.push(...releaseReservationStatements(env, pending.lease_id, "connector_rejected", blocked.question));
       statements.push(env.DB.prepare("UPDATE tasks SET attempt_count=MAX(0,attempt_count-1) WHERE id=?").bind(id));
-    }
+    } else statements.push(env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(id));
     await env.DB.batch(statements);
     await setState(env, blocked.repository, blocked.issue_number, "metis:blocked");
     await resumeReadyBacklog(env);
@@ -540,6 +539,7 @@ async function processWebhook(event, payload, env) {
     const acceptedWithoutAck = dispatch.state === "pending_connector_ack";
     const result = JSON.stringify({ status: "awaiting_pr_creation", summary: readyForPr.summary, comment_url: readyForPr.comment_url, task_url: readyForPr.task_url, dispatch_id: dispatch.id, lease_id: dispatch.lease_id, accepted_without_separate_ack: acceptedWithoutAck });
     await env.DB.batch([
+      ...commitReservationStatements(env, dispatch.lease_id, acceptedWithoutAck ? "completion_proves_acceptance" : "coding_prepared"),
       env.DB.prepare("UPDATE dispatches SET external_id=COALESCE(?,external_id),state='awaiting_pr_creation',result_json=?,updated_at=unixepoch() WHERE id=? AND state IN ('pending_connector_ack','running')").bind(readyForPr.task_url, result, dispatch.id),
       env.DB.prepare("DELETE FROM task_leases WHERE task_id=? AND lease_id=?").bind(id, dispatch.lease_id),
       env.DB.prepare("UPDATE tasks SET state='awaiting_pr_creation',blocker_reason=NULL,updated_at=unixepoch() WHERE id=? AND state IN ('pending_connector_ack','running')").bind(id),
@@ -722,6 +722,7 @@ async function handleCallback(request, env) {
   if (!dispatch) return json({ error: "unknown dispatch" }, 404);
   const task = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(dispatch.task_id).first();
   await env.DB.batch([
+    ...commitReservationStatements(env, dispatch.lease_id, "provider_callback"),
     env.DB.prepare("UPDATE dispatches SET state=?, result_json=?, updated_at=unixepoch() WHERE id=?").bind(result.status, JSON.stringify(result), dispatch.id),
     env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(task.id),
     env.DB.prepare("INSERT INTO usage_events (task_id, provider, operation, input_tokens, output_tokens, legacy_estimated_workload_units, metadata_json, created_at) VALUES (?, 'codex_included', 'coding', ?, ?, ?, ?, unixepoch())").bind(task.id, result.usage?.input_tokens || null, result.usage?.output_tokens || null, 0, JSON.stringify(result.usage || {})),
@@ -770,6 +771,7 @@ export default {
   },
   async scheduled(_controller, env) {
     await ensureScheduledPacingWindow(env);
+    await reenergizeExpiredCapacity(env);
     // Analytics failures are ledger observations, not task or recovery failures.
     try { await ingestOpenAIAnalytics(env); }
     catch { console.error("Analytics ingestion failed"); }
@@ -778,7 +780,7 @@ export default {
     // GitHub is authoritative: repair missed/out-of-order lifecycle webhooks
     // before an expired local lease is allowed to change task state.
     await reconcileManagedTasks(env, { onDeploymentFailure: (task, workflow) => beginRecovery(env, task, workflow) });
-    const expired = await env.DB.prepare("SELECT l.task_id,l.estimated_workload_units_reserved,r.id AS revision_id FROM task_leases l LEFT JOIN revision_dispatches r ON r.lease_id=l.lease_id AND r.state='running' WHERE l.expires_at <= unixepoch()").all();
+    const expired = await env.DB.prepare("SELECT l.task_id,l.legacy_estimated_workload_units_reserved,r.id AS revision_id FROM task_leases l LEFT JOIN revision_dispatches r ON r.lease_id=l.lease_id AND r.state='running' WHERE l.expires_at <= unixepoch()").all();
     for (const row of expired.results) {
       if (row.revision_id) {
         const task = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(row.task_id).first();
