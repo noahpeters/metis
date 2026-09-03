@@ -1,4 +1,4 @@
-export const allowedApiRequest = (method, pathname) => (method === "GET" && ["/api/status", "/api/pacing", "/api/stream", "/api/repositories"].includes(pathname)) || (method === "POST" && ["/api/pacing/nudge", "/api/capacity/reenergize", "/api/repositories/revalidate"].includes(pathname));
+export const allowedApiRequest = (method, pathname) => (method === "GET" && ["/api/status", "/api/pacing", "/api/stream", "/api/repositories"].includes(pathname)) || (method === "POST" && ["/api/pacing/nudge", "/api/capacity/reenergize", "/api/repositories/revalidate", "/api/issues/reset-ready", "/api/issues/force-complete"].includes(pathname));
 
 export async function proxyApi(request, env, identity) {
   const url = new URL(request.url);
@@ -15,11 +15,17 @@ export async function proxyApi(request, env, identity) {
     catch { return response({ error: { code: "invalid_json", message: "A JSON request is required" } }, 400); }
     upstream = await env.CONTROL_PLANE.reenergizeCapacity(identity.email, body);
   }
-  else {
+  else if (url.pathname === "/api/repositories/revalidate") {
     let body;
     try { body = await request.json(); }
     catch { return response({ error: { code: "invalid_json", message: "A JSON request is required" } }, 400); }
     upstream = await env.CONTROL_PLANE.revalidateRepository(identity.email, body, request.headers.get("Idempotency-Key"));
+  }
+  else {
+    let body;
+    try { body = await request.json(); }
+    catch { return response({ error: { code: "invalid_json", message: "A JSON request is required" } }, 400); }
+    upstream = await env.CONTROL_PLANE.administerIssue(identity.email, body, request.headers.get("Idempotency-Key"), url.pathname.endsWith("reset-ready") ? "reset_ready" : "force_complete");
   }
   return new Response(upstream.body, { status: upstream.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 }

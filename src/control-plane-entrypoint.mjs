@@ -2,6 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import worker, { resumeReadyBacklog, uiStatusForIdentity } from "./index.mjs";
 import { nudgeReadyWorkForIdentity, pacingOverviewForIdentity, reenergizeCapacityForIdentity } from "./pacing-api.mjs";
 import { repositoryOverviewForIdentity, revalidateRepositoryForIdentity } from "./recovery-admin.mjs";
+import { administerIssueForIdentity } from "./issue-admin.mjs";
 
 async function rpcResult(response) {
   return { status: response.status, body: await response.text() };
@@ -34,5 +35,10 @@ export default class MetisControlPlane extends WorkerEntrypoint {
   async revalidateRepository(email, body, idempotencyKey) {
     const request = new Request("https://rpc.invalid/internal/ui/repositories/revalidate", { method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": idempotencyKey || "" }, body: JSON.stringify(body) });
     return rpcResult(await revalidateRepositoryForIdentity(email, request, this.env, () => resumeReadyBacklog(this.env)));
+  }
+
+  async administerIssue(email, body, idempotencyKey, action) {
+    const request = new Request("https://rpc.invalid/internal/ui/issues/admin", { method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": idempotencyKey || "" }, body: JSON.stringify(body) });
+    return rpcResult(await administerIssueForIdentity(email, request, this.env, () => resumeReadyBacklog(this.env), action));
   }
 }

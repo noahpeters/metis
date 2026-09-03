@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PROJECT_STATUS_NAMES, ProjectAdmissionError, eligibleProjectItems, loadProjectPolicy, planProjectStatusSchema, projectStatusForState, projectTaskNeedsDispatch, readProjectQueue, readProjectStatusCounts, reconcileProjectStatuses, recoverInterruptedIntakes } from "../src/project.mjs";
+import { PROJECT_STATUS_NAMES, ProjectAdmissionError, eligibleProjectItems, loadProjectPolicy, planProjectStatusSchema, projectStatusForState, projectTaskNeedsDispatch, readProjectIssueSummaries, readProjectQueue, readProjectStatusCounts, reconcileProjectStatuses, recoverInterruptedIntakes } from "../src/project.mjs";
 
 const policy = {
   projectId: "PVT_kwHOAA6eJM4Bh81k",
@@ -60,6 +60,18 @@ test("Project status aggregates use every page and isolate repositories, owners,
     "noahpeters/metis": { statuses: { Ready: 1, "Awaiting human": 1 }, awaiting_human_reasons: { "Awaiting PR": 1 } },
     "noahpeters/metis-sandbox": { statuses: { "Awaiting human": 2, Done: 1 }, awaiting_human_reasons: { Reviewing: 1, Unclassified: 1 } },
   });
+});
+
+test("dashboard issue summaries paginate without hierarchy expansion", async () => {
+  const calls = [];
+  const labeled = { ...item("ready-1", 1), content: { ...item("ready-1", 1).content, title: "First issue", state: "OPEN", labels: { nodes: [{ name: "metis:blocked" }, { name: "metis:size-small" }] } } };
+  const graphql = async (_env, query, variables) => { calls.push({ query, cursor: variables.cursor }); return variables.cursor === null ? page([labeled, item("human", 2, "human-option")], true, "next") : page([{ ...item("done", 3, "metis-option", policy.statusOptions.Done), content: { ...item("done", 3).content, title: "Closed issue", state: "CLOSED", labels: { nodes: [{ name: "metis:complete" }] } } }]); };
+  assert.deepEqual(await readProjectIssueSummaries(env, graphql), [
+    { repository: "noahpeters/metis", issueNumber: 1, title: "First issue", issueState: "OPEN", projectStatus: "Ready", lifecycleTags: ["metis:blocked"], metisOwned: true },
+    { repository: "noahpeters/metis", issueNumber: 3, title: "Closed issue", issueState: "CLOSED", projectStatus: "Done", lifecycleTags: ["metis:complete"], metisOwned: true },
+  ]);
+  assert.deepEqual(calls.map(({ cursor }) => cursor), [null, "next"]);
+  assert.ok(calls.every(({ query }) => !query.includes("subIssues")));
 });
 
 function withHierarchy(projectGraphql, children = {}, parents = {}) {
