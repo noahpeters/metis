@@ -9,7 +9,7 @@ const ITEMS_QUERY = `query MetisProjectItems($project: ID!, $cursor: String) {
       items(first: 100, after: $cursor, orderBy: {field: POSITION, direction: ASC}) {
         nodes {
           id isArchived
-          content { __typename ... on Issue { id number title body repository { nameWithOwner } } }
+          content { __typename ... on Issue { id number title body repository { nameWithOwner } labels(first: 100) { nodes { name } } } }
           fieldValues(first: 100) { nodes { ... on ProjectV2ItemFieldSingleSelectValue { optionId field { ... on ProjectV2SingleSelectField { id } } } } }
         }
         pageInfo { hasNextPage endCursor }
@@ -288,6 +288,53 @@ export async function readProjectQueue(env, graphql = projectGraphql, onPage = n
     return { projectItemId: item.id, flatPosition: orderIndex, repository, issueNumber: item.content.number, issueNodeId: item.content.id, ownerOptionId: values.get(policy.executionOwnerFieldId), statusOptionId: values.get(policy.statusFieldId), eligible: values.get(policy.executionOwnerFieldId) === policy.metisOwnerOptionId && values.get(policy.statusFieldId) === policy.readyStatusOptionId };
   }).filter(Boolean);
   return orderByHierarchy(env, graphql, flatItems);
+}
+
+const AWAITING_HUMAN_REASONS = new Map([
+  ["metis:awaiting-pr", "Awaiting PR"],
+  ["metis:pr-ready", "PR ready"],
+  ["metis:reviewing", "Reviewing"],
+  ["metis:merge-ready", "Merge ready"],
+]);
+
+/** Read a complete, repository-isolated aggregate directly from the Project. */
+export async function readProjectStatusCounts(env, graphql = projectGraphql) {
+  const policy = loadProjectPolicy(env.METIS_PROJECT_POLICY_JSON);
+  const byStatusOption = new Map(Object.entries(policy.statusOptions).map(([name, id]) => [id, name]));
+  const counts = new Map((env.ALLOWED_REPOSITORIES || "").split(",").map((repository) => [repository.trim(), { statuses: new Map(), awaiting: new Map() }]).filter(([repository]) => repository));
+  let cursor = null;
+  const seenCursors = new Set();
+  do {
+    const data = await graphql(env, ITEMS_QUERY, { project: policy.projectId, cursor });
+    const project = data?.node;
+    if (!project || project.id !== policy.projectId) throw new ProjectAdmissionError("Configured ProjectV2 is inaccessible or deleted");
+    validateSchema(project, policy);
+    const connection = project.items;
+    if (!connection?.nodes || !connection.pageInfo) throw new ProjectAdmissionError("Project item pagination response is incomplete");
+    for (const item of connection.nodes) {
+      if (item?.isArchived || item?.content?.__typename !== "Issue") continue;
+      const aggregate = counts.get(item.content.repository?.nameWithOwner);
+      if (!aggregate) continue;
+      const values = new Map((item.fieldValues?.nodes || []).filter((value) => value?.field?.id).map((value) => [value.field.id, value.optionId]));
+      if (values.get(policy.executionOwnerFieldId) !== policy.metisOwnerOptionId) continue;
+      const status = byStatusOption.get(values.get(policy.statusFieldId));
+      if (!status || status === "Backlog") continue;
+      aggregate.statuses.set(status, (aggregate.statuses.get(status) || 0) + 1);
+      if (status === "Awaiting human") {
+        const labels = new Set((item.content.labels?.nodes || []).map((label) => label?.name));
+        const reason = [...AWAITING_HUMAN_REASONS].find(([label]) => labels.has(label))?.[1] || "Unclassified";
+        aggregate.awaiting.set(reason, (aggregate.awaiting.get(reason) || 0) + 1);
+      }
+    }
+    if (connection.pageInfo.hasNextPage && !connection.pageInfo.endCursor) throw new ProjectAdmissionError("Project pagination did not return an end cursor");
+    if (connection.pageInfo.hasNextPage && seenCursors.has(connection.pageInfo.endCursor)) throw new ProjectAdmissionError("Project pagination repeated an end cursor");
+    if (connection.pageInfo.endCursor) seenCursors.add(connection.pageInfo.endCursor);
+    cursor = connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
+  } while (cursor);
+  return Object.fromEntries([...counts].map(([repository, aggregate]) => [repository, {
+    statuses: Object.fromEntries(aggregate.statuses),
+    awaiting_human_reasons: Object.fromEntries(aggregate.awaiting),
+  }]));
 }
 
 function labelsOf(issue) { return (issue.labels || []).map((label) => typeof label === "string" ? label : label.name); }

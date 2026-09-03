@@ -178,6 +178,21 @@ function renderRepositories(overview) {
     const item = document.createElement("article"); item.className = "repository-card"; item.dataset.health = repository.dispatch_locked ? "locked" : repository.ready_count ? "ready" : "idle";
     const heading = document.createElement("div"); heading.className = "repository-heading"; text(heading, "h3", repository.repository); text(heading, "span", repository.dispatch_locked ? "Recovery Locked" : repository.ready_count ? "Backlog ready" : "Backlog idle").className = "state-pill"; item.append(heading);
     text(item, "p", repository.dispatch_locked ? repository.waiting_reason : `${repository.ready_count} Ready issue${repository.ready_count === 1 ? "" : "s"}.`).className = "reason";
+    if (!repository.project_counts) {
+      text(item, "p", "Project status counts unavailable.").className = "project-counts-unavailable";
+    } else {
+      const counts = document.createElement("dl"); counts.className = "project-counts"; counts.setAttribute("aria-label", "Metis-owned Project issue counts");
+      for (const [status, count] of Object.entries(repository.project_counts.statuses)) {
+        const row = document.createElement("div"); text(row, "dt", status); text(row, "dd", String(count)); counts.append(row);
+      }
+      item.append(counts);
+      const awaiting = repository.project_counts.statuses["Awaiting human"];
+      if (awaiting) {
+        const reasons = document.createElement("ul"); reasons.className = "awaiting-reasons"; reasons.setAttribute("aria-label", "Awaiting human reasons");
+        for (const [reason, count] of Object.entries(repository.project_counts.awaiting_human_reasons)) text(reasons, "li", `${reason}: ${count}`);
+        item.append(reasons);
+      }
+    }
     if (repository.dispatch_locked) {
       const evidence = document.createElement("dl"); evidence.className = "evidence-list";
       const add = (name, value, href) => { const row = document.createElement("div"); text(row, "dt", name); const dd = document.createElement("dd"); const node = text(dd, href ? "a" : "span", value || "Not observed"); if (href) { node.href = href; node.target = "_blank"; node.rel = "noreferrer"; } row.append(dd); evidence.append(row); };
