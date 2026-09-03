@@ -9,6 +9,24 @@ const nudgeButton = document.querySelector("#nudge");
 const reenergizeButton = document.querySelector("#reenergize");
 const actions = document.querySelector("#pacing-actions");
 let verifiedOverview = null;
+const liveStatus = document.querySelector("#live-status");
+let streamId = null;
+let streamRevision = 0;
+let staleTimer;
+
+function setLiveState(state, label) {
+  liveStatus.dataset.state = state;
+  liveStatus.textContent = label;
+}
+
+function markFresh() {
+  clearTimeout(staleTimer);
+  setLiveState("live", "Live");
+  staleTimer = setTimeout(() => {
+    setLiveState("stale", "Stale");
+    if (verifiedOverview) render(verifiedOverview, true, "Live updates are delayed; reconnecting automatically.");
+  }, 5_000);
+}
 let selectedRepository = null;
 
 class ApiError extends Error {
@@ -128,8 +146,31 @@ reenergizeButton.addEventListener("click", async () => {
   }
 });
 
+function connect() {
+  setLiveState(verifiedOverview ? "reconnecting" : "connecting", verifiedOverview ? "Reconnecting…" : "Connecting…");
+  const events = new EventSource("/api/stream");
+  events.addEventListener("snapshot", (event) => {
+    const update = JSON.parse(event.data);
+    if (update.stream_id === streamId && update.revision <= streamRevision) return;
+    streamId = update.stream_id;
+    streamRevision = update.revision;
+    verifiedOverview = update.snapshot;
+    render(verifiedOverview);
+    markFresh();
+  });
+  events.addEventListener("unavailable", () => {
+    setLiveState("stale", "Stale");
+    if (verifiedOverview) render(verifiedOverview, true, "The control plane is temporarily unavailable; retrying automatically.");
+    else refresh();
+  });
+  events.onerror = () => {
+    setLiveState("reconnecting", "Reconnecting…");
+    if (verifiedOverview) render(verifiedOverview, true, "Live updates disconnected; reconnecting automatically.");
+    else refresh();
+  };
+}
 
-refresh();
+connect();
 
 function renderRepositories(overview) {
   repositoryCards.replaceChildren(); repositoryCards.setAttribute("aria-busy", "false");

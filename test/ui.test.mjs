@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowedApiRequest } from "../src/ui/api.mjs";
+import { allowedApiRequest, streamSnapshots } from "../src/ui/api.mjs";
 import { authenticate, emailAllowed } from "../src/ui/auth.mjs";
 import { uiStatusForIdentity } from "../src/index.mjs";
 import { proxyApi } from "../src/ui/api.mjs";
@@ -23,7 +23,7 @@ test("local auth is explicit and cannot be enabled in a deployed environment", a
   assert.equal((await authenticate(new Request("https://ui/"), { ENVIRONMENT: "local", LOCAL_AUTH_ENABLED: "true", LOCAL_AUTH_EMAIL: "dev@from-trees.com" })).email, "dev@from-trees.com");
 });
 
-test("API allowlist permits only read-only status", () => {
+test("API allowlist preserves streaming and pacing actions", () => {
   assert.equal(allowedApiRequest("GET", "/api/status"), true);
   assert.equal(allowedApiRequest("POST", "/api/status"), false);
   assert.equal(allowedApiRequest("GET", "/api/tasks"), false);
@@ -31,6 +31,9 @@ test("API allowlist permits only read-only status", () => {
   assert.equal(allowedApiRequest("POST", "/api/pacing/reset"), false);
   assert.equal(allowedApiRequest("POST", "/api/pacing/nudge"), true);
   assert.equal(allowedApiRequest("POST", "/api/capacity/reenergize"), true);
+  assert.equal(allowedApiRequest("GET", "/api/stream"), true);
+  assert.equal(allowedApiRequest("POST", "/api/stream"), false);
+  assert.equal(allowedApiRequest("GET", "/api/pacing/nudge"), false);
 });
 
 test("nudge proxy forwards only the authenticated identity", async () => {
@@ -48,6 +51,23 @@ test("reenergize proxy forwards authenticated identity and bounded body", async 
   const response = await proxyApi(new Request("https://ui/api/capacity/reenergize", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }), env, { email: "admin@from-trees.com" });
   assert.equal(response.status, 200);
   assert.deepEqual(calls, [{ email: "admin@from-trees.com", body }]);
+});
+
+test("snapshot stream is identity scoped and carries monotonic revisions", async () => {
+  const calls = [];
+  const request = new Request("https://ui/api/stream");
+  const response = streamSnapshots(request, {
+    UI_STREAM_INTERVAL_MS: "100",
+    UI_STREAM_LIFETIME_MS: "220",
+    CONTROL_PLANE: { async pacingOverview(email) { calls.push(email); return { status: 200, body: JSON.stringify({ pacing: { value: calls.length } }) }; } },
+  }, { email: "admin@from-trees.com" });
+  assert.match(response.headers.get("content-type"), /^text\/event-stream/);
+  const payload = await response.text();
+  const events = [...payload.matchAll(/^data: (.+)$/gm)].map((match) => JSON.parse(match[1]));
+  assert.ok(events.length >= 2);
+  assert.deepEqual(events.slice(0, 2).map(({ revision }) => revision), [1, 2]);
+  assert.equal(events[0].stream_id, events[1].stream_id);
+  assert.ok(calls.every((email) => email === "admin@from-trees.com"));
 });
 
 test("control plane RPC re-authorizes the forwarded identity", async () => {
@@ -74,6 +94,7 @@ test("authenticated shell exposes capacity status without a budget reset", async
   assert.match(html, /href="\/app\.css"/);
   assert.match(html, /src="\/app\.js"/);
   assert.doesNotMatch(html, /\/assets\/app\.(?:css|js)/);
+  assert.match(html, /id="live-status"[^>]*data-state="connecting"/);
   assert.match(html, /<button id="nudge" type="button" hidden>Nudge<\/button>/);
   assert.match(html, /<button id="reenergize" type="button" hidden>Reenergize<\/button>/);
   assert.doesNotMatch(html, /Reset budget|reset-dialog|open-reset/);

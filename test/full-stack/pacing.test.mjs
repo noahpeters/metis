@@ -58,7 +58,7 @@ test("D1 observations round-trip through control-plane RPC and the rendered UI",
     compatibilityDate: "2026-08-30", cf: false, log: new Log(LogLevel.WARN),
     workers: [
       { name: "control-plane", compatibilityFlags: ["rpc"], modules: controlPlaneModules, modulesRoot: root, d1Databases: { DB: "round-trip" }, bindings: { METIS_POLICY_JSON: policy, DEPLOYMENT_VERSION: "full-stack-test" } },
-      { name: "ui", compatibilityFlags: ["rpc"], modules: uiModules, modulesRoot: root, serviceBindings: { CONTROL_PLANE: "control-plane" }, assets: { directory: join(root, "ui-assets"), binding: "ASSETS", run_worker_first: true }, bindings: { ENVIRONMENT: "local", LOCAL_AUTH_ENABLED: "true", LOCAL_AUTH_EMAIL: "tester@from-trees.com" } },
+      { name: "ui", compatibilityFlags: ["rpc"], modules: uiModules, modulesRoot: root, serviceBindings: { CONTROL_PLANE: "control-plane" }, assets: { directory: join(root, "ui-assets"), binding: "ASSETS", run_worker_first: true }, bindings: { ENVIRONMENT: "local", LOCAL_AUTH_ENABLED: "true", LOCAL_AUTH_EMAIL: "tester@from-trees.com", UI_STREAM_INTERVAL_MS: "100", UI_STREAM_LIFETIME_MS: "300" } },
       { name: "unauthorized-ui", compatibilityFlags: ["rpc"], modules: uiModules, modulesRoot: root, serviceBindings: { CONTROL_PLANE: "control-plane" }, assets: { directory: join(root, "ui-assets"), binding: "ASSETS", run_worker_first: true }, bindings: { ENVIRONMENT: "production", LOCAL_AUTH_ENABLED: "false" } },
     ],
   }));
