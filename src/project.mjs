@@ -334,18 +334,15 @@ export async function reconcileProject(env, options = {}) {
   const cycleMembers = new Set(cycle || []);
   if (cycle) await recordDependencyEvent(env, cycle[0], "cycle", { chain: cycle }, `cycle:${cycle.join("->")}`);
   for (const item of candidates) {
-    if (available === 0) break;
     const id = `${item.repository}#${item.issueNumber}`;
     const existing = await env.DB.prepare("SELECT id,state FROM tasks WHERE id=?").bind(id).first();
     if (existing) {
       if (existing.state === "intake") {
-        if (await enqueueOnce(env, "intake", id)) {
-          admitted += 1;
-          available -= 1;
-        }
+        if (await enqueueOnce(env, "intake", id)) admitted += 1;
         continue;
       }
       if (existing.state === "ready") {
+        if (available === 0) continue;
         const observation = ready.find((candidate) => candidate.task.id === id);
         if (!observation || cycleMembers.has(id)) continue;
         const waitingOn = observation.dependencies.filter((dependency) => !dependency.completed).map((dependency) => dependency.prerequisiteKey);
@@ -368,10 +365,7 @@ export async function reconcileProject(env, options = {}) {
     const cost = labels.find((label) => /^metis:max-cost-\d+$/.test(label));
     await env.DB.prepare("INSERT INTO tasks (id,repository,issue_number,issue_node_id,title,body,state,actor,size_class,max_workload_units,budget_approved,created_at,updated_at) VALUES (?,?,?,?,?,?,'intake','metis-project',?,?,?,unixepoch(),unixepoch()) ON CONFLICT(id) DO NOTHING")
       .bind(id, item.repository, item.issueNumber, issue.node_id, issue.title || "", issue.body || "", size?.slice(11) || null, cost ? Number(cost.slice(15)) : null, labels.includes("metis:budget-approved") ? 1 : 0).run();
-    if (await enqueueOnce(env, "intake", id)) {
-      admitted += 1;
-      available -= 1;
-    }
+    if (await enqueueOnce(env, "intake", id)) admitted += 1;
   }
   await env.DB.batch([
     env.DB.prepare("UPDATE project_reconciliation_runs SET state='succeeded',completed_at=unixepoch(),items_observed=?,items_admitted=?,last_cursor=?,hierarchy_snapshot_json=? WHERE id=?").bind(queue.length, admitted, lastCursor, JSON.stringify(queue.map(({ repository, issueNumber, rootPosition, ancestry, siblingPosition, reconciledAt }) => ({ repository, issueNumber, rootPosition, ancestry, siblingPosition, reconciledAt }))), runId),

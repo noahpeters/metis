@@ -12,9 +12,12 @@ const policy = {
   statusOptions: Object.fromEntries(PROJECT_STATUS_NAMES.map((name) => [name, name === "Ready" ? "ready-option" : `${name.toLowerCase().replaceAll(" ", "-")}-option`])),
 };
 
-test("Project reconciliation re-enqueues interrupted intake tasks", () => {
+test("Project intake is recovered independently of coding concurrency", () => {
   const source = readFileSync("src/project.mjs", "utf8");
-  assert.match(source, /existing\.state === "intake"[\s\S]*enqueueOnce\(env, "intake", id\)/);
+  const intakeBranch = source.match(/if \(existing\.state === "intake"\) \{([\s\S]*?)continue;/)?.[1];
+  assert.match(intakeBranch, /enqueueOnce\(env, "intake", id\)/);
+  assert.doesNotMatch(intakeBranch, /available/);
+  assert.match(source, /existing\.state === "ready"\) \{\s*if \(available === 0\) continue;/);
 });
 
 function page(nodes, hasNextPage = false, endCursor = null) {
