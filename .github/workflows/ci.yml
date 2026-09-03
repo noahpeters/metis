@@ -125,7 +125,7 @@ jobs:
           | tee /tmp/ui-deploy.log
       - name: Verify public endpoints
         run: |
-          curl --fail --silent --show-error --retry 5 https://metis-control-plane.gr4gwzrfq2.workers.dev/health >/dev/null
+          curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 --connect-timeout 10 --max-time 15 https://metis-control-plane.gr4gwzrfq2.workers.dev/health >/dev/null
           status=$(curl --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 --connect-timeout 10 --max-time 15 --output /dev/null --write-out '%{http_code}' https://metis.from-trees.com/)
           test "$status" = 302 || test "$status" = 403
       - name: Record deployment evidence
