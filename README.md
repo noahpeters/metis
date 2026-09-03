@@ -63,11 +63,13 @@ Access permits only verified `from-trees.com` identities. The UI verifies the si
 
 The Worker updates issue labels/comments. Branch and PR permissions belong to the isolated coding dispatcher.
 
-Production control-plane endpoint: `https://metis-control-plane.gr4gwzrfq2.workers.dev`. The protected administration UI is `https://metis.from-trees.com`. The allowlist contains Metis and the disposable `noahpeters/metis-sandbox` integration target; included Codex capacity is enabled while paid API and Perplexity fallback remain disabled.
+Production control-plane endpoint: `https://metis-control-plane.gr4gwzrfq2.workers.dev`. The protected administration UI is `https://metis.from-trees.com`. The allowlist contains Metis, `noahpeters/from-trees-studio`, and the disposable `noahpeters/metis-sandbox` integration target; included Codex capacity is enabled while paid API and Perplexity fallback remain disabled.
 
 ## Target repository contract
 
 Target repositories stay thin: `.metis.yml` declares verification and guardrails, `AGENTS.md` carries repository-specific instructions, and a shared GitHub App webhook supplies events centrally. There is no per-repository dispatch workflow or token.
+
+Before adding another repository, follow the complete [new repository setup and troubleshooting checklist](docs/new-repository-setup.md). Setup is not complete until a real Ready issue produces a running Codex Cloud task.
 
 Metis is itself an allowlisted target. Its `.metis.yml` requires explicit budget approval, treats workflows, Terraform, and migrations as protected paths, forbids coding-task deployment, and delegates production deployment exclusively to the `CI` workflow after a human merge. `metis-sandbox` remains the disposable integration target.
 
