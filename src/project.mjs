@@ -40,8 +40,7 @@ const MAX_HIERARCHY_DEPTH = 8;
 export const PROJECT_STATUS_NAMES = ["Backlog", "Ready", "In progress", "Awaiting human", "Blocked", "Deploying", "Done"];
 
 export function projectStatusForState(state) {
-  if (["intake"].includes(state)) return "Backlog";
-  if (["ready", "retrying"].includes(state)) return "Ready";
+  if (["intake", "ready", "retrying"].includes(state)) return "Ready";
   if (["dispatching", "pending_connector_ack", "running", "revising", "merge_conflict"].includes(state)) return "In progress";
   if (["awaiting_pr_creation", "awaiting_revision_pr", "pr_ready", "reviewing", "merge_ready"].includes(state)) return "Awaiting human";
   if (["blocked", "budget_blocked", "failed", "recovery_blocked"].includes(state)) return "Blocked";
@@ -142,6 +141,8 @@ export async function reconcileProjectStatuses(env, queue, options = {}) {
     }
     try {
       await graphql(env, UPDATE_STATUS_MUTATION, { project: policy.projectId, item: item.projectItemId, field: policy.statusFieldId, option: optionId });
+      item.statusOptionId = optionId;
+      item.eligible = item.ownerOptionId === policy.metisOwnerOptionId && optionId === policy.readyStatusOptionId;
       await env.DB.prepare("DELETE FROM project_status_sync WHERE task_id=?").bind(taskId).run();
       repaired += 1;
     } catch (error) {

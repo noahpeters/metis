@@ -136,7 +136,7 @@ test("Project credential and exact ID policy are mandatory", async () => {
 });
 
 test("every lifecycle state maps to its concise Project summary", () => {
-  assert.equal(projectStatusForState("intake"), "Backlog");
+  assert.equal(projectStatusForState("intake"), "Ready");
   assert.equal(projectStatusForState("ready"), "Ready");
   for (const state of ["dispatching", "pending_connector_ack", "running", "revising"]) assert.equal(projectStatusForState(state), "In progress");
   for (const state of ["awaiting_pr_creation", "pr_ready", "reviewing", "merge_ready"]) assert.equal(projectStatusForState(state), "Awaiting human");
@@ -160,6 +160,17 @@ test("status reconciliation repairs drift and records retryable failures", async
   const mirrorEnv = { ...env, DB: db };
   assert.deepEqual(await reconcileProjectStatuses(mirrorEnv, queue, { graphql: async (_env, query, variables) => calls.push({ query, variables }) }), { repaired: 1 });
   assert.equal(calls[0].variables.option, policy.statusOptions["In progress"]);
+  assert.equal(queue[0].statusOptionId, policy.statusOptions["In progress"]);
+  assert.equal(queue[0].eligible, false);
+  queue[0].statusOptionId = policy.statusOptions.Ready;
   await reconcileProjectStatuses(mirrorEnv, queue, { graphql: async () => { throw new Error("temporary outage"); } });
   assert.ok(statements.some(([sql, args]) => sql.startsWith("INSERT INTO project_status_sync") && args.includes("temporary outage")));
+});
+
+test("a repaired intake status becomes eligible in the same reconciliation", async () => {
+  const db = { prepare() { return { bind() { return { async first() { return { state: "intake" }; }, async run() {} }; } }; } };
+  const queue = [{ repository: "noahpeters/metis", issueNumber: 8, projectItemId: "item-8", ownerOptionId: policy.metisOwnerOptionId, statusOptionId: policy.statusOptions.Backlog, eligible: false }];
+  await reconcileProjectStatuses({ ...env, DB: db }, queue, { graphql: async () => ({}) });
+  assert.equal(queue[0].statusOptionId, policy.statusOptions.Ready);
+  assert.equal(queue[0].eligible, true);
 });
