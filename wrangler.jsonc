@@ -3,6 +3,7 @@
   "name": "metis-control-plane",
   "main": "src/control-plane-entrypoint.mjs",
   "compatibility_date": "2026-08-30",
+  "keep_vars": true,
   "workers_dev": true,
   "ai": {
     "binding": "AI"

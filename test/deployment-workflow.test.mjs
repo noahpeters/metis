@@ -10,6 +10,8 @@ test("routine production deployment preserves secrets and deploys both Workers",
   assert.match(workflow, /environment: production/);
   assert.match(workflow, /npm run db:migrate:production/);
   assert.match(workflow, /npm run deploy:production/);
+  assert.match(workflow, /complete-production-cutover\.mjs prepare/);
+  assert.match(workflow, /complete-production-cutover\.mjs finalize/);
   assert.match(workflow, /npm run deploy:ui:production/);
   assert.match(workflow, /terraform-plan:/);
   assert.match(workflow, /terraform-apply:/);
@@ -19,6 +21,11 @@ test("routine production deployment preserves secrets and deploys both Workers",
   assert.doesNotMatch(workflow, /AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/);
   assert.doesNotMatch(workflow, /CLOUDFLARE_ZONE_ID|CLOUDFLARE_ACCESS_TEAM_DOMAIN|CLOUDFLARE_ACCESS_AUDIENCE/);
   assert.match(workflow, /GITHUB_STEP_SUMMARY/);
+});
+
+test("control-plane deployments retain dashboard-managed encrypted secrets", () => {
+  const config = readFileSync("wrangler.jsonc", "utf8");
+  assert.match(config, /"keep_vars": true/);
 });
 
 test("Access discovery uses the provider-v5 account-qualified import ID", () => {

@@ -27,43 +27,25 @@ Production accepts the explicitly allowlisted Metis repositories in `production.
 
 Before enabling a repository in `METIS_LIFECYCLE_POLICY_JSON`, update the GitHub App to the least privileges required by the lifecycle controller: Issues read/write, Pull requests read/write, Checks read, and Actions read. Subscribe it to Issues, Issue comments, Pull requests, Pull request reviews, Check suites, and Workflow runs. GitHub requires installation owners to approve expanded App permissions. Keep Contents read-only; Metis does not need Git write access.
 
-## In-place cutover runbook
+## Production invariants
 
-Before any cutover, record the current D1 database ID, queue depths, Worker versions,
-routes, cron, Access application ID, and encrypted-secret names (never values).
+There is one control-plane Worker (`metis-control-plane`), one UI Worker
+(`metis-ui`), one D1 database (`metis-production`), and one dispatch/dead-letter
+queue pair. The checked-in D1 ID is the authoritative database identity and must
+never be replaced during deployment.
 
-1. Freeze dispatch with the existing provider gate and wait for the dispatch and
-   dead-letter queues to drain. Keep webhook ingestion on the old Worker during
-   this interval.
-2. The checked-in Wrangler D1 ID remains `fab80b33-f3d1-4fb6-bfa7-05ab613386c5`; verify it before and after deployment. Terraform does not manage or replace it.
-3. Queues cannot be renamed in place. Only after both queues are empty, create
-   `metis-dispatch` and `metis-dead-letter`, then merge the configuration change
-   so GitHub Actions atomically deploys the new producer/consumer bindings. Keep
-   the old empty queues through the rollback window.
-4. Rename the existing control-plane Worker with the Cloudflare API or import
-   its new identity, preserving its deployed version and encrypted bindings.
-   Provision the UI DNS record, route, Access application/policy, and GitHub
-   `production` environment variables. Copy each encrypted binding directly
-   between Workers through Cloudflare's secret interface; never export its value
-   to Terraform, Git, or logs. Required control-plane secrets are
-   `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`,
-   `GITHUB_DISPATCH_USER_TOKEN`, and `METIS_PROJECT_USER_TOKEN`. Cloudflare's
-   capability-bound service RPC replaces the former duplicated UI/control-plane secret.
-5. Merge only after the production environment is configured. The `CI` workflow
-   migrates the preserved D1 first, deploys `metis-control-plane`, and then
-   deploys `metis-ui` with its private service binding. Switch the GitHub webhook
-   URL once, after the new control-plane health check succeeds; retain the same
-   webhook secret and disable the old trigger immediately to prevent duplicates.
-6. Unfreeze dispatch only after exact-merge-SHA workflow success. Confirm the D1
-   task/lease/dependency/provider-observation/usage row counts and newest records,
-   scheduler cron, a signed webhook delivery (including redelivery idempotency),
-   queue production/consumption, and a Codex dispatch. Authenticate at
-   `https://metis.from-trees.com` with a verified `from-trees.com` identity,
-   confirm the UI reaches the control plane, and attach a browser screenshot to
-   the implementation PR.
+The control-plane requires the encrypted bindings `GITHUB_APP_PRIVATE_KEY`,
+`GITHUB_WEBHOOK_SECRET`, `GITHUB_DISPATCH_USER_TOKEN`, and
+`METIS_PROJECT_USER_TOKEN`. Wrangler is configured to retain dashboard-managed
+bindings, and the production workflow fails closed when any required binding is
+missing. Secret values are never exported, copied through Terraform, or printed.
 
-Rollback re-enables the recorded old Worker version, bindings, queues, route, and
-webhook URL while dispatch remains frozen. It never restores D1 from a blank
-copy: the preserved database ID is authoritative. Reconcile webhook delivery IDs
-before unfreezing. Delete old empty queues and obsolete Worker names only after
-the observation window and all exact-SHA checks pass.
+Every managed repository must appear in both `ALLOWED_REPOSITORIES` and
+`METIS_LIFECYCLE_POLICY_JSON`. The checked-in Terraform inputs mirror those
+runtime settings so planning cannot report a misleading repository set.
+
+After every exact-merge-SHA deployment, confirm the health endpoint, Access
+boundary, current D1 identity, encrypted-binding names, scheduled trigger,
+queue bindings, a fresh Project reconciliation, and admission of eligible Ready
+issues. A green deployment without a fresh reconciliation is not operational
+proof.
