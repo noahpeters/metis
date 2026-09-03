@@ -338,6 +338,13 @@ export async function reconcileProject(env, options = {}) {
     const id = `${item.repository}#${item.issueNumber}`;
     const existing = await env.DB.prepare("SELECT id,state FROM tasks WHERE id=?").bind(id).first();
     if (existing) {
+      if (existing.state === "intake") {
+        if (await enqueueOnce(env, "intake", id)) {
+          admitted += 1;
+          available -= 1;
+        }
+        continue;
+      }
       if (existing.state === "ready") {
         const observation = ready.find((candidate) => candidate.task.id === id);
         if (!observation || cycleMembers.has(id)) continue;

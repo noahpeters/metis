@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PROJECT_STATUS_NAMES, ProjectAdmissionError, boundedEligibleItems, loadProjectPolicy, planProjectStatusSchema, projectStatusForState, readProjectQueue, reconcileProjectStatuses } from "../src/project.mjs";
+import { readFileSync } from "node:fs";
 
 const policy = {
   projectId: "PVT_kwHOAA6eJM4Bh81k",
@@ -10,6 +11,11 @@ const policy = {
   readyStatusOptionId: "ready-option",
   statusOptions: Object.fromEntries(PROJECT_STATUS_NAMES.map((name) => [name, name === "Ready" ? "ready-option" : `${name.toLowerCase().replaceAll(" ", "-")}-option`])),
 };
+
+test("Project reconciliation re-enqueues interrupted intake tasks", () => {
+  const source = readFileSync("src/project.mjs", "utf8");
+  assert.match(source, /existing\.state === "intake"[\s\S]*enqueueOnce\(env, "intake", id\)/);
+});
 
 function page(nodes, hasNextPage = false, endCursor = null) {
   return { node: { id: policy.projectId, fields: { nodes: [

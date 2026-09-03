@@ -113,8 +113,6 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Preserve credential-bearing production identity
-        run: node scripts/complete-production-cutover.mjs prepare
       - name: Apply D1 migrations
         run: npm run db:migrate:production
       - name: Deploy control-plane Worker
@@ -130,8 +128,6 @@ jobs:
           curl --fail --silent --show-error --retry 5 https://metis-control-plane.gr4gwzrfq2.workers.dev/health >/dev/null
           status=$(curl --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 --connect-timeout 10 --max-time 15 --output /dev/null --write-out '%{http_code}' https://metis.from-trees.com/)
           test "$status" = 302 || test "$status" = 403
-      - name: Remove obsolete Cloudflare resources
-        run: node scripts/complete-production-cutover.mjs finalize
       - name: Record deployment evidence
         if: always()
         run: |
