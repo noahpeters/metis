@@ -136,6 +136,15 @@ export async function reconcileProjectStatuses(env, queue, options = {}) {
   for (const item of queue) {
     const taskId = `${item.repository}#${item.issueNumber}`;
     const task = await env.DB.prepare("SELECT state FROM tasks WHERE id=?").bind(taskId).first();
+    // A human moving an ordinary blocked task back to Project Ready is the
+    // explicit retry signal advertised by Metis. Honor it before mirroring the
+    // local lifecycle back to the Project. Safety-specific budget and recovery
+    // blocks still require their dedicated recovery paths.
+    if (task?.state === "blocked" && item.statusOptionId === policy.readyStatusOptionId) {
+      await env.DB.prepare("UPDATE tasks SET state='retrying',blocker_reason=NULL,updated_at=unixepoch() WHERE id=? AND state='blocked'").bind(taskId).run();
+      task.state = "retrying";
+      item.eligible = item.ownerOptionId === policy.metisOwnerOptionId;
+    }
     const statusName = projectStatusForState(task?.state);
     if (!statusName) continue;
     const optionId = policy.statusOptions[statusName];

@@ -181,3 +181,14 @@ test("a repaired intake status becomes eligible in the same reconciliation", asy
   assert.equal(queue[0].statusOptionId, policy.statusOptions.Ready);
   assert.equal(queue[0].eligible, true);
 });
+
+test("a human-set Project Ready status retries an ordinary blocked task", async () => {
+  const statements = [];
+  const db = { prepare(sql) { return { bind(...args) { return { async first() { return { state: "blocked" }; }, async run() { statements.push([sql, args]); } }; } }; } };
+  const queue = [{ repository: "noahpeters/metis", issueNumber: 9, projectItemId: "item-9", ownerOptionId: policy.metisOwnerOptionId, statusOptionId: policy.statusOptions.Ready, eligible: true }];
+  const calls = [];
+  await reconcileProjectStatuses({ ...env, DB: db }, queue, { graphql: async (...args) => calls.push(args) });
+  assert.ok(statements.some(([sql]) => sql.startsWith("UPDATE tasks SET state='retrying'")));
+  assert.equal(queue[0].eligible, true);
+  assert.equal(calls.length, 0);
+});
