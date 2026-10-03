@@ -114,7 +114,7 @@ async function workflowEvidence(env, task, mergeSha, comparisonCache) {
 export async function reconcileManagedTasks(env, { maxTasks = 20, repository = null, onDeploymentFailure } = {}) {
   const placeholders = RECONCILABLE_STATES.map(() => "?").join(",");
   const repositoryClause = repository ? " AND repository=?" : "";
-  const tasks = await env.DB.prepare(`SELECT * FROM tasks WHERE state IN (${placeholders})${repositoryClause} ORDER BY updated_at LIMIT ?`).bind(...RECONCILABLE_STATES, ...(repository ? [repository] : []), maxTasks).all();
+  const tasks = await env.DB.prepare(`SELECT * FROM tasks WHERE state IN (${placeholders})${repositoryClause} ORDER BY CASE WHEN state IN ('deploying','recovery') THEN 0 ELSE 1 END,updated_at LIMIT ?`).bind(...RECONCILABLE_STATES, ...(repository ? [repository] : []), maxTasks).all();
   const results = [];
   const comparisonCache = new Map();
   for (const task of tasks.results) {
