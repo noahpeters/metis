@@ -74,3 +74,97 @@ test("every required workflow needs successful containing deployment evidence", 
   assert.equal(selected.has("Deploy API"), true);
   assert.equal(selected.has("Deploy UI"), false);
 });
+
+test("task identity survives Codex bullet and inline-code PR descriptions", () => {
+  const marker = managedTaskMarker("noahpeters/H2", 95);
+  assert.match("### Testing\n- Metis-Task: noahpeters/H2#95\n", marker);
+  assert.match("- PR metadata: `Metis-Task: noahpeters/H2#95`.", marker);
+  assert.doesNotMatch("- Metis-Task: noahpeters/H2#950\n", marker);
+  assert.doesNotMatch("`Metis-Task: noahpeters/H2#95-extra`", marker);
+  assert.doesNotMatch("NotMetis-Task: noahpeters/H2#95", marker);
+  assert.doesNotMatch("- Metis-Task: noahpeters/other#95", marker);
+  assert.doesNotMatch("Metis-Task: owner/repoXname#95", managedTaskMarker("owner/repo.name", 95));
+});
+
+test("recent containing deployment completes reconciliation despite full history pages", async () => {
+  const { collectContainingWorkflowRuns } = await import("../src/reconciliation.mjs");
+  const pages = [];
+  const selected = await collectContainingWorkflowRuns("owner/repo", ["Deploy"], "merge", async (page) => {
+    pages.push(page);
+    return Array.from({ length: 100 }, (_, index) => ({ id: 1000 - index, name: "Deploy", head_sha: `deployed-${index}`, status: "completed", conclusion: "success" }));
+  }, async () => ({ status: "ahead" }));
+  assert.equal(selected.get("Deploy").id, 1000);
+  assert.deepEqual(pages, [1]);
+});
+
+test("deployment lookup reads another page when a required workflow is missing", async () => {
+  const { collectContainingWorkflowRuns } = await import("../src/reconciliation.mjs");
+  const selected = await collectContainingWorkflowRuns("owner/repo", ["Deploy", "UI"], "merge", async (page) => page === 1
+    ? Array.from({ length: 100 }, (_, index) => ({ id: 1000 - index, name: "Deploy", head_sha: "merge", status: "completed", conclusion: "success" }))
+    : [{ id: 100, name: "UI", head_sha: "merge", status: "completed", conclusion: "success" }], async () => ({ status: "ahead" }));
+  assert.equal(selected.size, 2);
+});
+
+test("bounded incomplete or divergent evidence cannot clear a recovery lock", async () => {
+  const { collectContainingWorkflowRuns } = await import("../src/reconciliation.mjs");
+  await assert.rejects(collectContainingWorkflowRuns("owner/repo", ["Deploy"], "merge", async () =>
+    Array.from({ length: 100 }, (_, index) => ({ id: index, name: "Deploy", head_sha: "other", status: "completed", conclusion: "success" })),
+  async () => ({ status: "diverged" })), /pagination limit/);
+  await assert.rejects(collectContainingWorkflowRuns("owner/repo", ["Deploy"], "merge", async () => [
+    { id: 1, name: "Deploy", head_sha: "other", status: "completed", conclusion: "success" },
+  ], async () => { throw new Error("GitHub unavailable"); }), /GitHub unavailable/);
+});
+
+test("H2 stale merged tasks clear the repository lock using a containing deployment", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const { reconcileManagedTasks } = await import("../src/reconciliation.mjs");
+  const db = new DatabaseSync(":memory:");
+  const migrations = new URL("../migrations/", import.meta.url);
+  for (const name of readdirSync(migrations).filter((name) => name.endsWith(".sql")).sort()) db.exec(readFileSync(new URL(name, migrations), "utf8"));
+  const cases = [[82, 98, "- PR metadata: `Metis-Task: noahpeters/H2#82`."], [92, 97, "- Metis-Task: noahpeters/H2#92\n"], [95, 100, "- Metis-Task: noahpeters/H2#95\n"]];
+  for (const [issue, pr] of cases) db.prepare("INSERT INTO tasks(id,repository,issue_number,title,state,pull_request_number,merge_sha,created_at,updated_at) VALUES (?,'noahpeters/H2',?,'Deployed change','deploying',?,?,1,1)").run(`noahpeters/H2#${issue}`, issue, pr, `merge-${issue}`);
+  db.prepare("INSERT INTO repository_health(repository,state,blocking_sha,root_task_id,updated_at) VALUES ('noahpeters/H2','deploying','merge-95','noahpeters/H2#95',1)").run();
+  const env = {
+    GITHUB_TOKEN: "test-token",
+    METIS_LIFECYCLE_POLICY_JSON: JSON.stringify({ defaults: { deploymentWorkflows: ["Storefront"] } }),
+    DB: {
+      prepare(sql) { const statement = db.prepare(sql); return {
+        args: [], bind(...args) { this.args = args; return this; },
+        async first() { return statement.get(...this.args) || null; },
+        async all() { return { results: statement.all(...this.args) }; },
+        async run() { return { meta: { changes: statement.run(...this.args).changes } }; },
+      }; },
+      async batch(statements) { return Promise.all(statements.map((statement) => statement.run())); },
+    },
+  };
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    requests.push({ path, method: init.method || "GET" });
+    let body = {};
+    if (!init.method && path.includes("/pulls/")) {
+      const [issue, pr, marker] = cases.find(([, pr]) => path.endsWith(`/${pr}`));
+      body = { number: pr, body: marker, merged: true, merge_commit_sha: `merge-${issue}`, head: { sha: "head" }, html_url: `https://github.test/pulls/${pr}` };
+    } else if (path.endsWith("/actions/runs")) {
+      body = { workflow_runs: Array.from({ length: 100 }, (_, index) => ({ id: 1000 - index, name: "Storefront", head_sha: "current-main", status: "completed", conclusion: "success" })) };
+    } else if (path.includes("/compare/")) body = { status: "ahead" };
+    else if (!init.method && path.includes("/issues/")) body = { labels: [{ name: "metis:deploying" }] };
+    return Response.json(body);
+  };
+  try {
+    const results = await reconcileManagedTasks(env);
+    assert.equal(results.length, 3);
+    assert.ok(results.every(({ state }) => state === "complete"));
+    assert.deepEqual({ ...db.prepare("SELECT state,blocking_sha FROM repository_health").get() }, { state: "healthy", blocking_sha: null });
+    assert.equal(db.prepare("SELECT count(*) AS count FROM reconciliation_events WHERE transition='complete'").get().count, 3);
+    assert.equal(requests.filter(({ path, method }) => path.endsWith("/comments") && method === "POST").length, 3);
+    const repeated = await reconcileManagedTasks(env);
+    assert.deepEqual(repeated, []);
+    assert.equal(requests.filter(({ path, method }) => path.endsWith("/comments") && method === "POST").length, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+    db.close();
+  }
+});
