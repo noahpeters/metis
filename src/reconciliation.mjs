@@ -7,7 +7,10 @@ const SUCCESS = new Set(["success", "neutral", "skipped"]);
 const FAILURE = new Set(["failure", "cancelled", "timed_out", "action_required", "startup_failure"]);
 
 export function managedTaskMarker(repository, issueNumber) {
-  return new RegExp(`(?:^|\\n)Metis-Task:\\s*${repository.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}#${issueNumber}(?:\\s|$)`, "i");
+  const escapedRepository = repository.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Codex emits plain lines, Markdown bullets, and inline-code metadata.
+  // Keep both identity boundaries so #95 cannot match #950 or another repo.
+  return new RegExp(`(?:^|[\\s\`])Metis-Task:\\s*${escapedRepository}#${issueNumber}(?=$|[\\s\`])`, "i");
 }
 
 export function selectWorkflowRuns(configured, mergeSha, runs) {
@@ -82,16 +85,29 @@ async function discoverPullRequest(env, task) {
   return candidates[0] || null;
 }
 
+export async function collectContainingWorkflowRuns(repository, configured, mergeSha, listPage, compare, limit = 3) {
+  const runs = [];
+  for (let page = 1; page <= limit; page += 1) {
+    const batch = await listPage(page);
+    if (!Array.isArray(batch)) throw new Error("Unexpected paginated deployment evidence");
+    runs.push(...batch);
+    const selected = await selectContainingWorkflowRuns(repository, configured, mergeSha, runs, compare);
+    // Proven completion does not require scanning all historical deployments.
+    if (configured.every((name) => selected.has(name)) || batch.length < 100) return selected;
+  }
+  throw new Error(`Reconciliation pagination limit reached for ${repository} deployment evidence`);
+}
+
 async function workflowEvidence(env, task, mergeSha, comparisonCache) {
   const configured = lifecyclePolicy(env, task.repository).deploymentWorkflows;
   if (!configured.length) throw new Error("no required deployment workflows are configured");
-  const runs = await boundedPages(env, `/repos/${task.repository}/actions/runs?event=push`);
   const compare = async (repository, base, head) => {
     const key = `${repository}:${base}:${head}`;
     if (!comparisonCache.has(key)) comparisonCache.set(key, githubRequest(env, `/repos/${repository}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`));
     return comparisonCache.get(key);
   };
-  const byWorkflow = await selectContainingWorkflowRuns(task.repository, configured, mergeSha, runs, compare);
+  const listPage = async (page) => (await githubRequest(env, `/repos/${task.repository}/actions/runs?branch=main&event=push&per_page=100&page=${page}`)).workflow_runs;
+  const byWorkflow = await collectContainingWorkflowRuns(task.repository, configured, mergeSha, listPage, compare);
   return { configured, byWorkflow };
 }
 
