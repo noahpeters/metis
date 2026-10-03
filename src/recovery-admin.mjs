@@ -85,7 +85,11 @@ export async function revalidateRepositoryForIdentity(email, request, env, resum
   const workflowNames = lifecyclePolicy(env, body.repository).deploymentWorkflows;
   if (!workflowNames.length) return json({ error: { code: "ambiguous_evidence", message: "No deployment workflows are configured" } }, 409);
   let runs;
-  try { runs = (await githubRequest(env, `/repos/${body.repository}/actions/runs?branch=main&event=push&per_page=100`)).workflow_runs; }
+  try {
+    const shaFilter = policy === "exact_sha" ? `&head_sha=${encodeURIComponent(health.blocking_sha || "")}` : "";
+    if (policy === "exact_sha" && !health.blocking_sha) return json({ retained: true, state: health.state, message: "The recovery lock has no blocking commit to verify." }, 409);
+    runs = (await githubRequest(env, `/repos/${body.repository}/actions/runs?branch=main&event=push&per_page=100${shaFilter}`)).workflow_runs;
+  }
   catch { return json({ error: { code: "evidence_inaccessible", message: "GitHub deployment evidence could not be verified" } }, 503); }
   const evidence = selectRecoveryEvidence(runs || [], workflowNames, health.blocking_sha, policy);
   if (!evidence) return json({ retained: true, state: health.state, message: "No successful deployment satisfies the configured recovery policy." }, 409);

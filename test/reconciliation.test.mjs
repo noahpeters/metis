@@ -125,6 +125,8 @@ test("H2 stale merged tasks clear the repository lock using a containing deploym
   const cases = [[82, 98, "- PR metadata: `Metis-Task: noahpeters/H2#82`."], [92, 97, "- Metis-Task: noahpeters/H2#92\n"], [95, 100, "- Metis-Task: noahpeters/H2#95\n"]];
   for (const [issue, pr] of cases) db.prepare("INSERT INTO tasks(id,repository,issue_number,title,state,pull_request_number,merge_sha,created_at,updated_at) VALUES (?,'noahpeters/H2',?,'Deployed change','deploying',?,?,1,1)").run(`noahpeters/H2#${issue}`, issue, pr, `merge-${issue}`);
   db.prepare("INSERT INTO repository_health(repository,state,blocking_sha,root_task_id,updated_at) VALUES ('noahpeters/H2','deploying','merge-95','noahpeters/H2#95',1)").run();
+  // An older unrelated discovery task must not delay the deployment locks.
+  db.exec("INSERT INTO tasks(id,repository,issue_number,title,state,created_at,updated_at) VALUES ('owner/other#1','owner/other',1,'Old unbound task','awaiting_pr_creation',0,0)");
   const env = {
     GITHUB_TOKEN: "test-token",
     METIS_LIFECYCLE_POLICY_JSON: JSON.stringify({ defaults: { deploymentWorkflows: ["Storefront"] } }),
@@ -154,13 +156,13 @@ test("H2 stale merged tasks clear the repository lock using a containing deploym
     return Response.json(body);
   };
   try {
-    const results = await reconcileManagedTasks(env);
+    const results = await reconcileManagedTasks(env, { maxTasks: 3 });
     assert.equal(results.length, 3);
     assert.ok(results.every(({ state }) => state === "complete"));
     assert.deepEqual({ ...db.prepare("SELECT state,blocking_sha FROM repository_health").get() }, { state: "healthy", blocking_sha: null });
     assert.equal(db.prepare("SELECT count(*) AS count FROM reconciliation_events WHERE transition='complete'").get().count, 3);
     assert.equal(requests.filter(({ path, method }) => path.endsWith("/comments") && method === "POST").length, 3);
-    const repeated = await reconcileManagedTasks(env);
+    const repeated = await reconcileManagedTasks(env, { repository: "noahpeters/H2" });
     assert.deepEqual(repeated, []);
     assert.equal(requests.filter(({ path, method }) => path.endsWith("/comments") && method === "POST").length, 3);
   } finally {

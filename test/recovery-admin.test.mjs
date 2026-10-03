@@ -57,3 +57,32 @@ test("operator issue lists include open Metis-owned non-Backlog items only", () 
   ];
   assert.deepEqual(visibleOperatorIssues(queue, "owner/one", [{ issue_number: 1, state: "retrying", updated_at: 42 }]), [{ repository: "owner/one", issue_number: 1, title: "Visible", issue_state: "OPEN", project_status: "Ready", status_tags: ["metis:blocked"], task_state: "retrying", updated_at: 42 }]);
 });
+
+test("exact-SHA revalidation queries the old blocking commit directly", async () => {
+  const { revalidateRepositoryForIdentity } = await import("../src/recovery-admin.mjs");
+  const statements = [];
+  const env = {
+    ALLOWED_REPOSITORIES: "owner/repo", GITHUB_TOKEN: "test-token",
+    METIS_LIFECYCLE_POLICY_JSON: JSON.stringify({ defaults: { deploymentWorkflows: ["Deploy"] } }),
+    DB: { prepare(sql) { return { bind(...args) { return {
+      async first() { return sql.includes("SELECT * FROM repository_health") ? { state: "deploying", blocking_sha: shaA, updated_at: 1 } : null; },
+      async run() { statements.push({ sql, args }); return { meta: { changes: 1 } }; },
+    }; } }; } },
+  };
+  const originalFetch = globalThis.fetch;
+  let observedUrl, resumed = false;
+  globalThis.fetch = async (url) => {
+    observedUrl = new URL(url);
+    return Response.json({ workflow_runs: [run(1, "Deploy", shaA, "success", "2026-08-01T00:00:00Z")] });
+  };
+  try {
+    const response = await revalidateRepositoryForIdentity("admin@from-trees.com", new Request("https://ui.test/api/repositories/revalidate", {
+      method: "POST", headers: { "Idempotency-Key": "old-sha" }, body: JSON.stringify({ repository: "owner/repo", request_id: "old-sha", reason: "Old deployment was repaired", expected_updated_at: 1, confirmation: "REVALIDATE_RECOVERY" }),
+    }), env, async () => { resumed = true; });
+    assert.equal(response.status, 200);
+    assert.equal(observedUrl.searchParams.get("head_sha"), shaA);
+    assert.equal((await response.json()).selected_evidence.exact_sha, true);
+    assert.ok(statements.some(({ sql }) => sql.includes("recovery_admin_audit")));
+    assert.equal(resumed, true);
+  } finally { globalThis.fetch = originalFetch; }
+});
