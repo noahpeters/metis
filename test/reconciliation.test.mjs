@@ -115,16 +115,18 @@ test("bounded incomplete or divergent evidence cannot clear a recovery lock", as
   ], async () => { throw new Error("GitHub unavailable"); }), /GitHub unavailable/);
 });
 
-test("H2 stale merged tasks clear the repository lock using a containing deployment", async () => {
+test("H2 stale recovery is closed and normal Ready work unlocks after a later required deployment", async () => {
   const { DatabaseSync } = await import("node:sqlite");
   const { readFileSync, readdirSync } = await import("node:fs");
-  const { reconcileManagedTasks } = await import("../src/reconciliation.mjs");
+  const { reconcileManagedTasks, reconcileRepositoryRecoveries } = await import("../src/reconciliation.mjs");
   const db = new DatabaseSync(":memory:");
   const migrations = new URL("../migrations/", import.meta.url);
   for (const name of readdirSync(migrations).filter((name) => name.endsWith(".sql")).sort()) db.exec(readFileSync(new URL(name, migrations), "utf8"));
   const cases = [[82, 98, "- PR metadata: `Metis-Task: noahpeters/H2#82`."], [92, 97, "- Metis-Task: noahpeters/H2#92\n"], [95, 100, "- Metis-Task: noahpeters/H2#95\n"]];
   for (const [issue, pr] of cases) db.prepare("INSERT INTO tasks(id,repository,issue_number,title,state,pull_request_number,merge_sha,created_at,updated_at) VALUES (?,'noahpeters/H2',?,'Deployed change','deploying',?,?,1,1)").run(`noahpeters/H2#${issue}`, issue, pr, `merge-${issue}`);
-  db.prepare("INSERT INTO repository_health(repository,state,blocking_sha,root_task_id,updated_at) VALUES ('noahpeters/H2','deploying','merge-95','noahpeters/H2#95',1)").run();
+  db.exec("INSERT INTO tasks(id,repository,issue_number,title,state,is_recovery,recovery_for_sha,created_at,updated_at) VALUES ('noahpeters/H2#96','noahpeters/H2',96,'Stale recovery','ready',1,'merge-95',1,2)");
+  db.exec("INSERT INTO tasks(id,repository,issue_number,title,state,size_class,created_at,updated_at) VALUES ('noahpeters/H2#101','noahpeters/H2',101,'Normal Ready work','ready','small',1,3)");
+  db.prepare("INSERT INTO repository_health(repository,state,blocking_sha,root_task_id,recovery_attempts,updated_at) VALUES ('noahpeters/H2','recovery','merge-95','noahpeters/H2#95',1,2)").run();
   // An older unrelated discovery task must not delay the deployment locks.
   db.exec("INSERT INTO tasks(id,repository,issue_number,title,state,created_at,updated_at) VALUES ('owner/other#1','owner/other',1,'Old unbound task','awaiting_pr_creation',0,0)");
   const env = {
@@ -142,6 +144,7 @@ test("H2 stale merged tasks clear the repository lock using a containing deploym
   };
   const originalFetch = globalThis.fetch;
   const requests = [];
+  let latestConclusion = "success";
   globalThis.fetch = async (url, init = {}) => {
     const path = new URL(url).pathname;
     requests.push({ path, method: init.method || "GET" });
@@ -150,21 +153,36 @@ test("H2 stale merged tasks clear the repository lock using a containing deploym
       const [issue, pr, marker] = cases.find(([, pr]) => path.endsWith(`/${pr}`));
       body = { number: pr, body: marker, merged: true, merge_commit_sha: `merge-${issue}`, head: { sha: "head" }, html_url: `https://github.test/pulls/${pr}` };
     } else if (path.endsWith("/actions/runs")) {
-      body = { workflow_runs: Array.from({ length: 100 }, (_, index) => ({ id: 1000 - index, name: "Storefront", head_sha: "current-main", status: "completed", conclusion: "success" })) };
+      body = { workflow_runs: Array.from({ length: 100 }, (_, index) => ({ id: 1000 - index, name: "Storefront", head_sha: index === 0 ? "latest-main" : "current-main", status: latestConclusion === "pending" && index === 0 ? "in_progress" : "completed", conclusion: index === 0 ? latestConclusion : "success" })) };
     } else if (path.includes("/compare/")) body = { status: "ahead" };
     else if (!init.method && path.includes("/issues/")) body = { labels: [{ name: "metis:deploying" }] };
     return Response.json(body);
   };
   try {
-    const results = await reconcileManagedTasks(env, { maxTasks: 3 });
-    assert.equal(results.length, 3);
+    for (const conclusion of ["failure", "cancelled", "pending", "skipped", "neutral"]) {
+      latestConclusion = conclusion;
+      await reconcileRepositoryRecoveries(env);
+      assert.equal(db.prepare("SELECT state FROM repository_health").get().state, "recovery");
+      assert.equal(db.prepare("SELECT state FROM tasks WHERE id='noahpeters/H2#96'").get().state, "ready");
+      assert.equal(requests.some(({ method }) => method === "PATCH"), false);
+    }
+    latestConclusion = "success";
+    const results = await reconcileManagedTasks(env, { maxTasks: 2 });
+    assert.equal(results.length, 2);
     assert.ok(results.every(({ state }) => state === "complete"));
     assert.deepEqual({ ...db.prepare("SELECT state,blocking_sha FROM repository_health").get() }, { state: "healthy", blocking_sha: null });
-    assert.equal(db.prepare("SELECT count(*) AS count FROM reconciliation_events WHERE transition='complete'").get().count, 3);
-    assert.equal(requests.filter(({ path, method }) => path.endsWith("/comments") && method === "POST").length, 3);
+    assert.deepEqual({ ...db.prepare("SELECT state FROM tasks WHERE id='noahpeters/H2#96'").get() }, { state: "complete" });
+    assert.equal(db.prepare("SELECT count(*) AS count FROM reconciliation_events WHERE transition='recovery-superseded'").get().count, 2);
+    assert.ok(requests.some(({ path, method }) => path.endsWith("/issues/96") && method === "PATCH"));
+    const { admissionDecision } = await import("../src/scheduler.mjs");
+    db.exec("UPDATE provider_capacity SET available=1,dispatch_slots_limit=NULL,dispatch_slots_available=NULL WHERE provider='codex_included'");
+    const ready = { ...db.prepare("SELECT * FROM tasks WHERE id='noahpeters/H2#101'").get() };
+    assert.equal((await admissionDecision(env, ready)).admitted, true);
+    assert.equal(db.prepare("SELECT count(*) AS count FROM reconciliation_events WHERE transition='complete'").get().count, 2);
+    assert.equal(requests.filter(({ path, method }) => path.endsWith("/comments") && method === "POST").length, 2);
     const repeated = await reconcileManagedTasks(env, { repository: "noahpeters/H2" });
     assert.deepEqual(repeated, []);
-    assert.equal(requests.filter(({ path, method }) => path.endsWith("/comments") && method === "POST").length, 3);
+    assert.equal(requests.filter(({ path, method }) => path.endsWith("/comments") && method === "POST").length, 2);
   } finally {
     globalThis.fetch = originalFetch;
     db.close();
