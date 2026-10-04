@@ -111,12 +111,86 @@ async function workflowEvidence(env, task, mergeSha, comparisonCache) {
   return { configured, byWorkflow };
 }
 
+export async function reconcileRepositoryRecoveries(env, comparisonCache = new Map(), repository = null) {
+  const healthRows = await env.DB.prepare(`SELECT * FROM repository_health WHERE state IN ('recovery','recovery_blocked')${repository ? " AND repository=?" : ""} ORDER BY updated_at`).bind(...(repository ? [repository] : [])).all();
+  const results = [];
+  for (const health of healthRows.results) {
+    if (!health.blocking_sha) continue;
+    const configured = lifecyclePolicy(env, health.repository).deploymentWorkflows;
+    if (!configured.length) continue;
+    try {
+      const compare = async (repository, base, head) => {
+        const key = `${repository}:${base}:${head}`;
+        if (!comparisonCache.has(key)) comparisonCache.set(key, githubRequest(env, `/repos/${repository}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`));
+        return comparisonCache.get(key);
+      };
+      const latestRuns = new Map();
+      const byWorkflow = await collectContainingWorkflowRuns(health.repository, configured, health.blocking_sha,
+        async (page) => {
+          const runs = (await githubRequest(env, `/repos/${health.repository}/actions/runs?branch=main&event=push&per_page=100&page=${page}`)).workflow_runs;
+          if (!Array.isArray(runs)) throw new Error("Unexpected paginated deployment evidence");
+          for (const run of runs) {
+            if (!configured.includes(run.name)) continue;
+            const prior = latestRuns.get(run.name);
+            if (!prior || run.id > prior.id || (run.id === prior.id && (run.run_attempt || 1) > (prior.run_attempt || 1))) latestRuns.set(run.name, run);
+          }
+          return runs;
+        }, compare);
+      // An older success cannot supersede a newer failure, pending run, or
+      // skipped deployment. Each required workflow's latest run must succeed.
+      if (!configured.every((name) => {
+        const latest = latestRuns.get(name), selected = byWorkflow.get(name);
+        return latest?.status === "completed" && latest.conclusion === "success" && selected?.id === latest.id && selected.head_sha === latest.head_sha;
+      })) continue;
+
+      const recoveryTasks = await env.DB.prepare("SELECT * FROM tasks WHERE repository=? AND is_recovery=1 AND recovery_for_sha=? AND state!='complete' ORDER BY issue_number").bind(health.repository, health.blocking_sha).all();
+      const rootTask = health.root_task_id ? await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(health.root_task_id).first() : null;
+      const tasks = [...(rootTask ? [rootTask] : []), ...recoveryTasks.results.filter(({ id }) => id !== rootTask?.id)];
+      if (!tasks.length) throw new Error(`recovery lock for ${health.repository} has no durable task to audit`);
+      const evidence = {
+        blocking_sha: health.blocking_sha,
+        workflows: configured.map((name) => {
+          const run = byWorkflow.get(name);
+          return { name, deployed_sha: run.head_sha, run_id: run.id, run_attempt: run.run_attempt || 1, workflow_url: run.html_url };
+        }),
+      };
+
+      // Close GitHub's durable work items before releasing the dispatch lock. If
+      // GitHub is unavailable, the scheduled reconciler keeps the lock and retries.
+      for (const task of tasks) {
+        await setState(env, task.repository, task.issue_number, "metis:complete");
+        await githubRequest(env, `/repos/${task.repository}/issues/${task.issue_number}`, { method: "PATCH", body: JSON.stringify({ state: "closed", state_reason: "completed" }) });
+      }
+
+      const statements = [
+        env.DB.prepare("UPDATE repository_health SET state='healthy',blocking_sha=NULL,workflow_url=NULL,recovery_attempts=0,updated_at=unixepoch() WHERE repository=? AND blocking_sha=? AND state IN ('recovery','recovery_blocked')").bind(health.repository, health.blocking_sha),
+      ];
+      for (const task of tasks) {
+        statements.push(
+          env.DB.prepare("UPDATE tasks SET state='complete',blocker_reason=NULL,updated_at=unixepoch() WHERE id=?").bind(task.id),
+          env.DB.prepare("DELETE FROM task_leases WHERE task_id=?").bind(task.id),
+          env.DB.prepare("UPDATE dispatches SET state='completed',updated_at=unixepoch() WHERE task_id=? AND state NOT IN ('completed','failed')").bind(task.id),
+          env.DB.prepare("INSERT INTO reconciliation_events(event_key,task_id,transition,evidence_json,created_at) VALUES(?,?,'recovery-superseded',?,unixepoch()) ON CONFLICT(event_key) DO NOTHING").bind(`${task.id}:recovery-superseded:${health.blocking_sha}`, task.id, JSON.stringify(evidence)),
+        );
+      }
+      await env.DB.batch(statements);
+      results.push({ repository: health.repository, state: "healthy", evidence, task_ids: tasks.map(({ id }) => id) });
+    } catch (error) {
+      const task = health.root_task_id ? await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(health.root_task_id).first() : null;
+      if (task) await reportError(env, task, error);
+      results.push({ repository: health.repository, state: health.state, error: String(error) });
+    }
+  }
+  return results;
+}
+
 export async function reconcileManagedTasks(env, { maxTasks = 20, repository = null, onDeploymentFailure } = {}) {
   const placeholders = RECONCILABLE_STATES.map(() => "?").join(",");
   const repositoryClause = repository ? " AND repository=?" : "";
-  const tasks = await env.DB.prepare(`SELECT * FROM tasks WHERE state IN (${placeholders})${repositoryClause} ORDER BY CASE WHEN state IN ('deploying','recovery') THEN 0 ELSE 1 END,updated_at LIMIT ?`).bind(...RECONCILABLE_STATES, ...(repository ? [repository] : []), maxTasks).all();
   const results = [];
   const comparisonCache = new Map();
+  await reconcileRepositoryRecoveries(env, comparisonCache, repository);
+  const tasks = await env.DB.prepare(`SELECT * FROM tasks WHERE state IN (${placeholders})${repositoryClause} ORDER BY CASE WHEN state IN ('deploying','recovery') THEN 0 ELSE 1 END,updated_at LIMIT ?`).bind(...RECONCILABLE_STATES, ...(repository ? [repository] : []), maxTasks).all();
   for (const task of tasks.results) {
     try {
       let pr = task.pull_request_number ? await githubRequest(env, `/repos/${task.repository}/pulls/${task.pull_request_number}`) : await discoverPullRequest(env, task);
