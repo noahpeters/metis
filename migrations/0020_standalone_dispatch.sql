@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS standalone_tasks (id TEXT PRIMARY KEY, instructions TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'queued', artifact_key TEXT, error TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()), updated_at INTEGER NOT NULL DEFAULT (unixepoch()));
