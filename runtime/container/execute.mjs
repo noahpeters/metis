@@ -65,13 +65,13 @@ export async function runCodex(task,rawAuth,{spawnProcess=spawn,timeoutMs=90000}
     await writeFile(join(authDir,'auth.json'),JSON.stringify(auth),{mode:0o600});
     const startedAt=new Date().toISOString();
     const args=['exec','--json','--ephemeral','--ignore-user-config','--skip-git-repo-check','--sandbox','workspace-write','-c','approval_policy="never"','-c','forced_login_method="chatgpt"','-C',workspace,'-'];
-    let output='';let bytes=0;let killed=false;
+    let output='';let diagnostic='';let bytes=0;let killed=false;
     const child=spawnProcess('codex',args,{cwd:workspace,env:cliEnvironment(authDir),stdio:['pipe','pipe','pipe'],detached:true});
     const kill=()=>{killed=true;try{process.kill(-child.pid,'SIGKILL');}catch{child.kill('SIGKILL');}};
     const timer=setTimeout(kill,timeoutMs);
     child.stdout.on('data',chunk=>{bytes+=chunk.length;if(bytes>1_000_000)kill();else output+=chunk;});
-    // Do not persist raw stderr, prompts or auth diagnostics into results/logs.
-    child.stderr.on('data',()=>{});
+    // Raw diagnostics stay in memory only. Persist a fixed category, never text.
+    child.stderr.on('data',chunk=>{if(diagnostic.length<16000)diagnostic+=chunk.toString().slice(0,16000-diagnostic.length);});
     const exited=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',code=>resolve(code));});
     child.stdin.on('error',()=>{});
     child.stdin.end('Execute the task below in this isolated workspace. Do not use GitHub, merge, deploy, or request API keys. Use shell commands to verify your work. If blocked, explain why.\n\n'+task.instructions);
@@ -88,6 +88,11 @@ export async function runCodex(task,rawAuth,{spawnProcess=spawn,timeoutMs=90000}
     let evidence;
     try {evidence=parseEvents(output);} catch {return {state:'failed',reason:'invalid_codex_event_stream'};}
     await rm(authDir,{recursive:true,force:true});
+    if (exitCode!==0 || evidence.failed || !evidence.turnCompleted || !evidence.threadId || evidence.commandCount<1 || !evidence.finalMessage) {
+      const text=diagnostic+'\n'+output;
+      const category=/unexpected argument|unrecognized option|unknown option/i.test(text)?'unsupported_option':/401|unauthorized|refresh.token|authentication|not logged in/i.test(text)?'authentication':/bwrap|bubblewrap|landlock|sandbox|operation not permitted/i.test(text)?'sandbox':'unclassified';
+      return {state:'blocked',reason:`codex_execution_not_verified_exit_${Number.isInteger(exitCode)?exitCode:'unknown'}_${category}`};
+    }
     let verification=null;
     if(task.verification==='numeric_summary_v1'){
       try{verification=await verifySolution(workspace);}catch{return {state:'failed',reason:'independent_code_verification_failed'};}
@@ -96,7 +101,7 @@ export async function runCodex(task,rawAuth,{spawnProcess=spawn,timeoutMs=90000}
     const artifacts=(await Promise.all(['result.json','solution.mjs'].map(name=>collectArtifact(workspace,name)))).filter(Boolean);
     if(artifacts.some(file=>containsCredential(file.content)))return {state:'blocked',reason:'credential_output_rejected'};
     const result={operation:'codex_exec',taskId:task.taskId,billingMode:'included_subscription',startedAt,completedAt:new Date().toISOString(),exitCode,...evidence,artifacts,verification};
-    if (exitCode!==0 || evidence.failed || !evidence.turnCompleted || !evidence.threadId || evidence.commandCount<1 || !evidence.finalMessage || Buffer.byteLength(JSON.stringify(result))>48000) return {state:'blocked',reason:'codex_execution_not_verified'};
+    if (Buffer.byteLength(JSON.stringify(result))>48000) return {state:'blocked',reason:'codex_result_exceeded_limit'};
     return {state:'completed',result};
   } catch {return {state:'blocked',reason:'runtime_execution_error'};}
   finally {await rm(root,{recursive:true,force:true});}
