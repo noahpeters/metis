@@ -26,7 +26,7 @@ test("local auth is explicit and cannot be enabled in a deployed environment", a
 test("API allowlist preserves streaming and pacing actions", () => {
   assert.equal(allowedApiRequest("GET", "/api/status"), true);
   assert.equal(allowedApiRequest("POST", "/api/status"), false);
-  assert.equal(allowedApiRequest("GET", "/api/tasks"), false);
+  assert.equal(allowedApiRequest("GET", "/api/tasks"), true);
   assert.equal(allowedApiRequest("GET", "/api/pacing"), true);
   assert.equal(allowedApiRequest("POST", "/api/pacing/reset"), false);
   assert.equal(allowedApiRequest("POST", "/api/pacing/nudge"), true);

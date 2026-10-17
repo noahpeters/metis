@@ -1,3 +1,4 @@
+import { nativeTasksForIdentity } from './native-tasks.mjs';
 import { WorkerEntrypoint } from "cloudflare:workers";
 import worker, { resumeReadyBacklog, uiStatusForIdentity } from "./index.mjs";
 import { nudgeReadyWorkForIdentity, pacingOverviewForIdentity, reenergizeCapacityForIdentity } from "./pacing-api.mjs";
@@ -12,6 +13,8 @@ export default class MetisControlPlane extends WorkerEntrypoint {
   fetch(request) { return worker.fetch(request, this.env); }
   queue(batch) { return worker.queue(batch, this.env); }
   scheduled(controller) { return worker.scheduled(controller, this.env); }
+
+  async nativeTasks(email,method,path,body) { return rpcResult(await nativeTasksForIdentity(email,method,path,body,this.env)); }
 
   async uiStatus(email) {
     return rpcResult(uiStatusForIdentity(email));

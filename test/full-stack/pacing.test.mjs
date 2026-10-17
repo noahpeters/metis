@@ -127,6 +127,49 @@ test("D1 observations round-trip through control-plane RPC and the rendered UI",
   const boundary = await binding.pacingOverview("attacker@example.com");
   assert.equal(boundary.status, 401, "authorization must be enforced by control-plane RPC, without shared secrets or CF-Worker headers");
 
+  // Native task capture uses the real authenticated UI -> RPC -> D1 boundary.
+  assert.equal((await unauthorizedUi.fetch("https://ui/tasks")).status,401);
+  assert.equal((await binding.nativeTasks("attacker@example.com","GET","/api/tasks",null)).status,403);
+  await page.goto("https://ui/tasks");
+  await page.getByRole("button",{name:"New task",exact:true}).click();
+  await page.getByLabel("Title",{exact:true}).fill("Prepare task context");
+  await page.getByLabel("Instructions",{exact:true}).fill("Create a context manifest and verify it.");
+  await page.getByLabel("Task data (JSON object)").fill('{"project":"Metis"}');
+  await page.getByRole("button",{name:"Save task",exact:true}).click();
+  await page.getByRole("heading",{name:"Prepare task context",exact:true}).waitFor();
+  const parentId=new URL(page.url()).pathname.split('/')[2];
+  assert.equal(JSON.parse((await db.prepare("SELECT data_json FROM native_tasks WHERE id=?").bind(parentId).first()).data_json).project,"Metis");
+  await page.getByRole("button",{name:"New task",exact:true}).click();
+  await page.getByLabel("Title",{exact:true}).fill("Execute dependent task");
+  await page.getByLabel("Instructions",{exact:true}).fill("Use the prepared context to write and test code.");
+  await page.getByRole("button",{name:"Save task",exact:true}).click();
+  await page.getByRole("heading",{name:"Execute dependent task",exact:true}).waitFor();
+  const childId=new URL(page.url()).pathname.split('/')[2];
+  await page.getByLabel("Dependencies (select tasks that must complete first)").selectOption(parentId);
+  const depSaved=page.waitForResponse(r=>r.url().endsWith('/dependencies'));
+  await page.getByRole("button",{name:"Save dependencies",exact:true}).click();
+  assert.equal((await depSaved).status(),200);
+  await page.getByRole("button",{name:"Mark ready",exact:true}).click();
+  await page.getByRole("button",{name:"Start cloud execution",exact:true}).waitFor();
+  assert.equal(await page.getByRole("button",{name:"Start cloud execution",exact:true}).isDisabled(),true);
+  assert.equal((await db.prepare("SELECT dependency_id FROM native_task_dependencies WHERE task_id=?").bind(childId).first()).dependency_id,parentId);
+  await page.screenshot({path:join(artifacts,"native-tasks-desktop.png"),fullPage:true});
+  await page.setViewportSize({width:390,height:844});
+  await page.screenshot({path:join(artifacts,"native-tasks-mobile.png"),fullPage:true});
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+  await page.setViewportSize({width:1280,height:900});
+  // Seed a provider receipt to verify the actual retained attempt deep link.
+  const attemptId=crypto.randomUUID();
+  await db.prepare("UPDATE native_tasks SET phase='ready' WHERE id=?").bind(parentId).run();
+  await db.prepare("INSERT INTO standalone_tasks(id,instructions,state,executor,result_json) VALUES (?,'fixture execution','completed','codex',?)").bind(attemptId,JSON.stringify({threadId:'fixture-codex-thread',containerStopped:true,finalMessage:'Context verified'})).run();
+  await db.prepare("INSERT INTO native_task_attempts(id,task_id,requested_by) VALUES (?,?,'tester@from-trees.com')").bind(attemptId,parentId).run();
+  await page.goto(`https://ui/tasks/${parentId}/attempts/${attemptId}`);
+  await page.getByText('Codex thread: fixture-codex-thread',{exact:true}).waitFor();
+  await page.getByText('Saved execution result',{exact:true}).click();
+  assert.match(await page.locator('.task-attempt pre').innerText(),/Context verified/);
+  await page.screenshot({path:join(artifacts,"native-task-attempt.png"),fullPage:true});
+  await page.goto("https://ui/");
+
   await db.exec("DROP TABLE pacing_window_control");
   await page.reload();
   await page.getByRole("heading", { name: "Status unknown" }).waitFor();

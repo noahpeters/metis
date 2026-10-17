@@ -1,10 +1,24 @@
-export const allowedApiRequest = (method, pathname) => (method === "GET" && ["/api/status", "/api/pacing", "/api/stream", "/api/repositories"].includes(pathname)) || (method === "POST" && ["/api/pacing/nudge", "/api/capacity/reenergize", "/api/repositories/revalidate", "/api/issues/reset-ready", "/api/issues/force-complete"].includes(pathname));
+export const allowedApiRequest = (method, pathname) => ((method === "GET" && /^\/api\/tasks(?:\/[0-9a-f-]+)?$/.test(pathname)) || (method === "POST" && /^\/api\/tasks(?:\/[0-9a-f-]+\/(?:edit|dependencies|ready|cancel|start))?$/.test(pathname))) || (method === "GET" && ["/api/status", "/api/pacing", "/api/stream", "/api/repositories"].includes(pathname)) || (method === "POST" && ["/api/pacing/nudge", "/api/capacity/reenergize", "/api/repositories/revalidate", "/api/issues/reset-ready", "/api/issues/force-complete"].includes(pathname));
 
 export async function proxyApi(request, env, identity) {
   const url = new URL(request.url);
   if (!allowedApiRequest(request.method, url.pathname)) return response({ error: { code: "not_found", message: "API route is not allowed" } }, 404);
   if (url.pathname === "/api/stream") return streamSnapshots(request, env, identity);
   let upstream;
+  if (url.pathname.startsWith("/api/tasks")) {
+    let body=null;
+    if(request.method === "POST") {
+      if(request.headers.get("origin") && request.headers.get("origin")!==url.origin) return response({error:{message:"Cross-origin writes are forbidden"}},403);
+      if(!request.headers.get("content-type")?.startsWith("application/json")) return response({error:{message:"JSON content type is required"}},415);
+      if(Number(request.headers.get("content-length"))>40000) return response({error:{message:"Request too large"}},413);
+      const raw=await request.text();
+      if(new TextEncoder().encode(raw).length>40000) return response({error:{message:"Request too large"}},413);
+      try { body=JSON.parse(raw); } catch { return response({error:{message:"Invalid JSON"}},400); }
+    }
+    try { upstream=await env.CONTROL_PLANE.nativeTasks(identity.email,request.method,url.pathname,body); }
+    catch { return response({error:{message:"Task service is temporarily unavailable"}},503); }
+    return new Response(upstream.body,{status:upstream.status,headers:{"content-type":"application/json","cache-control":"no-store"}});
+  }
   if (url.pathname === "/api/status") upstream = await env.CONTROL_PLANE.uiStatus(identity.email);
   else if (url.pathname === "/api/pacing") upstream = await env.CONTROL_PLANE.pacingOverview(identity.email);
   else if (url.pathname === "/api/repositories") upstream = await env.CONTROL_PLANE.repositoryOverview(identity.email);
