@@ -1,0 +1,90 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {readFileSync} from 'node:fs';
+import {nativeTasksForIdentity,flushNativeOutbox} from '../src/native-tasks.mjs';
+import worker from '../src/index.mjs';
+import {proxyApi} from '../src/ui/api.mjs';
+function fixture(t){
+  const sql=new DatabaseSync(':memory:');t.after(()=>sql.close());
+  for(const file of ['0020_standalone_dispatch.sql','0021_standalone_d1_proof.sql','0022_standalone_codex_runner.sql','0023_native_tasks.sql'])sql.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
+  const DB={prepare(query){let args=[];return {bind(...v){args=v;return this;},async first(){return sql.prepare(query).get(...args)??null;},async all(){return {results:sql.prepare(query).all(...args)};},async run(){return {meta:{changes:Number(sql.prepare(query).run(...args).changes)}};}};},async batch(statements){sql.exec('BEGIN');try{const out=[];for(const s of statements)out.push(await s.run());sql.exec('COMMIT');return out;}catch(e){sql.exec('ROLLBACK');throw e;}}};
+  const env={DB,STANDALONE_CODEX_ENABLED:'true',CODEX_RUNTIME:{async execute(task){return {state:'completed',result:{operation:'codex_exec',taskId:task.taskId,billingMode:'included_subscription',exitCode:0,turnCompleted:true,threadId:'real-thread-test',commandCount:2,containerStopped:true}};}},DISPATCH_QUEUE:{sent:[],async send(body){this.sent.push(body);}}};
+  const request=(method,path='',body,email='tester@from-trees.com')=>nativeTasksForIdentity(email,method,'/api/tasks'+path,body,env);
+  async function create(title='Task'){const id=crypto.randomUUID();assert.equal((await request('POST','',{id,title,instructions:'Write and execute code',data:{project:'example'}})).status,201);return id;}
+  const get=async id=>(await (await request('GET','/'+id)).json());
+  const action=async(id,action,extra={})=>request('POST',`/${id}/${action}`,{version:(await get(id)).task.version,...extra});
+  return {sql,env,request,create,get,action};
+}
+test('native capture auth, validation, idempotency, and optimistic editing',async t=>{
+  const f=fixture(t);assert.equal((await f.request('GET','',null,'outsider@example.com')).status,403);
+  assert.equal((await f.request('GET','/not-a-uuid')).status,400);
+  assert.equal((await f.request('GET','/'+crypto.randomUUID())).status,404);
+  const id=await f.create('<script>task</script>');const original=(await f.get(id)).task;
+  assert.equal(original.state,'draft');assert.deepEqual(original.data,{project:'example'});
+  const same={id,title:original.title,instructions:original.instructions,data:original.data};
+  assert.equal((await f.request('POST','',same)).status,201);
+  assert.equal((await f.request('POST','',{...same,title:'different'})).status,409);
+  assert.equal((await f.request('POST',`/${id}/edit`,{...same,title:'Edited',version:1})).status,200);
+  assert.equal((await f.request('POST',`/${id}/edit`,{...same,version:1})).status,409);
+  assert.equal((await f.get(id)).task.title,'Edited');
+});
+test('dependencies reject self, missing nodes, cycles, and stale replacement without deleting edges',async t=>{
+  const f=fixture(t),a=await f.create('A'),b=await f.create('B'),c=await f.create('C');
+  assert.equal((await f.action(a,'dependencies',{dependencies:[a]})).status,400);
+  assert.equal((await f.action(a,'dependencies',{dependencies:[crypto.randomUUID()]})).status,409);
+  assert.equal((await f.action(a,'dependencies',{dependencies:[b]})).status,200);
+  assert.equal((await f.action(b,'dependencies',{dependencies:[c]})).status,200);
+  assert.equal((await f.action(c,'dependencies',{dependencies:[a]})).status,409);
+  assert.equal((await f.request('POST',`/${a}/dependencies`,{version:1,dependencies:[]})).status,409);
+  assert.deepEqual((await f.get(a)).dependencies.map(d=>d.id),[b]);
+  assert.equal((await f.action(a,'ready')).status,200);
+  assert.equal((await f.action(a,'dependencies',{dependencies:[]})).status,409);
+});
+test('dependency order, single execution slot, queue delivery, and independently retained D1 receipt',async t=>{
+  const f=fixture(t),a=await f.create('Parent'),b=await f.create('Child');
+  await f.action(b,'dependencies',{dependencies:[a]});await f.action(a,'ready');await f.action(b,'ready');
+  assert.equal((await f.action(b,'start',{attempt_id:crypto.randomUUID()})).status,409);
+  const run=crypto.randomUUID();assert.equal((await f.action(a,'start',{attempt_id:run})).status,202);
+  assert.equal((await f.action(a,'start',{attempt_id:run})).status,202);
+  assert.equal(f.env.DISPATCH_QUEUE.sent.length,1);
+  assert.equal((await f.action(b,'start',{attempt_id:crypto.randomUUID()})).status,409);
+  let ack=false;await worker.queue({messages:[{body:f.env.DISPATCH_QUEUE.sent[0],attempts:1,ack(){ack=true;},retry(){assert.fail('unexpected retry');}}]},f.env);assert.ok(ack);
+  const record=await f.get(a);assert.equal(record.task.state,'completed');assert.equal(record.attempts[0].thread_id,'real-thread-test');assert.equal(record.attempts[0].url,`/tasks/${a}/attempts/${run}`);
+  assert.deepEqual(record.events.map(e=>e.state),['queued','running','completed']);
+  const stored=f.sql.prepare('SELECT result_json FROM standalone_tasks WHERE id=?').get(run);assert.equal(JSON.parse(stored.result_json).threadId,'real-thread-test');
+  assert.equal((await f.action(a,'start',{attempt_id:crypto.randomUUID()})).status,409);
+  assert.equal((await f.action(a,'cancel')).status,409);
+  assert.equal((await f.action(b,'start',{attempt_id:crypto.randomUUID()})).status,202);
+});
+test('attempt IDs cannot attach another standalone execution; queue outbox recovers send failure',async t=>{
+  const f=fixture(t),id=await f.create();await f.action(id,'ready');
+  const foreign=crypto.randomUUID();f.sql.prepare("INSERT INTO standalone_tasks(id,instructions,state,executor) VALUES (?,'other','completed','codex')").run(foreign);
+  assert.equal((await f.action(id,'start',{attempt_id:foreign})).status,409);assert.equal((await f.get(id)).attempts.length,0);
+  const send=f.env.DISPATCH_QUEUE.send;f.env.DISPATCH_QUEUE.send=async()=>{throw Error('outage');};
+  const run=crypto.randomUUID();assert.equal((await f.action(id,'start',{attempt_id:run})).status,202);assert.equal((await f.get(id)).task.state,'queued');
+  f.env.DISPATCH_QUEUE.send=send;await flushNativeOutbox(f.env);assert.equal(f.env.DISPATCH_QUEUE.sent[0].taskId,run);
+});
+test('ambiguous native runtime fails closed and keeps the execution slot reserved',async t=>{
+  const f=fixture(t),a=await f.create(),b=await f.create();await f.action(a,'ready');await f.action(b,'ready');
+  f.env.CODEX_RUNTIME.execute=async()=>{throw Error('transport interrupted');};await f.action(a,'start',{attempt_id:crypto.randomUUID()});let retries=0;
+  await worker.queue({messages:[{body:f.env.DISPATCH_QUEUE.sent[0],attempts:4,ack(){assert.fail('must retry to DLQ');},retry(){retries++;}}]},f.env);
+  assert.equal(retries,1);assert.equal((await f.get(a)).task.state,'blocked');assert.equal((await f.action(b,'start',{attempt_id:crypto.randomUUID()})).status,409);
+});
+test('native UI proxy forwards verified identity and rejects cross-origin writes and oversized bodies',async()=>{
+  let call;const env={CONTROL_PLANE:{async nativeTasks(...args){call=args;return {status:200,body:'{}'};}}};
+  const identity={email:'tester@from-trees.com'};
+  await proxyApi(new Request('https://ui/api/tasks'),env,identity);assert.deepEqual(call.slice(0,3),[identity.email,'GET','/api/tasks']);
+  for(const [headers,body,status] of [[{origin:'https://evil', 'content-type':'application/json'},'{}',403],[{},'{}',415],[{'content-type':'application/json'},'x'.repeat(40001),413]])assert.equal((await proxyApi(new Request('https://ui/api/tasks',{method:'POST',headers,body}),env,identity)).status,status);
+});
+test('safe explicit retry retains separate attempts; stale starts cannot create extra runs',async t=>{
+  const f=fixture(t),id=await f.create();await f.action(id,'ready');
+  f.env.CODEX_RUNTIME.execute=async()=>({state:'failed',reason:'execution_failed',result:{containerStopped:true}});
+  const oldVersion=(await f.get(id)).task.version,run=crypto.randomUUID();
+  await f.action(id,'start',{attempt_id:run});
+  await worker.queue({messages:[{body:f.env.DISPATCH_QUEUE.sent[0],attempts:1,ack(){},retry(){assert.fail('unexpected retry');}}]},f.env);
+  assert.equal((await f.request('POST',`/${id}/start`,{version:oldVersion,attempt_id:run})).status,202);
+  assert.equal((await f.request('POST',`/${id}/start`,{version:oldVersion,attempt_id:crypto.randomUUID()})).status,409);
+  assert.equal((await f.action(id,'start',{attempt_id:crypto.randomUUID()})).status,202);
+  assert.equal((await f.get(id)).attempts.length,2);
+});

@@ -129,3 +129,5 @@ private Cloudflare Container runtime using subscription-only Codex CLI login,
 command evidence and independent generated-code verification. It remains disabled
 until separately deployed, authenticated and enabled; local tests are not evidence
 of a successful cloud Codex run.
+
+Native task capture, dependencies, and execution monitoring: [task workspace](docs/native-task-workspace.md).
