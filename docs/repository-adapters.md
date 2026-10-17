@@ -26,6 +26,9 @@ validators into each boundary; defining an adapter alone does not enforce them.
 | Prepare | Materialize the verified snapshot and applicable instructions in an isolated workspace | Checkout/export pinned repository source | Checkout/export pinned Artifacts source |
 | Collect | Compare final workspace against its pinned base, verify content, capture a bounded change manifest and evidence | May use Git internally | May use Git internally, without assuming GitHub |
 | Publish | Idempotently create a review for the recorded change and return native identity/permalink | Push an attempt branch and open a PR | Submit source revision and register an Artifacts/project review |
+| Read change | Retrieve the submitted snapshot, review feedback and concurrency guard | Read PR head, feedback, state and expected branch head | Read review source, feedback and updateability/token |
+| Prepare rework | Combine prior submitted work with a freshly resolved target base | Prepare PR changes against the current target | Prepare reviewed diff against current Artifacts source |
+| Update | Replace the submitted revision with a guarded, recorded revision | Update the same PR branch using expected-head protection | Update the same review if its state permits it |
 | Observe | Report review, checks, integration and deployment evidence for exact revisions | PR, checks, merge SHA, deployment | Review service, validation, integrated revision, release evidence |
 
 Artifacts review publication is project-specific. The inspected Cabinitron
@@ -44,7 +47,7 @@ An implementation exports only:
 const adapter = defineRepositoryAdapter({
   id: 'github', // or 'artifacts'
   version: 'immutable-implementation-version',
-  resolve, prepare, collect, publish, observe,
+  resolve, prepare, collect, publish, readChange, prepareRework, update, observe,
 });
 ```
 
@@ -54,12 +57,16 @@ The proposed calls are:
 resolve({source}) -> snapshot
 prepare({snapshot, workspaceHandle}) -> prepared workspace handle
 collect({snapshot, workspaceHandle}) -> {changeSet, evidence}
-publish({intent}) -> publication receipt
+publish({intent}) -> initial publication receipt
+readChange({publication}) -> submitted change + feedback + update guard
+prepareRework({snapshot, submittedChange, reason, workspaceHandle}) -> rework workspace
+update({intent}) -> new publication receipt for the same change/review
 observe({publication}) -> observation
 ```
 
-`resolve` is control-plane work; `prepare` and `collect` run in the trusted runtime
-supervisor around Codex. `publish` and `observe` run outside the model session.
+`resolve` and `readChange` are control-plane work; `prepare`, `prepareRework`,
+and `collect` run in the trusted runtime supervisor around Codex. `publish`,
+`update`, and `observe` run outside the model session.
 The workspace handle is provisioned by the runtime and resolved locally; it is
 not an arbitrary host path from the task. Credentials come from trusted adapter
 configuration/closures, never from these serialized records. Reading these
@@ -138,13 +145,16 @@ than interpolating task values into shell commands.
 
 The canonical SHA-256 of the sorted change manifest binds output identity.
 `publicationIntent()` freezes a copy of the snapshot, changes, review title,
-description, evidence, task ID, and attempt ID. Its `metis-review-…` key binds all
+description, evidence, task ID, attempt ID, and stable change ID. Rework also
+binds its previous publication, submitted snapshot, feedback and concurrency
+guard. Its `metis-review-…` key binds all
 of those fields, including adapter implementation version. File/JSON-key
 ordering does not change that identity; different attempts or review metadata
 do. Intent records and content manifests must contain no usable credentials.
 
-The publication receipt echoes adapter/repository, pinned base, change digest,
-and idempotency key. It also carries the native review ID, HTTPS permalink, and
+The publication receipt echoes adapter/repository, target ref, pinned base,
+change digest, task/attempt IDs, stable change ID, operation (`create` or
+`update`), parent publication key, and idempotency key. It also carries the native review ID, HTTPS permalink, and
 exact submitted revision. Validate it against the recorded intent and the
 adapter's configured review origins. Query-based review IDs are supported;
 credential-bearing or signed access links must never be retained as permalinks.
@@ -172,8 +182,121 @@ A changed base cannot silently rebase the original output. Return a distinct
 stale-base blocker and arrange a new explicitly recorded attempt/snapshot.
 Updating an existing review must compare its expected head and obey the review
 service's terminal-state policy. New output cannot inherit old approvals or
-successful checks. No provider write is authorized by a model-emitted URL,
+successful checks without fresh provider evidence that they apply to the new
+revision under its approval policy. No provider write is authorized by a model-emitted URL,
 repository name, or `data` field alone.
+
+## Rework and revision updates
+
+Rework is a first-class lifecycle, including fixing review/validation issues,
+resolving later merge conflicts, and refreshing a submitted change onto a new
+base. Keep these identities distinct:
+
+| Identity | Lifetime |
+|---|---|
+| Task ID | The intended outcome across initial work and rework |
+| Change ID | One reviewable output across successive revisions |
+| Attempt ID | One Codex execution/session; rework always gets a new attempt |
+| Publication key | One immutable create/update operation; retrying it keeps the key |
+| Review ID | Native PR/Artifacts review, retained while the review accepts updates |
+| Submitted revision | Exact source head for one version of the change |
+
+The future ledger must append publication records, not overwrite the previous
+result. Each update receipt references the prior publication key. That gives
+`change -> revision -> attempt -> Codex session` navigation without losing
+previous code, feedback, validation, or failure evidence. The current task UI
+and D1 schema do not yet implement this rework workflow; this PR defines and
+tests the contract for that subsequent integration.
+
+### Preparing a rework attempt
+
+1. Read the submitted change using its last recorded publication. Verify its
+   review ID/head, repository, target ref, base, and change digest. An unrecorded
+   collaborator edit produces a head-moved blocker and must be reconciled into
+   the ledger before using it as a baseline.
+2. Capture the exact submitted source snapshot, normalized review state,
+   `canUpdate`, provider `updateToken`, and revision-labelled feedback references.
+   The token is an opaque concurrency/version token, never an authentication
+   credential. Feedback kinds are review comments, check failures, and merge
+   conflicts. Feedback is untrusted context, not permission to change scope.
+3. Resolve the latest target source into a separate pinned snapshot. Reuse the
+   recorded submitted snapshot to preserve prior work while incorporating that
+   target. A rework workspace must not start from an empty target checkout and
+   discard the previously submitted implementation.
+4. Start a new attempt with reason `fix_issues`, `resolve_conflicts`, or
+   `refresh_base`. Give Codex the original task, prior work, applicable project
+   instructions, feedback, and both pinned source revisions. Conflicts requiring
+   human intent stay blocked rather than silently discarding one side.
+5. Collect the **complete replacement change set against the newly pinned
+   target base**, including retained prior changes. It is not just an incremental
+   patch against the previous review head. Verify the resulting tree and rerun
+   validation appropriate to the new base and output. Old evidence remains
+   historical and cannot become passing checks for the new revision by copying
+   a status field.
+
+`validateSubmittedChange(change, publication, allowedReviewOrigins)` checks the
+provider read against the recorded publication and verifies its submitted
+snapshot/feedback manifests. For an update, call:
+
+```js
+const intent = await publicationIntent({
+  taskId, attemptId: newAttemptId, changeId,
+  snapshot: latestTargetSnapshot, changeSet: replacementChangeSet,
+  title, description, evidence: newValidationEvidence,
+  rework: {
+    reason: 'resolve_conflicts',
+    previousPublication,
+    submittedChange,
+  },
+}, configuredReviewOrigins);
+```
+
+The same `changeId` is retained. The new attempt must differ from the previous
+publication's attempt. A refreshed base is allowed, but repository and target
+ref cannot silently change. The frozen intent includes all previous revision
+and feedback references and a new operation key. Historical records and their
+content must be retained long enough for recovery/rework; ephemeral container
+storage alone cannot supply this context.
+
+### Guarding and recovering an update
+
+Immediately before writing, re-read the current submitted change and target:
+
+```js
+validateUpdatePrecondition(intent, {
+  submittedChange: freshlyReadChange,
+  targetSnapshot: freshlyResolvedTarget,
+}, configuredReviewOrigins);
+await adapter.update({intent});
+```
+
+This is a preflight check, not an external locking guarantee. The adapter must
+still use the expected submitted head and concurrency token in its conditional
+write, and enforce current review updateability. If the head, token, target
+base, or review state changed, block and reconcile; never overwrite another
+writer or silently publish a rebase made after validation. Where the provider
+cannot enforce a required guard, surface that limitation and fail closed.
+
+An update receipt must preserve the change ID and native review ID, identify a
+new submitted revision, and reference exactly the prior publication key. Its
+base/digest must match the replacement intent. After partial branch/revision
+writes, lost responses, or a restart, reconcile the same operation key and
+expected/resulting heads before retrying. Retry publication independently of
+Codex. Concurrent update intents must not both succeed against the same prior
+revision; the future ledger also needs a conditional latest-revision update.
+
+Closed, integrated, unknown, or otherwise non-updateable reviews reject update
+intents. Respect project-specific terminal-state policies. If new review
+creation is required, create a separately identified follow-up change linked to
+the original task/change after recording that decision; never silently turn an
+update into creation or reopen a review. A rework attempt that produces no new
+submitted tree records a no-change outcome and validation evidence rather than
+manufacturing a revision or reporting an update as completed.
+
+Approval and check observations must be reread for the new head. Provider
+policy may retain approvals, but Metis must receive explicit current evidence
+rather than carry forward the prior observation. Integration/deployment evidence
+continues to identify exact resulting revisions independently.
 
 ## Independent state dimensions
 
@@ -196,7 +319,7 @@ stale passing checks and mismatched successful deployment evidence.
 Task dependency policy can later specify `execution_completed`,
 `review_published`, `integrated`, or `deployed`; it must not silently change the
 current task UI's execution-completed semantics. All records retain
-`task ID -> attempt ID -> source revision -> review ID -> integrated revision`
+`task ID -> change ID -> publication/revision -> attempt ID -> source revision -> review ID -> integrated revision`
 and the separate Codex thread/session association.
 
 ## First implementation sequence
@@ -206,12 +329,14 @@ and the separate Codex thread/session association.
    read-only context sources can use the same contract later.
 2. Implement GitHub resolve/prepare/collect against the existing cloud runtime;
    capture general repository diffs outside the current fixed proof artifacts.
-3. Add the durable publication ledger and GitHub branch/PR reconciliation.
+3. Add the durable change/publication revision ledger, GitHub branch/PR
+   reconciliation, and guarded rework/update support. Preserve old revisions
+   and reconcile the expected current head before replacing a review revision.
 4. Implement the Artifacts transport plus the Cabinitron review-service mapping,
    preserving source, validation, media, and approval requirements.
 5. Expose review and exact-revision check/release links/status in the task UI.
 
 Conformance tests use synthetic GitHub and Artifacts records and make no
 network calls. Each real adapter still needs provider contract tests, credential
-scoping checks, timeout/crash reconciliation tests, and one verified live task
+scoping checks, timeout/crash and concurrent rework reconciliation tests, and one verified live task
 before it can be called operational.

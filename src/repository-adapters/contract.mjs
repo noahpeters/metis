@@ -78,31 +78,87 @@ export async function changeSetDigest(changeSet,snapshot) {
   validateChangeSet(changeSet,snapshot);
   return hash({...changeSet,changes:[...changeSet.changes].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)});
 }
-export async function publicationIntent({taskId,attemptId,snapshot,changeSet,title,description,evidence=[]}) {
+// A provider read is bound to the last recorded publication before it can
+// become rework input. Unrecorded head movement requires reconciliation.
+export function validateSubmittedChange(change,publication,allowedReviewOrigins) {
+  record(change,['version','changeId','taskId','source','baseRevision','changeSetDigest','review','submittedSnapshot','feedback'],'submitted change');version(change);validateSource(change.source);
+  requireValue(change.changeId===publication.changeId && change.taskId===publication.taskId && sameSource(change.source,publication) && change.source.ref===publication.targetRef && change.baseRevision===publication.baseRevision && change.changeSetDigest===publication.changeSetDigest,'submitted change does not match the recorded publication');
+  record(change.review,['id','url','revision','state','canUpdate','updateToken'],'submitted review');
+  requireValue(change.review.id===publication.review.id && change.review.revision===publication.review.revision,'review head moved; reconcile before rework');
+  validateReviewLink(change.review.url,allowedReviewOrigins);
+  requireValue(['open','closed','integrated','unknown'].includes(change.review.state) && typeof change.review.canUpdate==='boolean','invalid submitted review state');
+  requireValue(change.review.updateToken===null || text(change.review.updateToken),'invalid provider concurrency token');
+  requireValue(!change.review.canUpdate || (change.review.state==='open' && text(change.review.updateToken)),'updateable reviews require an open state and concurrency token');
+  validateSnapshot(change.submittedSnapshot);
+  requireValue(sameSource(change.submittedSnapshot.source,change.source) && change.submittedSnapshot.revision===change.review.revision,'submitted snapshot must contain the exact review head');
+  requireValue(Array.isArray(change.feedback) && change.feedback.length<=100,'feedback must be a bounded manifest');
+  const ids=new Set();
+  for(const item of change.feedback) {
+    record(item,['id','kind','revision','content'],'feedback');
+    requireValue(text(item.id) && !ids.has(item.id) && ['review_comment','check_failure','merge_conflict'].includes(item.kind) && text(item.revision),'invalid or duplicate revision-bound feedback');
+    ids.add(item.id);validateContent(item.content);
+  }
+  return change;
+}
+function validateRework(rework,{taskId,attemptId,changeId,snapshot},allowedReviewOrigins) {
+  record(rework,['reason','previousPublication','submittedChange'],'rework');
+  requireValue(['fix_issues','resolve_conflicts','refresh_base'].includes(rework.reason),'invalid rework reason');
+  const previous=rework.previousPublication;
+  validatePublicationShape(previous,allowedReviewOrigins);
+  requireValue(previous.attemptId!==attemptId,'rework requires a new execution attempt');
+  requireValue(previous.taskId===taskId && previous.changeId===changeId && sameSource(previous,snapshot.source) && previous.targetRef===snapshot.source.ref,'rework must preserve task, change, repository and target identity');
+  validateSubmittedChange(rework.submittedChange,previous,allowedReviewOrigins);
+  requireValue(rework.submittedChange.review.canUpdate && rework.submittedChange.review.state==='open','review no longer accepts updates');
+}
+export async function publicationIntent({taskId,attemptId,changeId,snapshot,changeSet,title,description,evidence=[],rework=null},allowedReviewOrigins=[]) {
   // Detach before the first await; callers cannot race a validated manifest
   // against hashing or mutate an intent while it is being constructed.
-  snapshot=structuredClone(snapshot);changeSet=structuredClone(changeSet);evidence=structuredClone(evidence);
-  requireValue(text(taskId) && text(attemptId),'task and attempt identities are required');
+  snapshot=structuredClone(snapshot);changeSet=structuredClone(changeSet);evidence=structuredClone(evidence);rework=structuredClone(rework);
+  requireValue(text(taskId) && text(attemptId) && text(changeId),'task, attempt and stable change identities are required');
+  validateSnapshot(snapshot);
+  if(rework!==null)validateRework(rework,{taskId,attemptId,changeId,snapshot},allowedReviewOrigins);
   requireValue(text(title,200) && typeof description==='string' && description.length<=60000,'bounded review title and description are required');
   requireValue(Array.isArray(evidence) && evidence.length<=50,'evidence must be a bounded content manifest');
   evidence.forEach(validateContent);
   const changesDigest=await changeSetDigest(changeSet,snapshot);
   // Copy/freeze the whole intent so an implementation cannot alter the identity
   // between preflight, durable intent recording, and publication.
-  const intent=JSON.parse(JSON.stringify({version:CONTRACT_VERSION,taskId,attemptId,snapshot,changeSet:{...changeSet,changes:[...changeSet.changes].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)},changeSetDigest:changesDigest,review:{title,description,evidence}}));
+  const intent=JSON.parse(JSON.stringify({version:CONTRACT_VERSION,taskId,attemptId,changeId,operation:rework===null?'create':'update',rework,snapshot,changeSet:{...changeSet,changes:[...changeSet.changes].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)},changeSetDigest:changesDigest,review:{title,description,evidence}}));
   intent.idempotencyKey='metis-review-'+await hash(intent);
   const freeze=value=>{if(value && typeof value==='object'){Object.values(value).forEach(freeze);Object.freeze(value);}return value;};
   return freeze(intent);
 }
-export function validatePublication(receipt,intent,allowedReviewOrigins) {
-  record(receipt,['version','adapter','repository','baseRevision','changeSetDigest','idempotencyKey','review'],'publication');version(receipt);
-  requireValue(sameSource(receipt,intent.snapshot.source) && receipt.baseRevision===intent.snapshot.revision && receipt.changeSetDigest===intent.changeSetDigest && receipt.idempotencyKey===intent.idempotencyKey,'publication does not match its recorded intent');
-  record(receipt.review,['id','url','revision'],'review');
-  requireValue(text(receipt.review.id) && text(receipt.review.revision),'provider review ID and exact submitted revision are required');
-  let url;try{url=new URL(receipt.review.url);}catch{throw new TypeError('Repository adapter: invalid review URL');}
+function validateReviewLink(value,allowedReviewOrigins) {
+  let url;try{url=new URL(value);}catch{throw new TypeError('Repository adapter: invalid review URL');}
   requireValue(Array.isArray(allowedReviewOrigins) && allowedReviewOrigins.includes(url.origin),'review URL origin is not configured for this adapter');
   requireValue(url.protocol==='https:' && !url.username && !url.password && !Array.from(url.searchParams.keys()).some(key=>/^(token|access_token|auth|authorization|key|api_key|signature|sig|jwt)$/i.test(key)),'review URL must use HTTPS without credentials or signed access parameters');
+}
+function validatePublicationShape(receipt,allowedReviewOrigins) {
+  record(receipt,['version','taskId','attemptId','changeId','operation','parentIdempotencyKey','adapter','repository','targetRef','baseRevision','changeSetDigest','idempotencyKey','review'],'publication');version(receipt);
+  validateSource({adapter:receipt.adapter,repository:receipt.repository,ref:receipt.targetRef});
+  requireValue(text(receipt.taskId) && text(receipt.attemptId) && text(receipt.changeId) && text(receipt.baseRevision) && digest(receipt.changeSetDigest) && /^metis-review-[a-f0-9]{64}$/.test(receipt.idempotencyKey),'invalid publication identity');
+  requireValue((receipt.operation==='create' && receipt.parentIdempotencyKey===null) || (receipt.operation==='update' && /^metis-review-[a-f0-9]{64}$/.test(receipt.parentIdempotencyKey) && receipt.parentIdempotencyKey!==receipt.idempotencyKey),'invalid publication revision lineage');
+  record(receipt.review,['id','url','revision'],'review');
+  requireValue(text(receipt.review.id) && text(receipt.review.revision),'provider review ID and exact submitted revision are required');
+  validateReviewLink(receipt.review.url,allowedReviewOrigins);
+}
+export function validatePublication(receipt,intent,allowedReviewOrigins) {
+  validatePublicationShape(receipt,allowedReviewOrigins);
+  requireValue(receipt.taskId===intent.taskId && receipt.attemptId===intent.attemptId && receipt.changeId===intent.changeId && receipt.operation===intent.operation && receipt.parentIdempotencyKey===(intent.rework?.previousPublication.idempotencyKey??null) && sameSource(receipt,intent.snapshot.source) && receipt.targetRef===intent.snapshot.source.ref && receipt.baseRevision===intent.snapshot.revision && receipt.changeSetDigest===intent.changeSetDigest && receipt.idempotencyKey===intent.idempotencyKey,'publication does not match its recorded intent');
+  if(intent.operation==='update')requireValue(receipt.review.id===intent.rework.previousPublication.review.id && receipt.review.revision!==intent.rework.previousPublication.review.revision,'update must preserve the review and produce a new submitted revision');
   return receipt;
+}
+// Preflight only: the provider must still enforce the expected head/token in
+// its actual conditional write, and reconcile any partial/ambiguous update.
+export function validateUpdatePrecondition(intent,{submittedChange,targetSnapshot},allowedReviewOrigins) {
+  requireValue(intent.operation==='update' && intent.rework,'an update intent is required');
+  validateRework(intent.rework,intent,allowedReviewOrigins);
+  validateSubmittedChange(submittedChange,intent.rework.previousPublication,allowedReviewOrigins);
+  requireValue(submittedChange.review.state==='open' && submittedChange.review.canUpdate,'review no longer accepts updates');
+  requireValue(submittedChange.review.updateToken===intent.rework.submittedChange.review.updateToken,'review concurrency token changed; reconcile before updating');
+  validateSnapshot(targetSnapshot);
+  requireValue(sameSource(targetSnapshot.source,intent.snapshot.source) && targetSnapshot.source.ref===intent.snapshot.source.ref && targetSnapshot.revision===intent.snapshot.revision && targetSnapshot.content.sha256===intent.snapshot.content.sha256,'target base moved; prepare another rework attempt');
+  return intent;
 }
 export function validateObservation(observation,publication) {
   record(observation,['version','review','checks','integration','deployment'],'observation');version(observation);
@@ -121,9 +177,9 @@ export function validateObservation(observation,publication) {
   return observation;
 }
 export function defineRepositoryAdapter(definition) {
-  record(definition,['id','version','resolve','prepare','collect','publish','observe'],'adapter definition');
+  record(definition,['id','version','resolve','prepare','collect','publish','readChange','prepareRework','update','observe'],'adapter definition');
   requireValue(typeof definition.id==='string' && /^[a-z][a-z0-9-]{0,39}$/.test(definition.id) && text(definition.version),'adapter ID and implementation version are required');
-  for(const method of ['resolve','prepare','collect','publish','observe'])requireValue(typeof definition[method]==='function',`missing ${method} implementation`);
+  for(const method of ['resolve','prepare','collect','publish','readChange','prepareRework','update','observe'])requireValue(typeof definition[method]==='function',`missing ${method} implementation`);
   // This deliberately supplies no network, auth, scheduler, or model launcher.
   return Object.freeze({...definition});
 }
