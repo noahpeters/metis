@@ -1,7 +1,8 @@
 // Never persist an exception's text: startup errors may include credentials.
 function category(error) {
   const text=String(error?.message??error);
-  if(/no.*instance|instance.*unavailable|maximum.*container|max.*instance|capacity/i.test(text))return 'capacity';
+  if(/maximum.*container|max.*instance|capacity/i.test(text))return 'capacity';
+  if(/no.*instance|instance.*unavailable/i.test(text))return 'unavailable';
   if(/timeout|timed out|deadline/i.test(text))return 'timeout';
   if(/permission|unauthorized|forbidden|403/i.test(text))return 'permission';
   if(/image|registry|pull/i.test(text))return 'image';
@@ -11,7 +12,9 @@ function category(error) {
 export async function executeContainerTask(container,task,auth) {
   let phase='startup';let receipt;
   try {
-    await container.startAndWaitForPorts({ports:8080,startOptions:{envVars:{CODEX_SUBSCRIPTION_AUTH_JSON:auth}},cancellationOptions:{portReadyTimeoutMS:30000}});
+    // Instance acquisition has a separate SDK default of only eight seconds.
+    // Give cold placement time to finish before the port-readiness window.
+    await container.startAndWaitForPorts({ports:8080,startOptions:{envVars:{CODEX_SUBSCRIPTION_AUTH_JSON:auth}},cancellationOptions:{instanceGetTimeoutMS:60000,portReadyTimeoutMS:30000}});
     phase='request';
     const response=await container.containerFetch(new Request('http://container/execute',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(task),signal:AbortSignal.timeout(120000)}));
     phase='response';
