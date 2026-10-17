@@ -119,3 +119,7 @@ configures no remote Worker or database. Failure evidence is saved under
 - A merge is incomplete until every configured deployment workflow succeeds for the exact merge SHA.
 - Deployment failure freezes normal dispatch and starts a bounded corrective-PR recovery chain.
 - Target CI and human PR review remain authoritative.
+
+The [D1-only standalone dispatch experiment](docs/standalone-dispatch-experiment.md)
+documents the isolated deterministic proof, retry behavior, and independent D1
+verification procedure. It does not run arbitrary Codex instructions.

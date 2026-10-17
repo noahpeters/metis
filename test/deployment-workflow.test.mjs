@@ -42,3 +42,15 @@ test("administration API uses capability-bound service RPC", () => {
   assert.match(uiApi, /CONTROL_PLANE\.pacingOverview/);
   assert.doesNotMatch(uiApi, /CONTROL_PLANE\.fetch|UI_BINDING_TOKEN|X-Metis-UI-Binding/);
 });
+
+test("standalone proof production configuration cannot provision or bind R2", async () => {
+  const { readdir } = await import('node:fs/promises');
+  const files = (await readdir('infra/production')).filter(name => name.endsWith('.tf'));
+  for (const file of files) assert.doesNotMatch(await readFile(`infra/production/${file}`, 'utf8'), /cloudflare_r2_bucket/);
+  const config = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
+  assert.equal(config.r2_buckets, undefined);
+  assert.equal(config.keep_vars, true);
+  assert.equal(config.queues.consumers[0].max_retries, 3);
+  assert.equal(config.queues.consumers[0].dead_letter_queue, 'metis-dead-letter');
+  assert.equal(config.vars.STANDALONE_DISPATCH_TOKEN, undefined);
+});

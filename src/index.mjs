@@ -761,7 +761,7 @@ export default {
         if (["intake", "dispatch"].includes(message.body.type)) {
           await env.DB.prepare("DELETE FROM project_queue_signals WHERE task_id=? AND message_type=?").bind(message.body.taskId, message.body.type).run();
         }
-        if (message.body.type === "standalone_proof") await executeStandaloneProof(env, message.body.taskId);
+        if (message.body.type === "standalone_proof") await executeStandaloneProof(env, message.body.taskId, message.attempts);
         else if (message.body.type === "intake") await handleIntake(env, message.body);
         else if (message.body.type === "dispatch") await handleDispatch(env, message.body);
         else if (message.body.type === "revision") await handleRevisionDispatch(env, message.body);
