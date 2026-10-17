@@ -91,3 +91,5 @@ full session archives, or adapter execution. GitHub and Cloudflare Artifacts /
 Cabinitron adapters should each declare context inputs and output publication
 contracts, including producing a branch/PR or an artifact review without a
 manual provider-UI step.
+
+The shared source, change, publication, and observation contract is defined in [repository adapters](repository-adapters.md). Provider execution remains a follow-up.
