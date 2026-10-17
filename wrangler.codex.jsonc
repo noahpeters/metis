@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "metis-codex-runtime",
+  "main": "runtime/cloud/entrypoint.mjs",
+  "compatibility_date": "2026-08-30",
+  "keep_vars": true,
+  "workers_dev": false,
+  "containers": [{
+    "class_name": "CodexContainer",
+    "image": "./runtime/container/Dockerfile",
+    "image_build_context": ".",
+    "instance_type": "standard-1",
+    "max_instances": 1
+  }],
+  "durable_objects": {"bindings": [{"name": "CODEX_CONTAINER", "class_name": "CodexContainer"}]},
+  "migrations": [{"tag": "v1-codex-container", "new_sqlite_classes": ["CodexContainer"]}]
+}

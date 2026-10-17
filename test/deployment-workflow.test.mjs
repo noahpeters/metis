@@ -54,3 +54,20 @@ test("standalone proof production configuration cannot provision or bind R2", as
   assert.equal(config.queues.consumers[0].dead_letter_queue, 'metis-dead-letter');
   assert.equal(config.vars.STANDALONE_DISPATCH_TOKEN, undefined);
 });
+
+test('cloud Codex runtime is private, separately provisioned and subscription-only', async()=>{
+  const runtime=JSON.parse(await readFile('wrangler.codex.jsonc','utf8'));
+  const main=JSON.parse(await readFile('wrangler.jsonc','utf8'));
+  assert.equal(runtime.workers_dev,false);assert.equal(runtime.containers.length,1);assert.equal(runtime.containers[0].max_instances,1);
+  assert.deepEqual(main.services,[{binding:'CODEX_RUNTIME',service:'metis-codex-runtime'}]);
+  assert.equal(main.vars.STANDALONE_CODEX_ENABLED,undefined);
+  assert.equal(runtime.keep_vars,true);assert.equal(runtime.r2_buckets,undefined);
+  const source=await readFile('runtime/cloud/entrypoint.mjs','utf8');
+  assert.match(source,/CODEX_SUBSCRIPTION_AUTH_JSON/);assert.match(source,/fetch\(\) \{return new Response\('Not found'/);
+  const workflow=await readFile('.github/workflows/ci.yml','utf8');
+  assert.ok(workflow.indexOf('npm run deploy:codex:production')<workflow.indexOf('npm run deploy:production |'));
+  assert.match(workflow,/docker build --platform linux\/amd64/);
+  assert.doesNotMatch(workflow,/CODEX_SUBSCRIPTION_AUTH_JSON|OPENAI_API_KEY/);
+  const image=await readFile('runtime/container/Dockerfile','utf8');
+  assert.match(image,/@openai\/codex@0\.163\.0/);assert.doesNotMatch(image,/ARG.*(?:AUTH|TOKEN|SECRET)|ENV.*(?:AUTH|TOKEN|SECRET)/);
+});

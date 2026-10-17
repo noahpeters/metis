@@ -1,0 +1,34 @@
+import {WorkerEntrypoint} from 'cloudflare:workers';
+import {Container} from '@cloudflare/containers';
+import {executeOnce} from './execution-ledger.mjs';
+
+export class CodexContainer extends Container {
+  defaultPort=8080;
+  sleepAfter='3m';
+  // One trusted task per container identity. No app/Cloudflare/GitHub secrets.
+  async execute(task) {
+    const identity=JSON.stringify(task);
+    if (this.inFlight) return this.inFlightIdentity===identity ? this.inFlight : {state:'blocked',reason:'task_identity_conflict'};
+    if (!this.env.CODEX_SUBSCRIPTION_AUTH_JSON) return {state:'blocked',reason:'subscription_auth_missing'};
+    this.inFlightIdentity=identity;
+    this.inFlight=executeOnce(this.ctx.storage,task,async()=>{
+      await this.startAndWaitForPorts({ports:8080,startOptions:{envVars:{CODEX_SUBSCRIPTION_AUTH_JSON:this.env.CODEX_SUBSCRIPTION_AUTH_JSON}},cancellationOptions:{portReadyTimeoutMS:30000}});
+      try {
+        const response=await this.containerFetch(new Request('http://container/execute',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(task),signal:AbortSignal.timeout(120000)}));
+        if (!response.ok) return {state:'blocked',reason:'runtime_request_failed'};
+        return await response.json();
+      } finally {await this.stop();}
+    },fn=>this.ctx.blockConcurrencyWhile(fn)).finally(()=>{this.inFlight=null;this.inFlightIdentity=null;});
+    return this.inFlight;
+  }
+}
+export default class CodexRuntime extends WorkerEntrypoint {
+  // This Worker has no public execution endpoint. Only a service binding can
+  // invoke the RPC method. A task's UUID selects its own durable container.
+  fetch() {return new Response('Not found',{status:404});}
+  async execute(task) {
+    if (!task || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(task.taskId) || typeof task.instructions!=='string' || !task.instructions.trim() || task.instructions.length>10000 || (task.verification!=null && task.verification!=='numeric_summary_v1')) return {state:'blocked',reason:'invalid_task'};
+    const stub=this.env.CODEX_CONTAINER.getByName(task.taskId);
+    return stub.execute(task);
+  }
+}
