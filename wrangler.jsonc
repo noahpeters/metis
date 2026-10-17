@@ -16,6 +16,7 @@
       "migrations_dir": "migrations"
     }
   ],
+  "r2_buckets": [{ "binding": "STANDALONE_ARTIFACTS", "bucket_name": "metis-standalone-artifacts" }],
   "queues": {
     "producers": [
       {
