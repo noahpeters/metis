@@ -35,6 +35,13 @@ filters the child environment, and deletes the login/workspace after the run.
 The task container can read this credential during the run, as explicitly chosen
 by the owner. It receives no Cloudflare, GitHub or control-plane API credentials.
 No reusable secret is placed in an image, task message, D1 result or source file.
+After execution the runtime requests SIGTERM, waits for a stopped state, and
+force-terminates the container if it remains alive after two seconds. It then
+confirms termination before returning a completed receipt. The Node server handles
+SIGTERM explicitly when running as PID 1. A successful result records
+containerStopped=true and whether forced termination was needed; task receipts
+remain in Durable Object storage. This releases the configured single-instance
+capacity without increasing the limit or deleting D1 data.
 Known credential values in model output/artifacts are rejected; raw stderr and
 prompts are not logged. API-key/non-ChatGPT auth is rejected before CLI launch.
 

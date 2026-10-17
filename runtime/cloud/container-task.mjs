@@ -9,6 +9,22 @@ function category(error) {
   if(/connect|closed|reset|disconnected|canceled|cancelled/i.test(text))return 'connection';
   return 'unknown';
 }
+export async function stopContainerAndConfirm(container,{delay=ms=>new Promise(resolve=>setTimeout(resolve,ms)),graceMs=2000,forceMs=5000}={}) {
+  const wait=async timeout=>{
+    for(let elapsed=0;elapsed<=timeout;elapsed+=100){
+      const {status}=await container.getState();
+      if(status==='stopped'||status==='stopped_with_code')return true;
+      if(elapsed<timeout)await delay(100);
+    }
+    return false;
+  };
+  try{await container.stop();if(await wait(graceMs))return {forced:false};}catch{}
+  // stop() only signals SIGTERM; destroy() terminates the VM without deleting
+  // the Durable Object's task receipts. Do not leave the single slot occupied.
+  await container.destroy();
+  if(!await wait(forceMs))throw new Error('container_shutdown_not_confirmed');
+  return {forced:true};
+}
 export async function executeContainerTask(container,task,auth) {
   let phase='startup';let receipt;
   try {
@@ -20,7 +36,10 @@ export async function executeContainerTask(container,task,auth) {
     phase='response';
     receipt=response.ok?await response.json():{state:'blocked',reason:`container_http_${response.status}`};
   } catch(error) {receipt={state:'blocked',reason:`container_${phase}_${category(error)}`};}
-  try {await container.stop();} catch(error) {
+  try {
+    const cleanup=await stopContainerAndConfirm(container);
+    if(receipt?.state==='completed'){receipt.result.containerStopped=true;receipt.result.containerStopForced=cleanup.forced;}
+  } catch(error) {
     if(receipt?.state==='completed')receipt={state:'blocked',reason:`container_shutdown_${category(error)}`};
   }
   return receipt;

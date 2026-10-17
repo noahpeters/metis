@@ -22,6 +22,7 @@ for(let i=0;i<180;i++) {
 }
 assert.equal(task?.state,'completed','Cloud task blocked, failed, or timed out; inspect the task record');
 const result=task.result;assert.equal(result.operation,'codex_exec');assert.equal(result.billingMode,'included_subscription');assert.equal(result.taskId,id);assert.equal(result.exitCode,0);assert.equal(result.turnCompleted,true);assert.ok(result.threadId);assert.ok(result.commandCount>0);
+assert.equal(result.containerStopped,true,'Container capacity was not confirmed released');
 assert.equal(result.verification?.kind,'numeric_summary_v1');assert.equal(result.verification.passed,true);
 for(const entry of result.verification.cases)assert.deepEqual(entry.actual,{count:entry.values.length,sum:entry.values.reduce((a,b)=>a+b,0),sorted:[...entry.values].sort((a,b)=>a-b),nonceSha256:createHash('sha256').update(entry.nonce).digest('hex')});
 const artifact=result.artifacts.find(file=>file.name==='result.json');const solution=result.artifacts.find(file=>file.name==='solution.mjs');
