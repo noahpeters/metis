@@ -11,7 +11,7 @@ function fixture(t) {
   for(const file of ['0020_standalone_dispatch.sql','0021_standalone_d1_proof.sql','0022_standalone_codex_runner.sql'])sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   let failCompletion=false;
   const DB={prepare(sql){let args=[];return {bind(...values){args=values;return this;},async first(){return sqlite.prepare(sql).get(...args)??null;},async run(){if(failCompletion&&sql.includes('result_json=?'))throw new Error('D1 unavailable');return {meta:{changes:Number(sqlite.prepare(sql).run(...args).changes)}};}};}};
-  const result={operation:'codex_exec',taskId:'123',exitCode:0,turnCompleted:true,threadId:'actual-thread',commandCount:2,finalMessage:'Verified',billingMode:'included_subscription',artifacts:[]};
+  const result={operation:'codex_exec',taskId:'123',exitCode:0,turnCompleted:true,threadId:'actual-thread',commandCount:2,finalMessage:'Verified',billingMode:'included_subscription',artifacts:[],containerStopped:true};
   const receipts=[];
   const env={DB,STANDALONE_DISPATCH_TOKEN:'submit-token',STANDALONE_CODEX_ENABLED:'true',CODEX_RUNTIME:{async execute(task){receipts.push(task);return {state:'completed',result};}},DISPATCH_QUEUE:{sent:[],async send(body){this.sent.push(body);}}};
   const insert=(id='123')=>sqlite.prepare("INSERT INTO standalone_tasks(id,instructions,state,executor) VALUES (?,'Implement and verify a function','queued','codex')").run(id);
@@ -43,6 +43,11 @@ test('cloud receipt is persisted independently in D1 and API exposes execution e
 test('missing command evidence cannot be labeled completed',async t=>{
   const f=fixture(t);f.insert();f.result.commandCount=0;
   await assert.rejects(executeStandaloneCodex(f.env,'123',4));
+  assert.equal(f.sqlite.prepare('SELECT state FROM standalone_tasks').get().state,'blocked');
+});
+test('a successful Codex turn without confirmed shutdown cannot be labeled completed',async t=>{
+  const f=fixture(t);f.insert();delete f.result.containerStopped;
+  await assert.rejects(executeStandaloneCodex(f.env,'123',4),/shutdown was not confirmed/);
   assert.equal(f.sqlite.prepare('SELECT state FROM standalone_tasks').get().state,'blocked');
 });
 test('runtime failures and lost D1 writes retry the same durable task identity',async t=>{

@@ -5,7 +5,7 @@ delete process.env.CODEX_SUBSCRIPTION_AUTH_JSON;
 let used=false;
 // No logs of request bodies, credentials or raw Codex output. Only the private
 // Container DO can route to this port; the runtime Worker has no public route.
-createServer(async(req,res)=>{
+const server=createServer(async(req,res)=>{
   const send=(body,status=200)=>{res.writeHead(status,{'content-type':'application/json'});res.end(JSON.stringify(body));};
   if(req.url==='/health')return send({ok:true});
   if(req.method!=='POST'||req.url!=='/execute')return send({error:'not found'},404);
@@ -18,4 +18,16 @@ createServer(async(req,res)=>{
     used=true;
     const result=await runCodex(task,auth);auth='';send(result);
   }catch {auth='';send({state:'blocked',reason:'runtime_request_error'},500);}
-}).listen(8080,'0.0.0.0');
+});
+// Explicit handlers are required when Node is the container's PID 1.
+const shutdown=()=>{
+  auth='';
+  server.close(()=>process.exit(0));
+  server.closeAllConnections();
+  setTimeout(()=>process.exit(1),2000).unref();
+};
+process.once('SIGTERM',shutdown);process.once('SIGINT',shutdown);
+server.listen(Number(process.env.PORT??8080),'0.0.0.0',()=>{
+  // IPC is present only in the subprocess lifecycle test; production logs stay empty.
+  process.send?.({port:server.address().port});
+});
