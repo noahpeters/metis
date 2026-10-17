@@ -1,3 +1,4 @@
+import { handleMcp } from "./mcp.mjs";
 import { analyzeIssue } from "./ai.mjs";
 import { buildIntakeInvestigation, discussionMetadata, fetchIssueDiscussion } from "./intake-context.mjs";
 import { blockTask, comment, githubRequest, repositoryAllowed, setState, unresolvedReviewThreadCount } from "./github.mjs";
@@ -747,6 +748,7 @@ async function handleCallback(request, env) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === "/mcp") return handleMcp(request, env);
     if (request.method === "GET" && url.pathname === "/health") return json({ ok: true, service: "metis-control-plane" });
     if (request.method === "POST" && url.pathname === "/webhooks/github") return receiveWebhook(request, env);
     if (request.method === "POST" && url.pathname === "/callbacks/codex") return handleCallback(request, env);
