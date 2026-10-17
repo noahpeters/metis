@@ -123,3 +123,9 @@ configures no remote Worker or database. Failure evidence is saved under
 The [D1-only standalone dispatch experiment](docs/standalone-dispatch-experiment.md)
 documents the isolated deterministic proof, retry behavior, and independent D1
 verification procedure. It does not run arbitrary Codex instructions.
+
+The next [cloud Codex experiment](docs/cloud-codex-experiment.md) adds an opt-in
+private Cloudflare Container runtime using subscription-only Codex CLI login,
+command evidence and independent generated-code verification. It remains disabled
+until separately deployed, authenticated and enabled; local tests are not evidence
+of a successful cloud Codex run.

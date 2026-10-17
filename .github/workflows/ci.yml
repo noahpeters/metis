@@ -29,6 +29,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify
+      - name: Build pinned Codex runtime image (no credentials or inference)
+        run: |
+          docker build --platform linux/amd64 -f runtime/container/Dockerfile -t metis-codex-runtime:test .
+          docker run --rm metis-codex-runtime:test codex --version
+          docker run --rm metis-codex-runtime:test codex exec --help
       - name: Install browser
         run: npx playwright install --with-deps chromium
       - name: Verify rendered administration UI
@@ -115,6 +120,8 @@ jobs:
       - run: npm ci
       - name: Apply D1 migrations
         run: npm run db:migrate:production
+      - name: Deploy private Codex container runtime
+        run: npm run deploy:codex:production
       - name: Deploy control-plane Worker
         run: npm run deploy:production | tee /tmp/control-plane-deploy.log
       - name: Deploy administration UI Worker

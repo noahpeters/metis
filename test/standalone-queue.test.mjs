@@ -19,7 +19,7 @@ test('standalone HTTP -> real local Queue -> D1 -> HTTP result', {timeout:30000}
   }));
   t.after(()=>mf.dispose());
   const db=await mf.getD1Database('DB');
-  for(const name of ['0020_standalone_dispatch.sql','0021_standalone_d1_proof.sql']) {
+  for(const name of ['0020_standalone_dispatch.sql','0021_standalone_d1_proof.sql','0022_standalone_codex_runner.sql']) {
     await db.exec((await readFile(join(root,'migrations',name),'utf8')).replace(/^\s*--.*$/gm,'').replace(/\r?\n/g,' '));
   }
   const instructions='Local Queue delivery proof';

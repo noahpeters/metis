@@ -8,7 +8,7 @@ const token = 'test-only-token';
 const instructions = 'Echo this deterministic proof; do not execute code.';
 function fixture(t) {
   const sqlite = new DatabaseSync(':memory:');
-  for (const name of ['0020_standalone_dispatch.sql','0021_standalone_d1_proof.sql']) sqlite.exec(readFileSync(new URL(`../migrations/${name}`,import.meta.url),'utf8'));
+  for (const name of ['0020_standalone_dispatch.sql','0021_standalone_d1_proof.sql','0022_standalone_codex_runner.sql']) sqlite.exec(readFileSync(new URL(`../migrations/${name}`,import.meta.url),'utf8'));
   t.after(() => sqlite.close());
   const faults = {completion:0, claim:0};
   const DB = {prepare(sql) {
