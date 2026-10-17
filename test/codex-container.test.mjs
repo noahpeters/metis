@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {runCodex,parseEvents,cliEnvironment,validateSubscriptionAuth} from '../runtime/container/execute.mjs';
 const auth=JSON.stringify({auth_mode:'chatgpt',OPENAI_API_KEY:null,tokens:{access_token:'test-access-token',id_token:'test-id-token',refresh_token:'test-refresh-token'}});
 const events=[{type:'thread.started',thread_id:'codex-thread'},{type:'item.completed',item:{type:'command_execution',status:'completed',exit_code:0}},{type:'item.completed',item:{type:'agent_message',text:'Implemented and tested'}},{type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}];
-function fakeSpawn({exit=0,stream=events,action=async()=>{}}={}) {
+function fakeSpawn({exit=0,stream=events,stderr='',action=async()=>{}}={}) {
   return (bin,args,options)=>{
     assert.equal(bin,'codex');assert.ok(args.includes('workspace-write'));assert.ok(args.includes('forced_login_method="chatgpt"'));
     assert.ok(!Object.keys(options.env).some(name=>/API_KEY|DISPATCH_TOKEN|GITHUB|CLOUDFLARE/.test(name)));
@@ -15,6 +15,7 @@ function fakeSpawn({exit=0,stream=events,action=async()=>{}}={}) {
     child.kill=()=>{child.emit('close',-1);return true;};
     child.stdin.on('finish',()=>{(async()=>{
       await action(options);
+      child.stderr.write(stderr);
       child.stdout.write(stream.map(event=>JSON.stringify(event)).join('\n')+'\n');child.emit('close',exit);
     })().catch(error=>child.emit('error',error));});
     return child;
@@ -23,6 +24,13 @@ function fakeSpawn({exit=0,stream=events,action=async()=>{}}={}) {
 test('runtime rejects API key, missing and non-subscription credentials',()=>{
   for(const value of ['{}','invalid',JSON.stringify({OPENAI_API_KEY:'api-key'}),JSON.stringify({auth_mode:'api_key',tokens:{access_token:'x',id_token:'y'}})])assert.throws(()=>validateSubscriptionAuth(value));
   assert.ok(validateSubscriptionAuth(auth));assert.equal(cliEnvironment('/auth').CODEX_HOME,'/auth');
+});
+test('CLI failures are checked before code verification and retain only a fixed diagnostic category',async()=>{
+  for(const [stderr,category] of [['unexpected argument --bad unsupported_option','unsupported_option'],['401 unauthorized test-access-token','authentication'],['bwrap: operation not permitted','sandbox']]){
+    const receipt=await runCodex({taskId:'t',instructions:'work',verification:'numeric_summary_v1'},auth,{spawnProcess:fakeSpawn({exit:1,stream:[],stderr})});
+    assert.equal(receipt.state,'blocked');assert.equal(receipt.reason,'codex_execution_not_verified_exit_1_'+category);
+    assert.doesNotMatch(JSON.stringify(receipt),/test-access-token|--bad|bwrap/);
+  }
 });
 test('runtime captures real CLI event structure and artifact hashes; deletes temporary auth',async()=>{
   let authDir;
