@@ -78,6 +78,10 @@ No normal long execution is held in blockConcurrencyWhile; that lock covers only
 the short durable reservation.
 
 Container startup/capacity errors can block a task; this narrow experiment does
+not treat an unavailable instance as proof that the concurrency limit was reached.
+Cold instance acquisition waits up to 60 seconds, followed by a separate
+30-second port-readiness window; the CLI still has its own 90-second limit.
+This experiment does
 not introduce a general-purpose scheduler, resumable repository editing, arbitrary
 artifact export, external credential broker or unlimited execution duration.
 A missing subscription secret, subscription exhaustion, nonzero CLI exit, sandbox
