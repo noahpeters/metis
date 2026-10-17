@@ -1,3 +1,4 @@
+import { submitStandalone, standaloneStatus, executeStandaloneProof } from "./standalone-dispatch.mjs";
 import { analyzeIssue } from "./ai.mjs";
 import { buildIntakeInvestigation, discussionMetadata, fetchIssueDiscussion } from "./intake-context.mjs";
 import { blockTask, comment, githubRequest, repositoryAllowed, setState, unresolvedReviewThreadCount } from "./github.mjs";
@@ -747,6 +748,8 @@ async function handleCallback(request, env) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/v1/standalone/tasks") return submitStandalone(request, env);
+    if (request.method === "GET" && /^\/v1\/standalone\/tasks\/[0-9a-f-]+$/.test(url.pathname)) return standaloneStatus(request, env, url.pathname.split("/").at(-1));
     if (request.method === "GET" && url.pathname === "/health") return json({ ok: true, service: "metis-control-plane" });
     if (request.method === "POST" && url.pathname === "/webhooks/github") return receiveWebhook(request, env);
     if (request.method === "POST" && url.pathname === "/callbacks/codex") return handleCallback(request, env);
@@ -758,7 +761,8 @@ export default {
         if (["intake", "dispatch"].includes(message.body.type)) {
           await env.DB.prepare("DELETE FROM project_queue_signals WHERE task_id=? AND message_type=?").bind(message.body.taskId, message.body.type).run();
         }
-        if (message.body.type === "intake") await handleIntake(env, message.body);
+        if (message.body.type === "standalone_proof") await executeStandaloneProof(env, message.body.taskId);
+        else if (message.body.type === "intake") await handleIntake(env, message.body);
         else if (message.body.type === "dispatch") await handleDispatch(env, message.body);
         else if (message.body.type === "revision") await handleRevisionDispatch(env, message.body);
         else throw new Error("Unknown queue message type");
