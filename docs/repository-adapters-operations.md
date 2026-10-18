@@ -302,7 +302,7 @@ launching checks concurrently:
 
 ```sh
 python3 /app/runtime/container/sequential-checks.py \
-  --pnpm /tmp/metis-tools/node_modules/.bin/pnpm --timeout-seconds 240
+  --pnpm /tmp/metis-tools/node_modules/.bin/pnpm --timeout-seconds 480
 ```
 
 Run from the prepared repository workspace. The harness invokes normal `pnpm
@@ -319,9 +319,17 @@ so it does not isolate their individual effects.
 Have Codex poll this file and print only the current check and its last 20 log
 lines (at most 2,000 characters) if its shell command yields a background session.
 Do not start another check or another harness while that session is active.
-A check that exceeds four minutes or 5 MB of log output is terminated, the
+A check that exceeds the selected timeout or 5 MB of log output is terminated, the
 harness stops with a nonzero exit, and the task must report blocked. No later
 checks run after failure. This bounds diagnosis; it is not a passing result.
+The default remains four minutes per check; this diagnostic explicitly opts into
+eight minutes, the maximum accepted value. The previous CI-profile run passed
+lint and type checking but tests were still producing passing entries when the
+four-minute limit terminated them. No aggregate test result was available and
+neither build ran. This longer window does not change project tests, CI settings,
+or the existing ten-minute overall Codex execution deadline. That overall deadline
+includes all five checks and agent overhead; it can still interrupt a run before
+each check uses its individual allowance. Report incomplete checks as blocked.
 
 Watch the task page/API and independently SELECT the corresponding progress
 record in D1 during execution. Confirm timestamps advance and output is bounded;
