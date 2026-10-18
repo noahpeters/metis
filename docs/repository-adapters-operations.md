@@ -309,6 +309,13 @@ Run from the prepared repository workspace. The harness invokes normal `pnpm
 lint`, `typecheck`, `test`, `build`, and `build:worker`, sequentially, without
 skipping tests or changing flags. It prints bounded progress every 15 seconds
 and saves a private `/tmp/metis-checks-*/progress.json` plus per-check logs.
+Verification subprocesses receive `CI=true`, selecting the repository's CI
+profile even when the parent environment omits CI or sets it to false. This
+leaves the parent Codex environment, repository configuration, and execution
+deadlines unchanged. A controlled comparison passed all eight selected geometry
+cases under this profile without a GPU; the full cloud suite still needs a
+post-deployment rerun. That comparison changed both worker count and test timeout,
+so it does not isolate their individual effects.
 Have Codex poll this file and print only the current check and its last 20 log
 lines (at most 2,000 characters) if its shell command yields a background session.
 Do not start another check or another harness while that session is active.

@@ -44,7 +44,7 @@ def main():
     signal.signal(signal.SIGINT, stop)
     env = dict(os.environ)
     env.pop('CODEX_HOME', None)
-    env.update(HOME=str(root), NO_COLOR='1', WRANGLER_LOG_PATH=str(root / 'wrangler.log'))
+    env.update(HOME=str(root), CI='true', NO_COLOR='1', WRANGLER_LOG_PATH=str(root / 'wrangler.log'))
     env['PATH'] = str(Path(args.pnpm).parent) + os.pathsep + env.get('PATH', '')
     for name in ['lint', 'typecheck', 'test', 'build', 'build:worker']:
         log = root / (name.replace(':', '-') + '.log')
