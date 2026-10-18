@@ -33,6 +33,7 @@ export function createRepositoryAdapter({source,remote,store,authorization,provi
       if(operation?.receipt){await store.save('change:'+intent.changeId,operation.receipt);return validatePublication(operation.receipt,intent,origins);}
       operation??={intent,phase:'prepared'};await store.save(key,operation);
       try {
+        if(provider.assertRepository)await provider.assertRepository();
         const branch=git.branch(intent.changeId);
         if(intent.operation==='update'&&!operation.head)validateUpdatePrecondition(intent,{submittedChange:await read(intent.rework.previousPublication),targetSnapshot:await adapter.resolve({source})},origins);
         if(!operation.images){
@@ -64,7 +65,7 @@ export function createRepositoryAdapter({source,remote,store,authorization,provi
     });
   };
   const adapter=defineRepositoryAdapter({id:source.adapter,version:'git-v1',
-    async resolve({source:requested}){check(requested.adapter===source.adapter&&requested.repository===source.repository&&requested.ref===source.ref,'repository_not_configured');return git.snapshot(await git.head());},
+    async resolve({source:requested}){check(requested.adapter===source.adapter&&requested.repository===source.repository&&requested.ref===source.ref,'repository_not_configured');if(provider.assertRepository)await provider.assertRepository();return git.snapshot(await git.head());},
     async prepare({snapshot,workspaceHandle}){bound(snapshot);return git.prepare(snapshot,workspaceHandle);},
     async collect({snapshot,workspaceHandle,excludePaths=[]}){bound(snapshot);for(const path of conflictPaths.get(workspaceHandle)??[]){const file=await git.readWorkspace(workspaceHandle,path);if(file)check(!/^(<<<<<<< |=======\r?$|>>>>>>> )/m.test(file.bytes.toString('utf8')),'rework_conflicts_unresolved');}return {changeSet:await git.collect(snapshot,workspaceHandle,excludePaths),evidence:[]};},
     publish:({intent})=>{check(intent.operation==='create','create_intent_required');return publish(intent);},
