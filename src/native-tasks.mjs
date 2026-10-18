@@ -1,9 +1,10 @@
 import { emailAllowed } from './ui/auth.mjs';
 import { executeStandaloneCodex } from './standalone-codex.mjs';
+import {safeExecutionProgress} from './repository-adapters/progress.mjs';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const json = (body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json','cache-control':'no-store'}});
 const fail = (message,status=400)=>json({error:{message}},status);
-const attemptsSQL = `SELECT a.*,s.state,s.error,s.created_at AS queued_at,s.execution_started_at,s.updated_at,s.result_json,(SELECT j.state FROM repository_publication_jobs j WHERE j.attempt_id=a.id ORDER BY j.created_at DESC,j.rowid DESC LIMIT 1) AS publication_job_state FROM native_task_attempts a JOIN standalone_tasks s ON s.id=a.id`;
+const attemptsSQL = `SELECT a.*,s.state,s.error,s.created_at AS queued_at,s.execution_started_at,s.updated_at,s.result_json,p.value AS progress_json,p.updated_at AS progress_updated_at,(SELECT j.state FROM repository_publication_jobs j WHERE j.attempt_id=a.id ORDER BY j.created_at DESC,j.rowid DESC LIMIT 1) AS publication_job_state FROM native_task_attempts a JOIN standalone_tasks s ON s.id=a.id LEFT JOIN repository_records p ON p.key='progress:'||a.id`;
 const latestSQL = `(SELECT a.id FROM native_task_attempts a WHERE a.task_id=t.id ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1)`;
 const tasksSQL = `SELECT t.*,s.state AS execution_state,s.error,s.id AS attempt_id FROM native_tasks t LEFT JOIN standalone_tasks s ON s.id=${latestSQL}`;
 function taskView(row) {
@@ -11,9 +12,11 @@ function taskView(row) {
   return {...task,data:JSON.parse(data_json),state:task.execution_state??task.phase};
 }
 function attemptView(row) {
-  const {result_json,...attempt}=row;
+  const {result_json,progress_json,progress_updated_at,...attempt}=row;
   const result=result_json?JSON.parse(result_json):null;
-  return {...attempt,result,thread_id:result?.threadId??null,url:`/tasks/${row.task_id}/attempts/${row.id}`};
+  let progress=null;try{progress=safeExecutionProgress(JSON.parse(progress_json));}catch{}
+  const observed_progress=progress?{...progress,updated_at:progress_updated_at,running:row.state==='running'}:null;
+  return {...attempt,result,observed_progress,thread_id:result?.threadId??observed_progress?.threadId??null,url:`/tasks/${row.task_id}/attempts/${row.id}`};
 }
 export async function nativeTasksForIdentity(email,method,path,body,env) {
   if (!emailAllowed(email)) return fail('A verified from-trees.com identity is required',403);

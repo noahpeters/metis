@@ -262,3 +262,63 @@ observation are supported; no unsafe client-only guard is substituted.
 Enrollment and cloud end-to-end checks remain deployment prerequisites. Full
 Codex transcript archives, a rich-text editor, approval-rule inference and
 Artifacts guarded-update support remain outside this change.
+
+## Live repository execution diagnostics
+
+Repository executions best-effort checkpoint an isolated `progress:<attempt>`
+record every five seconds, with at most one write in flight. The existing
+execution lease fences writes; capabilities permit writing only that attempt's
+progress key, never another task or a publication record. No migration is
+needed. Checkpoints never overwrite the execution receipt or change task state.
+A failed checkpoint does not fail or replay Codex execution.
+
+The authenticated native task API exposes `observed_progress`, its D1 update
+time, and whether the attempt is still running. The existing task page polls
+this API and shows running command categories, elapsed time, time since a CLI
+event, session identity, and the bounded timeline. Observations older than 15
+seconds are marked potentially stale. Terminal result metadata takes precedence;
+a retained progress snapshot cannot turn an interrupted run into completion.
+This is polling of structured CLI observations, not a raw stdout stream or a
+Codex browser session link. Update failures may make observations unavailable.
+
+A trusted provider binding may opt into `captureCommandOutput:true` for a
+controlled diagnostic. This retains tails of CLI-reported command output only:
+2,000 characters per command and 8,000 across the latest 32 command observations.
+Known subscription credential values (including refreshed auth), common
+credential-bearing lines and long token-like strings are filtered before
+persistence. Provider secrets remain excluded from the CLI environment, and the
+repository-store credential guard still applies. The default retains no output.
+Private diagnostic tails are untrusted text, rendered as text, and are never
+appended to a review description by this feature. Output is available only when
+the CLI emits it; a silent child process does not itself generate live output.
+
+### Next Cabinitron no-op experiment
+
+After human merge and exact-commit deployment, temporarily enroll the approved
+Cabinitron binding with `executionTimeoutMs:600000` and
+`captureCommandOutput:true`. Create a fresh README-comment-only task. Retain the
+same five project checks and require this diagnostic harness instead of
+launching checks concurrently:
+
+```sh
+python3 /app/runtime/container/sequential-checks.py \
+  --pnpm /tmp/metis-tools/node_modules/.bin/pnpm --timeout-seconds 240
+```
+
+Run from the prepared repository workspace. The harness invokes normal `pnpm
+lint`, `typecheck`, `test`, `build`, and `build:worker`, sequentially, without
+skipping tests or changing flags. It prints bounded progress every 15 seconds
+and saves a private `/tmp/metis-checks-*/progress.json` plus per-check logs.
+Have Codex poll this file and print only the current check and its last 20 log
+lines (at most 2,000 characters) if its shell command yields a background session.
+Do not start another check or another harness while that session is active.
+A check that exceeds four minutes or 5 MB of log output is terminated, the
+harness stops with a nonzero exit, and the task must report blocked. No later
+checks run after failure. This bounds diagnosis; it is not a passing result.
+
+Watch the task page/API and independently SELECT the corresponding progress
+record in D1 during execution. Confirm timestamps advance and output is bounded;
+compare the terminal API/D1 results and independently confirm the container
+stops. Verify native review bytes/check evidence before claiming publication
+success. Remove the temporary Cabinitron enrollment and local credential copies,
+while preserving GitHub enrollment, Safari login, and the existing gate/token.

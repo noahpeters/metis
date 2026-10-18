@@ -55,6 +55,7 @@ test('Worker broker locks, saves and reads D1 through a private authenticated se
  assert.equal((await call({action:'save',key:changeId,changeId,owner,value:{state:'running'}})).status,200);
  let response=await call({action:'read',key:changeId});assert.equal(response.status,200);assert.deepEqual(await response.json(),{state:'running'});
  assert.equal((await call({action:'read',key:changeId},'?bad-auth')).status,403);
+ const progressKey='progress:'+'1'.repeat(36);assert.equal((await call({action:'save',key:progressKey,changeId,owner,value:{commandCount:1}})).status,200);assert.equal((await call({action:'save',key:'progress:'+'9'.repeat(36),changeId,owner,value:{bad:true}})).status,403);assert.deepEqual(JSON.parse((await db.prepare('SELECT value FROM repository_records WHERE key=?').bind(progressKey).first()).value),{commandCount:1});
  const row=await db.prepare('SELECT value FROM repository_records WHERE key=?').bind(changeId).first();assert.deepEqual(JSON.parse(row.value),{state:'running'});
  assert.equal((await call({action:'unlock',changeId,owner})).status,200);
 });

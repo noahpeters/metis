@@ -23,6 +23,10 @@ const overview = {
   provider_capacity: { state: "available" },
 };
 
+const taskId='11111111-1111-4111-8111-111111111111',attemptId='22222222-2222-4222-8222-222222222222';
+let progressRevision=1;
+const taskFixture=()=>({task:{id:taskId,title:'Sequential verification smoke test',state:'running',phase:'ready',created_by:'fixture@from-trees.com',created_at:1,instructions:'README-only fixture',data:{}},dependencies:[],events:[],attempts:[{id:attemptId,state:'running',url:`/tasks/${taskId}/attempts/${attemptId}`,queued_at:1,execution_started_at:1,result:null,thread_id:'33333333-3333-4333-8333-333333333333',observed_progress:{running:true,updated_at:Math.floor(Date.now()/1000)-30,executionProgress:{elapsedMs:progressRevision*10000,idleMs:1000,lastEvent:'item.completed:command_execution',commandsTruncated:0,commands:[{hint:'pnpm_test',status:'running',startedMs:1000,elapsedMs:progressRevision*9000,outputTail:'Test suite progress '+progressRevision+' <script>window.injected=true</script>'}]}}}]});
+
 const contentTypes = { ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8" };
 const env = {
   ENVIRONMENT: "local",
@@ -38,6 +42,7 @@ const env = {
     },
   },
   CONTROL_PLANE: {
+    async nativeTasks(email,method,path){return {status:200,body:JSON.stringify(path==='/api/tasks'?{tasks:[taskFixture().task]}:taskFixture())};},
     async pacingOverview() { return { status: 200, body: JSON.stringify(overview) }; },
     async repositoryOverview() { return { status: 200, body: JSON.stringify({ repositories: [
       { repository: "noahpeters/metis", state: "recovery_blocked", dispatch_locked: true, blocking_sha: "60f1d51885342bfe349ff2c28736ce6b20d84846", workflow_url: "https://github.com/noahpeters/metis/actions/runs/33487414111", root_task_id: "noahpeters/metis#68", recovery_attempts: 2, updated_at: 1788249600, ready_count: 1, raw_ready_count: 3, dependency_waiting_count: 2, project_counts: { statuses: { Ready: 3, "In progress": 2, "Awaiting human": 4, Done: 12 }, awaiting_human_reasons: { "Awaiting PR": 2, Reviewing: 1, Unclassified: 1 } }, issues: [{ repository: "noahpeters/metis", issue_number: 81, title: "Add operator issue recovery controls", issue_state: "OPEN", project_status: "Ready", status_tags: ["metis:blocked"], task_state: "retrying", updated_at: 1788249601 }], recovery_task: { issue_number: 68, state: "recovery_blocked" }, recovery_pr: { number: 73, state: "closed_unmerged", url: "https://github.com/noahpeters/metis/pull/73" }, deployment_evidence: [{ head_sha: "7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b", conclusion: "success" }], evidence_policy: "exact_sha", waiting_reason: "Normal dispatch is frozen while recovery for 60f1d5188534 is unresolved." },
@@ -89,6 +94,21 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: mobileScreenshot, fullPage: true });
   assert.equal(await page.locator(".repository-grid").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 1);
+  await page.setViewportSize({width:1440,height:1000});
+  await page.goto(`http://127.0.0.1:${address.port}/tasks/${taskId}`,{waitUntil:'domcontentloaded'});
+  await page.getByRole('heading',{name:'Execution progress',exact:true}).waitFor();
+  assert.ok((await page.getByText(/updates may be stale/).count())>0);
+  await page.getByText('Command timeline and diagnostic output', {exact:true}).click();
+  await page.getByText('Test suite progress 1 <script>window.injected=true</script>',{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>window.injected),undefined);
+  progressRevision=2;
+  await page.getByText('Test suite progress 2 <script>window.injected=true</script>',{exact:true}).waitFor({timeout:10000});
+  assert.equal(await page.locator('details[data-progress]').getAttribute('open'),'');
+  await page.screenshot({path:join(root,'output/playwright/metis-live-task.png'),fullPage:true});
+  await page.setViewportSize({width:390,height:844});
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
+  await page.screenshot({path:join(root,'output/playwright/metis-live-task-mobile.png'),fullPage:true});
+  assert.equal(failures.length,0,failures.join('\n'));
   console.log(`Rendered UI verified: ${screenshot}, ${mobileScreenshot}`);
 } finally {
   await browser.close();

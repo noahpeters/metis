@@ -140,3 +140,33 @@ test('interrupted timeline bounds history, tracks concurrent commands and separa
   assert.equal(p.lastEvent,'item.completed:reasoning');assert.equal(p.idleMs,50);assert.equal(p.elapsedMs,500);
   assert.doesNotMatch(JSON.stringify(p),/hidden|private|parallel/);
 });
+
+test('diagnostic command output is opt-in, bounded and filtered again after credential refresh',()=>{
+ const creds=['test-access-token'],p=createExecutionProgress(creds,()=>0,{captureCommandOutput:true}),push=e=>p.push(JSON.stringify(e)+'\n');
+ for(let i=0;i<8;i++)push({type:'item.completed',item:{id:String(i),type:'command_execution',status:'completed',exit_code:0,aggregated_output:'line\n'.repeat(800)+'test-access-token\nAuthorization: Bearer hidden\n'}});
+ let s=p.snapshot();assert.ok(s.executionProgress.commands.reduce((n,c)=>n+(c.outputTail?.length??0),0)<=8000);assert.doesNotMatch(JSON.stringify(s),/test-access-token|Bearer hidden/);
+ push({type:'item.completed',item:{id:'new',type:'command_execution',status:'failed',exit_code:1,aggregated_output:'failure: newly-refreshed-login-value'}});creds.push('newly-refreshed-login-value');assert.doesNotMatch(JSON.stringify(p.snapshot()),/newly-refreshed-login-value/);
+ const off=createExecutionProgress();off.push(JSON.stringify({type:'item.completed',item:{type:'command_execution',aggregated_output:'private output'}})+'\n');assert.doesNotMatch(JSON.stringify(off.snapshot()),/private output|outputTail/);
+});
+
+test('Codex progress is observable before exit and heartbeat writes stop afterward', {timeout:5000}, async t=>{
+ t.mock.timers.enable({apis:['setInterval']});let child,resolveStarted,resolveInitial,resolveLive;
+ const started=new Promise(r=>resolveStarted=r),initial=new Promise(r=>resolveInitial=r),live=new Promise(r=>resolveLive=r),seen=[];
+ const spawnProcess=(...args)=>{child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.stdin=new PassThrough();child.kill=()=>true;resolveStarted();return child;};
+ const pending=runCodex({taskId:'live',instructions:'work'},auth,{spawnProcess,onProgress:async s=>{seen.push(s);resolveInitial();if(s.commandCount===1)resolveLive(s);},captureCommandOutput:true});
+ await started;await initial;await new Promise(r=>setImmediate(r));
+ child.stdout.write(JSON.stringify({type:'thread.started',thread_id:'11111111-1111-4111-8111-111111111111'})+'\n'+JSON.stringify({type:'item.completed',item:{id:'x',type:'command_execution',command:'pnpm test',status:'completed',exit_code:0,aggregated_output:'test result'}})+'\n');
+ t.mock.timers.tick(5000);const s=await live;assert.equal(s.commandCount,1);assert.equal(s.executionProgress.commands[0].outputTail,'test result');
+ child.emit('close',1);await pending;const count=seen.length;t.mock.timers.tick(10000);await new Promise(r=>setImmediate(r));assert.equal(seen.length,count);
+});
+
+test('progress persistence failures cannot turn an otherwise verified execution into a failure',async()=>{
+ const receipt=await runCodex({taskId:'best-effort',instructions:'work'},auth,{spawnProcess:fakeSpawn(),onProgress:async()=>{throw Error('store unavailable');}});assert.equal(receipt.state,'completed');
+});
+
+test('slow progress storage coalesces heartbeat writes instead of building a backlog', {timeout:5000},async t=>{
+ t.mock.timers.enable({apis:['setInterval']});let release,started,child,calls=0;
+ const writing=new Promise(r=>started=r),held=new Promise(r=>release=r);
+ const pending=runCodex({taskId:'coalesce',instructions:'work'},auth,{spawnProcess:()=>{child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.stdin=new PassThrough();return child;},onProgress:async()=>{calls++;started();await held;}});
+ await writing;t.mock.timers.tick(20000);assert.equal(calls,1);child.emit('close',1);release();await pending;t.mock.timers.tick(20000);await new Promise(r=>setImmediate(r));assert.equal(calls,1);
+});

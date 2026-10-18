@@ -23,7 +23,7 @@ export async function prepareRepositoryExecution(env,binding,task){
   const config=repositoryBinding(env,binding);requireValue(uuid.test(task.taskId)&&uuid.test(task.logicalTaskId)&&uuid.test(task.executionId??task.taskId));
   const origin=new URL(env.REPOSITORY_PUBLIC_ORIGIN);requireValue(origin.protocol==='https:'&&origin.origin===env.REPOSITORY_PUBLIC_ORIGIN);
   const token=await issueRepositoryCapability(env,{binding,taskId:task.taskId,logicalTaskId:task.logicalTaskId,executionId:task.executionId??task.taskId,source:config.source});const prefix=origin.origin+'/v1/repositories/'+binding;
-  return {source:config.source,remote:prefix+'/git',authorization:'Bearer '+token,broker:{origin:prefix+'/commands',token},store:{origin:prefix+'/store',token},reviewOrigin:config.origin,executionTimeoutMs:config.executionTimeoutMs,setupCommands:config.setupCommands,capture:config.capture,taskUiOrigin:config.taskUiOrigin};
+  return {source:config.source,remote:prefix+'/git',authorization:'Bearer '+token,broker:{origin:prefix+'/commands',token},store:{origin:prefix+'/store',token},reviewOrigin:config.origin,executionTimeoutMs:config.executionTimeoutMs,setupCommands:config.setupCommands,capture:config.capture,captureCommandOutput:config.captureCommandOutput===true,taskUiOrigin:config.taskUiOrigin};
 }
 export async function providerAuthorization(env,config,write=false,fetchImpl=fetch){
   if(config.source.adapter!=='github') {const authorization=write?config.authorization:config.readAuthorization;requireValue(authorization);return {authorization};}
@@ -60,7 +60,7 @@ export async function repositoryServiceFetch(request,env,{fetchImpl=fetch,publis
       if(body.action==='put'){const content=await storeCall(env,config,body);await grant(env,objectScope(claims),content);return json(content);}
       if(body.action==='get'){requireValue(await env.DB.prepare('SELECT ref FROM repository_object_grants WHERE binding=? AND ref=?').bind(objectScope(claims),body.content?.ref??'').first());return json(await storeCall(env,config,body));}
       if(body.action==='read')requireValue(body.key===execution||body.key==='change:'+claims.logicalTaskId||/^publication:metis-review-[a-f0-9]{64}$/.test(body.key));
-      else if(body.action==='save')requireValue(body.key===execution&&body.changeId===execution);
+      else if(body.action==='save')requireValue((body.key===execution||body.key==='progress:'+claims.executionId)&&body.changeId===execution);
       else if(['lock','unlock'].includes(body.action))requireValue(body.changeId===execution);
       else throw Error('store_action_rejected');
       const value=await storeCall(env,config,body);if(body.action==='read'&&body.key.startsWith('publication:'))requireValue(!value||(value.intent?.taskId??value.receipt?.taskId)===claims.logicalTaskId);return json(value);
