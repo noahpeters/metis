@@ -1,13 +1,13 @@
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdtemp,rm,lstat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {unknownObservation} from './http.mjs';
-import {createGitHubAdapter,createArtifactsAdapter} from './adapter.mjs';
 import {HttpRepositoryStore,sha256,check,AdapterError} from './store.mjs';
 import {publicationIntent} from '../../src/repository-adapters/contract.mjs';
-import {captureImage,comparisonsFor,httpMediaPublisher,artifactsMediaPublisher} from './media.mjs';
+import {captureImage,comparisonsFor} from './media.mjs';
+import {createExecutionAdapter} from './execution-adapter.mjs';
 import {runCodex} from '../container/execute.mjs';
 function publicResult(result){
   const {agentOutcome,artifacts,...visible}=result;
@@ -21,23 +21,25 @@ export async function runRepositoryTask(task,auth,config,{store:providedStore,ex
   let store,adapter,completedExecution,blockedExecution;const executionId=task.executionId??task.taskId;
   try {
     check(config&&['github','artifacts'].includes(config.source?.adapter),'repository_binding_not_configured');
-    const secrets=[config.token,config.session,config.authorization,config.store?.token,config.media?.token,config.artifactsMedia?.apiToken];try{secrets.push(...Object.values(JSON.parse(auth).tokens??{}));}catch{}
+    const secrets=[config.broker?.token,config.token,config.session,config.authorization,config.store?.token,config.media?.token,config.artifactsMedia?.apiToken];try{secrets.push(...Object.values(JSON.parse(auth).tokens??{}));}catch{}
     const containsSecret=bytes=>secrets.filter(v=>typeof v==='string'&&v.length>=8).some(v=>Buffer.from(bytes).includes(Buffer.from(v)));
     const backend=providedStore??new HttpRepositoryStore(config.store);
     store={get:c=>backend.get(c),read:k=>backend.read(k),lock:(k,fn)=>backend.lock(k,fn),
       async put(bytes){check(!containsSecret(bytes),'credential_output_rejected');return backend.put(bytes);},
       async save(k,v){check(!containsSecret(JSON.stringify(v)),'credential_output_rejected');return backend.save(k,v);}};
-    adapter=providedAdapter??(config.source.adapter==='github'?createGitHubAdapter:createArtifactsAdapter)({...config,store,mediaPublisher:config.media?httpMediaPublisher(config.media):config.artifactsMedia?artifactsMediaPublisher(config.artifactsMedia):undefined,mediaOrigins:config.media?.allowedOrigins??(config.artifactsMedia?[new URL(config.artifactsMedia.origin).origin]:[]),authorization:config.authorization?async()=>config.authorization:undefined,token:async()=>config.token,session:async()=>config.session});
+    check(providedAdapter||config.broker,'repository_broker_not_configured');
+    adapter=providedAdapter??createExecutionAdapter(config,store);
     const identity=sha256(JSON.stringify({executionId,taskId:task.logicalTaskId,instructions:task.instructions,binding:task.repositoryBinding,reworkReason:task.reworkReason??null}));
     let execution=await store.lock('execution:'+executionId,async()=>{
       const key='execution:'+executionId,existing=await store.read(key);
       if(existing){check(existing.identity===identity,'execution_identity_conflict');check(existing.state==='completed','execution_outcome_unknown');return existing;}
       check(!task.executionId,'publication_execution_not_found');
-      const snapshot=await adapter.resolve({source:config.source});if(config.capture){const manifest=JSON.parse((await store.get(snapshot.content)).toString());check(!manifest.files.some(f=>f.path===config.capture.output),'capture_output_must_be_untracked');}const workspace=await mkdtemp(join(tmpdir(),'metis-repository-'));
+      const snapshot=await adapter.resolve({source:config.source});const workspace=await mkdtemp(join(tmpdir(),'metis-repository-'));
       try {
         let rework=null;
         if(task.reworkReason) {const previousPublication=await store.read('change:'+task.logicalTaskId);check(previousPublication,'previous_publication_not_recorded');const submittedChange=await adapter.readChange({publication:previousPublication});await adapter.prepareRework({snapshot,submittedChange,reason:task.reworkReason,workspaceHandle:workspace});rework={reason:task.reworkReason,previousPublication,submittedChange};}
         else await adapter.prepare({snapshot,workspaceHandle:workspace});
+        if(config.capture){try{await lstat(join(workspace,config.capture.output));throw new AdapterError('capture_output_must_be_untracked');}catch(e){if(e.code!=='ENOENT')throw e;}}
         await setup(config,workspace);
         let before=null;
         if(config.capture&&rework){const baseline=await mkdtemp(join(tmpdir(),'metis-before-'));try{await adapter.prepare({snapshot,workspaceHandle:baseline});await setup(config,baseline);before=await captureImage(config.capture,baseline,store);}finally{await rm(baseline,{recursive:true,force:true});}}

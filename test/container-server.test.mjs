@@ -13,3 +13,12 @@ test('real container HTTP server exits on SIGTERM and releases its listener',asy
     await assert.rejects(fetch(`http://127.0.0.1:${port}/health`));
   }finally{clearTimeout(timeout);child.kill('SIGKILL');}
 });
+test('publisher server exposes no execution route and accepts no second command',async()=>{
+  const child=fork(fileURLToPath(new URL('../runtime/container/server.mjs',import.meta.url)),[],{env:{PATH:process.env.PATH,PORT:'0',METIS_PUBLISHER_CONFIG:JSON.stringify({binding:'test'})},stdio:['ignore','ignore','ignore','ipc']});
+  const timeout=setTimeout(()=>child.kill('SIGKILL'),5000);
+  try{const {port}=await new Promise((resolve,reject)=>{child.once('message',resolve);child.once('error',reject);child.once('exit',()=>reject(Error('Server exited before listening')));});
+    assert.equal((await fetch(`http://127.0.0.1:${port}/execute`,{method:'POST',body:'{}'})).status,404);
+    const result=await fetch(`http://127.0.0.1:${port}/publish`,{method:'POST',body:'{}'});assert.equal((await result.json()).ok,false);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/publish`,{method:'POST',body:'{}'})).status,409);
+  }finally{clearTimeout(timeout);const exited=new Promise(resolve=>child.once('exit',resolve));child.kill('SIGTERM');await exited;}
+});

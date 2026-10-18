@@ -1,0 +1,12 @@
+{
+  "$schema":"node_modules/wrangler/config-schema.json",
+  "name":"metis-repository-service",
+  "main":"runtime/repository-service/entrypoint.mjs",
+  "compatibility_date":"2026-08-30",
+  "keep_vars":true,
+  "workers_dev":true,
+  "d1_databases":[{"binding":"DB","database_name":"metis-production","database_id":"3b1c9cef-5dd1-43d2-8af3-b72ae06795c7","migrations_dir":"migrations"}],
+  "containers":[{"class_name":"RepositoryPublisher","image":"./runtime/container/Dockerfile","image_build_context":".","instance_type":"standard-1","max_instances":1}],
+  "durable_objects":{"bindings":[{"name":"PUBLISHER","class_name":"RepositoryPublisher"}]},
+  "migrations":[{"tag":"v1-repository-publisher","new_sqlite_classes":["RepositoryPublisher"]}]
+}

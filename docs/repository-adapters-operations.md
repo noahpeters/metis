@@ -1,246 +1,226 @@
 # Operating repository-backed cloud tasks
 
-## Implemented path
+## Source stays in Git
 
-Native task -> Queue -> private runtime Worker -> configured GitHub/Artifacts
-adapter -> pinned source snapshot in D1 -> isolated workspace -> subscription
-Codex CLI -> captured replacement changes -> durable publication intent ->
-branch/review -> recorded publication result. The model does not create a PR
-through the Codex UI. Repository runs require a schema-constrained completed/
-blocked outcome; a completed CLI turn alone cannot override a reported blocker
-or project instruction requiring human input. Blocked outcomes preserve their
-thread and blocker details and cannot publish captured changes. Existing issue-backed dispatch and tasks without a
-repository binding keep their previous behavior.
+Metis never stores a Git repository, packfile, full source tree, or full source
+snapshot in D1. A task pins its enrolled repository and immutable commit. The
+execution container fetches that commit through a read-only smart-HTTP proxy,
+and exports the files into its temporary workspace without exposing its Git
+object database or upstream credentials to Codex.
 
-The adapters implement real Git fetch/read/push commands and authenticated
-GitHub REST / Cabinitron review-service calls. Tests use local bare Git remotes
-and synthetic provider HTTP responses. No live provider publication or cloud
-repository task has been verified for this change.
+D1 holds task/attempt state, instruction-file hashes, a small Git-reference
+metadata descriptor, execution evidence, changed-file blobs, review images,
+publication intents and receipts. Unchanged source files are neither uploaded
+nor mirrored. Git must retain the pinned commits; D1 is not a repository backup.
+Legacy full-source snapshot descriptors are rejected rather than re-created.
+Existing rows are not deleted or converted by this release.
 
-### Current support
+## Services and boundaries
 
-| Feature | GitHub | Artifacts/Cabinitron |
-|---|---|---|
-| Resolve, export source, instruction manifest | Implemented | Implemented through Git source transport |
-| Collect text/binary additions, deletions, mode changes | Implemented | Implemented |
-| Initial branch and review publication | Implemented | Implemented against the inspected project review API |
-| Lost response recovery / immutable publication history | Implemented | Reconcile by branch; ambiguous missing review stays blocked |
-| Rework onto a newer base / textual merge conflicts | Implemented | Blocked until the review service supports guarded updates |
-| Review/check observation | Exact-revision checks when permissions allow | Exact-revision project CI output; unavailable evidence stays unknown |
-| Approval/release evidence | Approval stays unknown; configured deployment workflows must succeed on the exact merge SHA | Project approval, fast-forward integration and per-head release evidence |
-| UI before/after images | Explicit public media branch, or configured gateway | Existing project R2 review-media uploader, or configured gateway |
+1. The control-plane admits a native task and sends its attempt through Queues.
+2. The private `metis-codex-runtime` asks `metis-repository-service` for execution
+   configuration through a service binding. That configuration contains only
+   the selected source, trusted setup/capture instructions and a 30-minute
+   task/binding-scoped capability. Provider write credentials and the upstream
+   D1 bridge secret never enter the execution container.
+3. The public repository-service endpoint validates the capability, then
+   forwards only smart Git `info/refs?service=git-upload-pack` and
+   `git-upload-pack` requests to the enrolled upstream. It streams pack
+   responses and strips client credentials/cookies. Push/receive-pack,
+   arbitrary paths, redirects and other query parameters are rejected.
+4. Codex runs in the existing subscription-authenticated execution container.
+   Metis captures a binary-safe replacement/delete manifest, file modes,
+   Markdown and revision-bound before/after UI images. Only changed bytes and
+   evidence enter D1. Explicit blocked model outcomes cannot submit a package.
+5. The execution supervisor submits the package to the repository service.
+   Its separate `RepositoryPublisher` container validates it against the
+   durable completed attempt and configured source, checks actual base-file
+   hashes and expected review head, applies it to a dedicated change branch,
+   and opens/updates the native review. It never invokes Codex and receives no
+   subscription credential. Provider credentials are confined to this trusted
+   publishing side and the read proxy.
+6. Publication intent, operation key, expected previous revision and receipt
+   provide idempotency and reconciliation. A failed publication can reuse the
+   saved package without another model invocation. Observe/read-change calls
+   also go through the publisher and bind to the recorded change identity.
 
-**Artifacts update blocker:** the inspected update API checks the new source
-head/base but has no conditional expected-previous-review-version write. The
-adapter reports `canUpdate: false` and refuses unsafe updates. A project review
-API change is needed before enabling Artifacts rework; no guessed capability
-or client-only preflight is treated as an atomic server guard.
+The execution app retains `max_instances: 1`. The publisher is a separate
+container app with `max_instances: 1` and a single named Durable Object; it
+rejects concurrent requests as busy rather than competing for its slot.
+Execution waits while publication completes, so one execution container and
+one publisher container can be active together. Both confirm shutdown, with a
+forced-stop fallback. This is a new service/app, not an increased execution-app
+limit. No R2 resource is provisioned.
 
-## Configuration
+No proxy or publisher operation merges a PR, approves/lands an Artifacts diff,
+or deploys a project. Existing human approval and automatic release flows
+remain authoritative. Existing GitHub issue dispatch is unchanged.
 
-Apply migration 0024 through the existing workflow before deploying the
-control-plane/runtime/UI. It creates content objects/chunks, publication and
-execution records, expiring fenced leases, publication-retry jobs, and a rework
-reason on native attempts. No Terraform or Cloudflare resource is added.
+## Enrollment and deployment
 
-Install a new high-entropy `REPOSITORY_STORE_TOKEN` secret on the control-plane.
-The `/v1/repositories/store` bridge requires this token on every request. It
-has no public object/media route. This secret is independent of the existing
-standalone dispatch token, which need not be rotated. Keep actual credentials
-out of source, task data, review descriptions, command arguments and logs.
+Migration 0025 adds `repository_object_grants(binding, ref)`, which scopes
+content reads to an enrolled binding. It uses the existing Metis D1 database.
+Migration 0024's objects, chunks, records and fenced leases are reused for
+change packages; it is no longer a source snapshot store.
 
-Install `REPOSITORY_BINDINGS_JSON` as a secret on the **runtime Worker**. Keys
-are operator-chosen binding IDs, not arbitrary repositories selected by model
-output. Example shape (placeholders, never usable credentials):
+The GitHub Actions production workflow applies migrations, deploys the new
+repository service/publisher, then deploys the execution runtime, control-plane
+and UI. PR checks do not deploy. All Worker configurations preserve existing
+secrets. Deploy only through the existing authorized workflow.
+
+Operator enrollment is required; implementation does not copy personal tokens,
+broaden GitHub App permissions, rotate existing secrets or install credentials.
+
+On the **control-plane**, retain/install `REPOSITORY_STORE_TOKEN` for its private
+D1 bridge. On **metis-repository-service**, install:
+
+- `REPOSITORY_CAPABILITY_KEY`: independently generated high-entropy secret,
+  at least 32 characters, used to sign expiring task capabilities.
+- `REPOSITORY_PUBLIC_ORIGIN`: its exact HTTPS origin, without a trailing slash,
+  path, query or fragment (for example its assigned workers.dev origin).
+- `REPOSITORY_PROVIDERS_JSON`: encrypted operator binding configuration below.
+- For GitHub App authentication, `GITHUB_APP_ID`,
+  `GITHUB_APP_INSTALLATION_ID`, and `GITHUB_APP_PRIVATE_KEY` on this service.
+  App enrollment/permission changes require their own authorization. Read Git
+  requests mint repository-specific `contents:read` installation tokens;
+  publication mints `contents:write`, `pull_requests:write`, `issues:write`.
+  The App must already have those permissions and repository access.
+
+The execution runtime's legacy `REPOSITORY_BINDINGS_JSON` is no longer read.
+Remove an old provider-credential binding only through an authorized cleanup;
+this change does not delete secrets. Execution uses the checked-in private
+`REPOSITORY_SERVICE` binding. Missing enrollment fails admission closed.
+
+Example repository-service secret (placeholders only):
 
 ```json
 {
-  "example": {
-    "source": {"adapter":"github","repository":"example/project","ref":"main"},
+  "github-example": {
+    "source":{"adapter":"github","repository":"example/project","ref":"main"},
     "remote":"https://github.com/example/project.git",
-    "token":"<repository-scoped GitHub credential>",
-    "authorization":"Basic <base64(x-access-token:credential)>",
-    "store": {
+    "store":{
       "origin":"https://control-plane.example/v1/repositories/store",
-      "token":"<matching REPOSITORY_STORE_TOKEN>"
+      "token":"<matching bridge secret>"
     },
-    "allowPublicMediaBranch":false,
-    "executionTimeoutMs":90000
+    "taskUiOrigin":"https://metis.example",
+    "executionTimeoutMs":90000,
+    "requiredChecks":["verify"],
+    "requiredDeploymentWorkflows":["CI"]
+  },
+  "artifacts-example": {
+    "source":{"adapter":"artifacts","repository":"namespace/project","ref":"main"},
+    "remote":"https://account.artifacts.cloudflare.net/git/namespace/project.git",
+    "readAuthorization":"Bearer <short-lived repository read token>",
+    "authorization":"Bearer <repository publishing token>",
+    "origin":"https://project.example",
+    "session":"<authenticated operator review cookie>",
+    "store":{
+      "origin":"https://control-plane.example/v1/repositories/store",
+      "token":"<matching bridge secret>"
+    }
   }
 }
 ```
 
-Git HTTPS credentials are supplied through transient Git configuration headers;
-GitHub API credentials through HTTP headers. No credential is written into Git
-remotes, source bundles, review intents or model environment. The trusted
-container supervisor has the configured credentials; it uses a minimal child
-environment for Codex/capture/setup commands. Its known credential values are
-checked before source/output bytes or execution/publication records are saved.
-This is not a guarantee against arbitrary credential exfiltration by untrusted
-code in the same container; only enroll repositories trusted for this execution
-boundary. Subscription authentication remains the existing runtime secret;
-there is no OpenAI API-key or metered fallback.
+Without App authentication, GitHub bindings may explicitly enroll distinct
+`readToken` and `token` credentials. The proxy never falls back to a write token
+when its read credential is missing. Do not use a broad personal credential as
+an implicit fallback. Artifacts requires the inspected project's Git transport
+and authenticated review API; this is not a universal Cloudflare reviews API.
+Its repository tokens/operator sessions need renewal by their enrolled owner.
+There is no automatic long-lived Artifacts credential refresh in this release.
 
-GitHub credentials need repository Contents write, Pull requests write and
-Issues write (rework summaries are issue comments), plus read access for the
-checks/status endpoints if those observations are desired. Set `requiredChecks`
-to the expected check/context names to assert a passing validation result, and
-`requiredDeploymentWorkflows` to exact workflow names or paths to track release
-success on the exact merge SHA. Missing configuration/evidence stays unknown. The existing Metis
-App's documented Contents **read-only** permission does not establish that
-publication access. Supply a suitably scoped installation/user token; the
-adapter does not automatically copy or broaden existing credentials. Token
-renewal must be handled by the configured credential owner.
+## Change package and limits
 
-For Artifacts, use `source.adapter: "artifacts"`, the canonical Artifacts Git
-remote, `authorization: "Bearer <repository token>"`, review-service `origin`,
-and `session` containing its authenticated review cookie. The project must
-accept `codex/` source branches and the inspected review protocol. This is not
-a universal Cloudflare review API. Expired repository/review sessions block
-operations and require credential renewal, without rerunning successful Codex.
+The submitted patch is a structured file-change manifest, rather than a
+text-only unified diff. Each entry includes a validated relative path, expected
+before SHA-256/mode or null, and after SHA-256/mode/content reference or null.
+This preserves binaries, additions, deletions and executable modes. The intent
+includes repository, exact base commit, task/attempt/change IDs, Markdown, image
+pairs, submission digest and, for rework, previous publication/review revision.
+The publisher reads referenced changed blobs from D1 and verifies them before
+reconstructing a tree. The default branch is never a write target.
 
-## UI capture and media
+Source checkout is independently bounded at 5,000 regular/executable files and
+1 GiB of checked-out content. Existing files larger than 5 MiB are supported;
+streamed hashing skips them if unchanged. Symlinks/submodules are rejected.
+Changed output remains bounded at 5 MiB per added/replaced file, 50 MiB total,
+and 1,000 changes. Large unchanged assets do not consume the output budget.
+A larger changed file is explicitly blocked; it never causes full-source
+storage. Review image comparison limits remain unchanged. Request and metadata
+limits can also reject oversized packages before any review write.
 
-Enroll a deterministic local screenshot command per project, for example:
+The capability-protected store route permits only the attempt's own execution
+record/lease, its logical change record, and its publication lineage. It cannot
+write change/publication records. Blob reads require a binding-and-repository-specific D1
+grant. Grants partition enrolled repositories, not individual attempts within
+one repository. Retargeting a binding invalidates existing capabilities and does
+not grant access to the previous repository's blobs. The publisher uses the private bridge with fenced leases
+for publication records. Raw credentials, capability tokens, source archives,
+provider error bodies and model prompts are not logged.
+
+## UI capture, media and rework
+
+Trusted `setupCommands` are bounded argument arrays. An optional capture config
+supplies a command, untracked PNG output path, scenario, route and viewport.
+The supervisor captures before/after from the actual local interface, validates
+PNG bytes and metadata, and binds images to source/change revisions. Example:
 
 ```json
 {
   "setupCommands":[["npm","ci"]],
-  "capture": {
+  "capture":{
     "command":["node","scripts/capture-review.mjs"],
     "output":"output/review.png",
-    "scenario":"Task list with sample records",
+    "scenario":"Task list with synthetic records",
     "route":"/tasks",
     "viewport":{"width":1280,"height":900,"deviceScaleFactor":1},
     "fullPage":false,
     "label":"Task list",
-    "alt":"Task list with sample records"
+    "alt":"Task list with synthetic records"
   }
 }
 ```
 
-The command must manage its own local application/browser and write the
-configured **untracked** PNG path. Project dependency installation is project-specific. The base image includes
-Node, Git, Python, ripgrep, Codex, Wrangler and pinned Playwright 1.62.1 Chromium
-with Linux dependencies. `PLAYWRIGHT_BROWSERS_PATH` is passed as a non-secret
-runtime setting. Use the pinned browser CLI or compatible project Playwright
-version; other browser versions need an enrolled compatible image/capture setup. Setup/capture commands are
-trusted operator configuration, never task/model-supplied shell strings.
-They run as argument arrays with bounded time/output and no repository/store
-credentials in the child environment.
+Configure media transport **on the repository service**, not in execution:
+`allowPublicMediaBranch:true` only for explicitly public GitHub repositories
+(verified through the provider API); otherwise `media:{origin,token,allowedOrigins}`
+for an enrolled gateway. Artifacts can use
+`artifactsMedia:{accountId,bucket,apiToken,origin}` for its existing review-media
+bucket. No bucket is created. All before/after mappings must validate before
+source or review writes. Capture/setup child processes receive no provider,
+bridge or publishing credentials.
 
-The supervisor captures/stores before pixels before launching Codex and after
-pixels after collecting its changes. Rework uses a separate clean target-base
-workspace for its before capture. The capture file is excluded from source
-changes. CRC, PNG structure, dimensions, decompressed row sizes, filter bytes
-and declared size are verified. The built-in capture path supports
-non-interlaced 8-bit RGB/RGBA single-frame PNG; other encodings need a separately
-verified transport. UI changes without paired evidence block publication.
+Task data remains `{ "repositoryBinding":"github-example",
+"reviewDescription":"## Change\n\nMarkdown explanation and validation." }`.
+The existing UI exposes Run and submit change, publication retry, native review
+links, review refresh, and GitHub rework. Rework applies the prior full diff to
+the latest target, surfaces text conflicts, rejects unresolved markers, and
+conditionally replaces the same change branch/review revision. Human PR-body
+edits are preserved; revision summaries are appended idempotently.
 
-For explicitly public GitHub repositories, `allowPublicMediaBranch: true`
-enables an API visibility check, then publishes images to a separate immutable
-`codex/metis-media-…` branch with permanent commit-addressed raw URLs. Image
-files never enter the source PR. **Do not enable it to expose private media.**
-Private repositories need the optional authenticated media gateway instead.
-Media branches/objects are retained for review history; this change adds no
-cleanup/deletion job.
+**Artifacts rework remains blocked** because its current review update API
+lacks an atomic expected-previous-review-version guard. Initial publication and
+observation are supported; no unsafe client-only guard is substituted.
 
-For the project's existing Artifacts media bucket:
+## Controlled live validation after authorized rollout
 
-```json
-{
-  "artifactsMedia": {
-    "accountId":"<Cloudflare account ID>",
-    "bucket":"existing-project-review-media",
-    "apiToken":"<scoped existing-bucket write credential>",
-    "origin":"https://project-review.example"
-  }
-}
-```
+1. Verify CI/deployment for the exact merge, migration 0025, enrolled credentials
+   and capability reporting. Confirm existing Worker secrets remain bound.
+2. Submit one documentation-only native task against an explicitly disposable
+   GitHub repository. Require a single README comment and normal project tests.
+3. Independently compare API and D1 task/attempt/execution/publication records.
+   Verify D1 contains the tiny Git-reference descriptor and only changed blobs,
+   not baseline source. Inspect the native PR's exact files/base/head.
+4. Repeat publication/observation against the same execution; confirm no second
+   Codex invocation and no duplicate review. Exercise GitHub rework separately.
+5. Repeat a documentation-only task against Cabinitron/Artifacts. Verify its
+   actual source can resolve despite existing large assets, then inspect the
+   source branch and native review. Do not land or approve until authorized.
+6. Confirm both containers stopped. Land only the reviewed no-op when authorized,
+   then observe exact integration/deployment evidence through the normal release
+   pipeline. Local tests and fixture HTTP responses are not live-run proof.
 
-The uploader uses pinned Wrangler to PUT verified PNGs at `media/<sha256>.png`,
-then supplies the native `/api/operator/reviews/media/…` links and the primary
-before/after fields. It does **not** provision a bucket. This optional path
-requires access to that project's existing R2 bucket; it is not a new R2
-requirement for Metis source/result storage or non-UI tasks.
-
-Alternatively configure `media: {origin, token, allowedOrigins}` for an existing
-media gateway. It receives an authenticated POST with `key`, base64 `bytes`,
-`mimeType`, and `publicationKey`, and returns `{url}`. The gateway must make
-same-key retries idempotent and enforce intended reviewer access. Its service
-is not provisioned here. Artifacts native media fields require links under
-its own review-media origin/path. Missing media transport or unsupported links
-block publication rather than silently dropping images.
-
-## Submitting and revisiting work
-
-In the authenticated task UI, set Task data to:
-
-```json
-{
-  "repositoryBinding":"example",
-  "reviewDescription":"## Changes\n\nDescribe the requested result and validation in Markdown."
-}
-```
-
-Keep original task instructions in the Instructions field. The review body
-includes the configured Markdown, the Codex execution report when present, and
-the task/attempt identities. Optional binding `taskUiOrigin` adds a reverse link
-to the exact Metis execution record. The execution report is model output, not
-an assertion that independent project checks passed. Mark ready and choose **Run and submit change**. The control-plane checks runtime binding capabilities before creating an
-attempt. Artifacts review descriptions need at least 120 characters. Task data
-remains bounded by the task API; it is not a place for tokens or credentials.
-
-Execution completion and publication completion remain separate. The attempt
-shows the submitted change URL and publication state. **Retry publication**
-creates a new publisher job using the saved execution and intent; it never
-launches Codex again. **Refresh review status** performs provider reads against
-the recorded revision, keeping unknown/inaccessible evidence unknown.
-
-**Rework change** is available for published GitHub output. Choose issue fixes,
-merge-conflict resolution or base refresh and supply the new instructions.
-The attempt retains original instructions, adds the rework request, prepares
-the prior full diff on the latest target through Git three-way application,
-and supplies revision-bound feedback as untrusted context. Unresolved text
-markers block collection; binary conflicts require operator resolution.
-Publication uses expected-head Git leases, retains the PR, and appends an
-idempotent revision summary comment rather than overwriting human PR-body edits.
-A failed rework execution retains its rework reason when explicitly retried.
-
-## Recovery and verification
-
-Snapshots and file/image blobs live in `repository_objects` plus chunk rows.
-`repository_records` contains `execution:<attempt-id>`,
-`publication:<operation-key>`, and `change:<change-id>` records. Publication
-intents are persisted before source/review writes. Completed execution records
-are reused; running/capturing records with unknown outcomes never authorize a
-second Codex run. The task API caps long execution summaries at 4,000 characters;
-the full report remains in the private execution record. Source-capture failures retain execution evidence but require
-operator follow-up; publication retry cannot reconstruct a deleted workspace.
-
-Publication leases exclude concurrent writers and expire after 20 minutes;
-expired owners are fenced from record writes. The repository container request
-has a ten-minute deadline, longer than the unchanged proof path, with the same
-confirmed shutdown behavior. Credentials, source refs, or required inputs that
-cannot be verified leave the operation blocked. Unknown review writes are
-reconciled by branch/operation markers and never blindly POSTed again. Missing
-review history beyond the Artifacts API's 100-row listing limit is blocked.
-
-Independently SELECT the attempt's standalone receipt, execution/publication
-records, and object hashes in D1. Compare the provider review head and body,
-publication parent/key, source branch tree and media content. A successful
-local test, API receipt, or configured binding is not a production live-run
-claim. No merge, approval, deployment, repository deletion, or production-data
-mutation is exposed by these adapters.
-
-## Remaining rollout blockers
-
-- Install the bridge/runtime configuration and least-privilege repository and
-  review credentials; verify that the cloud container can reach those services.
-- Configure local UI setup/capture and appropriate media transport per project.
-- Add conditional previous-review-version support in the Artifacts project API
-  before enabling its update/rework path.
-- Run one authorized cloud GitHub task and one Artifacts task, independently
-  verify D1 and native review/media records, then exercise recovery and rework.
-- Full Codex transcript retention, rich-text editing/preview, GitHub approval
-  rule evaluation and exact deployment evidence remain separate work.
+Enrollment and cloud end-to-end checks remain deployment prerequisites. Full
+Codex transcript archives, a rich-text editor, approval-rule inference and
+Artifacts guarded-update support remain outside this change.

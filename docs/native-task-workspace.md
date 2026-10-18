@@ -48,8 +48,9 @@ queued. The existing ten-minute cron resends unsent/still-queued attempts with
 the same UUID. A crash between send and recording `sent_at` can redeliver safely.
 Outbox failures do not abort legacy scheduled reconciliation.
 
-No new Cloudflare infrastructure, R2, secrets, or runtime authentication changes
-are required. Apply migration 0023 before deploying the control-plane and UI,
+Tasks without repository bindings require no additional infrastructure or secrets.
+Repository-backed tasks require the separate read proxy/publisher service and
+its credential enrollment; see the adapter operations guide. No new R2 is provisioned. Apply migration 0023 before deploying the control-plane and UI,
 using the existing deployment workflow. The cloud runtime and its subscription
 secret must already be configured, and its existing admission setting must be
 true for a start request to be accepted.

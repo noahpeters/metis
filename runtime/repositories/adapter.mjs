@@ -85,7 +85,7 @@ export function createRepositoryAdapter({source,remote,store,authorization,provi
           }
           const names=(await git.run(['--git-dir='+root,'--work-tree='+temporary,'ls-files','-z'])).toString().split('\0').filter(Boolean);
           check(!(await lstat(workspaceHandle)).isSymbolicLink()&&(await readdir(workspaceHandle)).length===0,'workspace_must_be_empty');
-          for(const path of new Set(names)){const file=await git.readWorkspace(temporary,path);if(!file)continue;await mkdir(dirname(join(workspaceHandle,path)),{recursive:true});await writeFile(join(workspaceHandle,path),file.bytes,{flag:'wx',mode:file.mode==='100755'?0o755:0o644});}
+          for(const path of new Set(names)){const file=await git.readWorkspace(temporary,path,git.maxSourceBytes);if(!file)continue;await mkdir(dirname(join(workspaceHandle,path)),{recursive:true});await writeFile(join(workspaceHandle,path),file.bytes,{flag:'wx',mode:file.mode==='100755'?0o755:0o644});}
           const conflicts=(await git.run(['--git-dir='+root,'--work-tree='+temporary,'diff','--name-only','--diff-filter=U','-z'])).toString().split('\0').filter(Boolean);
           for(const path of conflicts){const file=await git.readWorkspace(workspaceHandle,path);if(file){try{new TextDecoder('utf-8',{fatal:true}).decode(file.bytes);}catch{throw new AdapterError('binary_conflict_requires_operator');}check(!file.bytes.includes(0),'binary_conflict_requires_operator');}}
           conflictPaths.set(workspaceHandle,conflicts);return {workspaceHandle,conflicts};
