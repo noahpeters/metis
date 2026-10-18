@@ -2,6 +2,7 @@ import {WorkerEntrypoint} from 'cloudflare:workers';
 import {Container} from '@cloudflare/containers';
 import {executeOnce} from './execution-ledger.mjs';
 import {executeContainerTask} from './container-task.mjs';
+import {repositorySleepAfter} from '../repositories/deadline.mjs';
 
 export class CodexContainer extends Container {
   defaultPort=8080;
@@ -16,7 +17,7 @@ export class CodexContainer extends Container {
       try {repositoryConfig=await this.env.REPOSITORY_SERVICE?.executionConfig(task.repositoryBinding,task);}catch{}
       if(!repositoryConfig)return {state:'blocked',reason:'repository_binding_not_configured'};
     }
-    this.sleepAfter=repositoryConfig?'12m':'3m';
+    this.sleepAfter=repositoryConfig?repositorySleepAfter(repositoryConfig):'3m';
     this.inFlightIdentity=identity;
     this.inFlight=executeOnce(this.ctx.storage,task,()=>executeContainerTask(this,task,this.env.CODEX_SUBSCRIPTION_AUTH_JSON,repositoryConfig),fn=>this.ctx.blockConcurrencyWhile(fn)).finally(()=>{this.inFlight=null;this.inFlightIdentity=null;});
     return this.inFlight;

@@ -141,6 +141,32 @@ command's fixed hint/status/timing. Hints summarize CLI-reported command text;
 they do not establish that a required check ran or passed. Raw command text,
 stdout, stderr and credentials are excluded. The task API and D1 retain this
 metadata for diagnosis; publication still requires a verified completed turn.
+Interrupted receipts also retain the latest 32 observed commands with relative
+start times and durations, the number of older commands omitted, the last fixed
+CLI event type, and time since that event. Overlapping command durations are
+tracked independently. This is an observed CLI timeline, not a transcript or
+proof that project verification passed. No reasoning text is retained.
+
+`executionTimeoutMs` is opt-in per trusted repository binding: the default stays
+90 seconds; integer values are bounded to 1 second through 10 minutes. Existing
+five-minute bindings stay at five minutes until explicitly changed. The outer
+container request allows at least 10 minutes, or execution plus 3 minutes for
+preparation/capture, whichever is longer. The container idle limit exceeds that
+request by 2 minutes. The maximum request is 13 minutes, below the existing
+20-minute repository lease and 30-minute capability lifetime. Startup and
+shutdown have room within the Queue consumer 15-minute wall-clock limit
+([Cloudflare limits](https://developers.cloudflare.com/queues/platform/limits/)).
+Use one controlled task for this experiment; a batch of long tasks is not a
+validated scheduling configuration. These are finite
+budgets; unusually long preparation can still exhaust the outer request.
+
+For a controlled diagnostic retry, deploy the exact merged commit first, then
+temporarily set only the test binding to `executionTimeoutMs:600000`. Run one
+fresh no-op attempt after independently confirming the previous container is
+stopped. Compare API and D1 results, command timeline/idle time on interruption,
+and provider review output on success. Confirm shutdown independently and remove
+temporary provider enrollment afterward. Do not publish incomplete work or
+interpret a larger deadline as a demonstrated fix for a stalled Codex turn.
 
 ## Change package and limits
 
