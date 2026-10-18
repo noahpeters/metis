@@ -110,20 +110,53 @@ function validateRework(rework,{taskId,attemptId,changeId,snapshot},allowedRevie
   validateSubmittedChange(rework.submittedChange,previous,allowedReviewOrigins);
   requireValue(rework.submittedChange.review.canUpdate && rework.submittedChange.review.state==='open','review no longer accepts updates');
 }
-export async function publicationIntent({taskId,attemptId,changeId,snapshot,changeSet,title,description,evidence=[],rework=null},allowedReviewOrigins=[]) {
+// Images are revision-bound content manifests, never inline bytes or upload
+// credentials. Actual decoding/hashing and storage remain adapter work.
+export function validateComparisons(comparisons,{snapshot,changeSetDigest,rework}) {
+  requireValue(Array.isArray(comparisons) && comparisons.length<=10,'at most 10 before/after comparisons are supported');
+  validateSnapshot(snapshot);requireValue(digest(changeSetDigest),'comparison output digest is required');
+  const ids=new Set(),contents=new Map();let totalBytes=0;
+  const beforeRevisions=new Set([snapshot.revision,...(rework?[rework.submittedChange.submittedSnapshot.revision]:[])]);
+  for(const pair of comparisons) {
+    record(pair,['id','label','before','after'],'image comparison');
+    requireValue(identifier(pair.id) && !ids.has(pair.id) && text(pair.label,200),'comparison IDs must be unique and labelled');ids.add(pair.id);
+    for(const side of ['before','after']) {
+      const image=pair[side];record(image,['content','mimeType','byteLength','width','height','alt','caption','subject','capture'],'review image');validateContent(image.content);
+      const identity=JSON.stringify([image.content.sha256,image.mimeType,image.byteLength,image.width,image.height]);
+      requireValue(!contents.has(image.content.ref) || contents.get(image.content.ref)===identity,'image content reference has conflicting metadata');contents.set(image.content.ref,identity);
+      requireValue(['image/png','image/jpeg','image/webp'].includes(image.mimeType),'unsupported review image type');
+      requireValue(Number.isInteger(image.byteLength) && image.byteLength>0 && image.byteLength<=5*1024*1024,'review image exceeds 5 MiB');totalBytes+=image.byteLength;
+      requireValue(Number.isInteger(image.width) && Number.isInteger(image.height) && image.width>0 && image.height>0 && image.width<=16384 && image.height<=16384 && image.width*image.height<=40000000,'invalid review image dimensions');
+      requireValue(text(image.alt,500) && typeof image.caption==='string' && image.caption.length<=1000,'image alt text and a bounded caption are required');
+      record(image.subject,['kind','revision','sha256'],'image subject');
+      requireValue(side==='before' ? (image.subject.kind==='source_revision' && beforeRevisions.has(image.subject.revision) && image.subject.sha256===undefined) : (image.subject.kind==='change_set' && image.subject.sha256===changeSetDigest && image.subject.revision===undefined),'image refers to a different source or output revision');
+      record(image.capture,['scenario','route','viewport','fullPage'],'image capture');
+      requireValue(text(image.capture.scenario,200) && text(image.capture.route,1000) && image.capture.route.startsWith('/') && !image.capture.route.startsWith('//') && !/[?#\\]/.test(image.capture.route) && typeof image.capture.fullPage==='boolean','image capture requires a scenario and path without query parameters');
+      record(image.capture.viewport,['width','height','deviceScaleFactor'],'capture viewport');
+      const viewport=image.capture.viewport;
+      requireValue(['width','height'].every(key=>Number.isInteger(viewport[key]) && viewport[key]>0 && viewport[key]<=8192) && Number.isFinite(viewport.deviceScaleFactor) && viewport.deviceScaleFactor>=0.5 && viewport.deviceScaleFactor<=4,'invalid capture viewport');
+    }
+    requireValue(pair.before.capture.scenario===pair.after.capture.scenario && JSON.stringify(canonical(pair.before.capture.viewport))===JSON.stringify(canonical(pair.after.capture.viewport)) && pair.before.capture.fullPage===pair.after.capture.fullPage,'before and after must use the same scenario, viewport and capture mode');
+  }
+  requireValue(totalBytes<=20*1024*1024,'comparison images exceed the 20 MiB submission budget');
+  return comparisons;
+}
+export async function publicationIntent({taskId,attemptId,changeId,snapshot,changeSet,title,description,descriptionFormat='markdown',descriptionDialect='gfm',comparisons=[],evidence=[],rework=null},allowedReviewOrigins=[]) {
   // Detach before the first await; callers cannot race a validated manifest
   // against hashing or mutate an intent while it is being constructed.
-  snapshot=structuredClone(snapshot);changeSet=structuredClone(changeSet);evidence=structuredClone(evidence);rework=structuredClone(rework);
+  snapshot=structuredClone(snapshot);changeSet=structuredClone(changeSet);evidence=structuredClone(evidence);rework=structuredClone(rework);comparisons=structuredClone(comparisons);
   requireValue(text(taskId) && text(attemptId) && text(changeId),'task, attempt and stable change identities are required');
   validateSnapshot(snapshot);
   if(rework!==null)validateRework(rework,{taskId,attemptId,changeId,snapshot},allowedReviewOrigins);
   requireValue(text(title,200) && typeof description==='string' && description.length<=60000,'bounded review title and description are required');
+  requireValue(descriptionFormat==='markdown' && descriptionDialect==='gfm','review bodies must use GitHub Flavored Markdown');
   requireValue(Array.isArray(evidence) && evidence.length<=50,'evidence must be a bounded content manifest');
   evidence.forEach(validateContent);
   const changesDigest=await changeSetDigest(changeSet,snapshot);
+  validateComparisons(comparisons,{snapshot,changeSetDigest:changesDigest,rework});
   // Copy/freeze the whole intent so an implementation cannot alter the identity
   // between preflight, durable intent recording, and publication.
-  const intent=JSON.parse(JSON.stringify({version:CONTRACT_VERSION,taskId,attemptId,changeId,operation:rework===null?'create':'update',rework,snapshot,changeSet:{...changeSet,changes:[...changeSet.changes].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)},changeSetDigest:changesDigest,review:{title,description,evidence}}));
+  const intent=JSON.parse(JSON.stringify({version:CONTRACT_VERSION,taskId,attemptId,changeId,operation:rework===null?'create':'update',rework,snapshot,changeSet:{...changeSet,changes:[...changeSet.changes].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)},changeSetDigest:changesDigest,review:{title,description,descriptionFormat,descriptionDialect,comparisons,evidence}}));
   intent.idempotencyKey='metis-review-'+await hash(intent);
   const freeze=value=>{if(value && typeof value==='object'){Object.values(value).forEach(freeze);Object.freeze(value);}return value;};
   return freeze(intent);
@@ -182,4 +215,37 @@ export function defineRepositoryAdapter(definition) {
   for(const method of ['resolve','prepare','collect','publish','readChange','prepareRework','update','observe'])requireValue(typeof definition[method]==='function',`missing ${method} implementation`);
   // This deliberately supplies no network, auth, scheduler, or model launcher.
   return Object.freeze({...definition});
+}
+
+// Produces provider-ready Markdown after an adapter has uploaded/reconciled all
+// images. It does not upload bytes or render HTML in the Metis UI.
+export function renderReviewMarkdown(intent,publishedImages,allowedMediaOrigins) {
+  requireValue(intent.review.descriptionFormat==='markdown' && intent.review.descriptionDialect==='gfm','unsupported review body format');
+  validateComparisons(intent.review.comparisons,intent);
+  requireValue(Array.isArray(publishedImages),'published images must be a manifest');
+  const expected=new Map();
+  for(const pair of intent.review.comparisons)for(const side of ['before','after']) {
+    const content=pair[side].content;
+    requireValue(!expected.has(content.ref) || expected.get(content.ref)===content.sha256,'image content reference has conflicting hashes');expected.set(content.ref,content.sha256);
+  }
+  const urls=new Map();
+  for(const image of publishedImages) {
+    record(image,['ref','sha256','url'],'published image');
+    requireValue(expected.has(image.ref) && expected.get(image.ref)===image.sha256 && !urls.has(image.ref),'unexpected, duplicate or mismatched published image');
+    requireValue(text(image.url,4096),'published image URL exceeds its limit');
+    validateReviewLink(image.url,allowedMediaOrigins);urls.set(image.ref,new URL(image.url).href.replace(/[<>()[\\\]]/g,char=>'%'+char.charCodeAt(0).toString(16).toUpperCase()));
+  }
+  requireValue(urls.size===expected.size,'review images have not all been published');
+  const escape=value=>value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/([\\`*_[\]{}()#+.!|~-])/g,'\\$1');
+  const lines=[intent.review.description];
+  for(const pair of intent.review.comparisons) {
+    lines.push('',`## ${escape(pair.label)}`);
+    for(const side of ['before','after']) {
+      const image=pair[side];lines.push('',`### ${side==='before'?'Before':'After'}`,'',`![${escape(image.alt)}](<${urls.get(image.content.ref)}>)`);
+      if(image.caption)lines.push('',escape(image.caption));
+    }
+  }
+  const markdown=lines.join('\n');
+  requireValue(markdown.length<=60000,'assembled review Markdown exceeds 60000 characters');
+  return markdown;
 }

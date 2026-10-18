@@ -161,11 +161,120 @@ credential-bearing or signed access links must never be retained as permalinks.
 The helper rejects userinfo and common credential query names; provider-specific
 URL construction must exclude any other secret-bearing parameters.
 
+## Review bodies and before/after UI evidence
+
+Review descriptions have an explicit canonical format:
+`descriptionFormat: "markdown"` and `descriptionDialect: "gfm"` (GitHub Flavored
+Markdown). Existing callers can still supply a `description` string; these are
+the defaults. Headings, emphasis, lists, links, code blocks, and tables remain
+Markdown text throughout the adapter boundary. A future rich-text editor should
+convert its document to this Markdown representation before submission. There
+is no rich-text editor, HTML renderer, or conversion implementation in this PR.
+HTML/other payload formats are rejected; Markdown text itself remains untrusted
+and must be rendered with the destination's sanitization and safe-link policy.
+
+An intent may contain up to ten `comparisons`, each with a stable ID, label,
+and required `before` and `after` images. Each image records:
+
+- Content reference and SHA-256, MIME type, byte length, pixel width and height.
+- Required alt text, a caption (possibly empty), and a pinned subject.
+- Capture scenario, route path, viewport dimensions/device scale, and full-page
+  capture flag. Before/after scenarios, viewports, and capture modes must match.
+  Routes may differ when navigation itself changed, and omit query parameters.
+
+A before image's subject is `{kind: "source_revision", revision}`. Its revision
+must be the pinned target base or, for rework, the previously submitted head.
+An after image's subject is `{kind: "change_set", sha256: changeSetDigest}`. This
+binds evidence to the complete replacement output before the provider assigns
+its submitted revision. The publication receipt later links that digest to the
+actual submitted revision. Do not label an old screenshot as current evidence
+by copying it from a prior attempt.
+
+For example, capture metadata is shaped as:
+
+```js
+const capture = {
+  scenario: 'Task list with sample tasks', route: '/tasks',
+  viewport: {width: 1280, height: 900, deviceScaleFactor: 1},
+  fullPage: false,
+};
+const comparisons = [{
+  id: 'tasks-desktop', label: 'Desktop task list',
+  before: {
+    content: beforeContent, // {ref, sha256}, from the configured content store
+    mimeType: 'image/png', byteLength: beforeBytes,
+    width: 1280, height: 900,
+    alt: 'Task list before the change', caption: 'Existing task list',
+    subject: {kind: 'source_revision', revision: snapshot.revision}, capture,
+  },
+  after: {
+    content: afterContent,
+    mimeType: 'image/png', byteLength: afterBytes,
+    width: 1280, height: 900,
+    alt: 'Task list after the change', caption: 'Updated task list',
+    subject: {kind: 'change_set', sha256: outputDigest}, capture,
+  },
+}];
+const intent = await publicationIntent({
+  taskId, attemptId, changeId, snapshot, changeSet, title,
+  description: '## Changes\n\n**Implemented:** ...\n\n## Validation\n\n...',
+  comparisons,
+});
+```
+
+PNG, JPEG, and WebP are accepted. Limits are 5 MiB per image, 20 MiB total per
+submission, dimensions no greater than 16,384 on either axis, and 40 million
+pixels per image. SVG and animated-image support are outside this contract.
+The decoder must reject animated payloads even when their container MIME type
+is otherwise accepted. Image bytes never appear inline in D1 intent JSON. The adapter/supervisor must
+actually decode, inspect, hash and size-check the bytes, verify declared metadata
+and capture provenance, and store/retrieve only authorized references; validating
+the manifest alone does not verify a screenshot or strip metadata.
+
+Publication includes image reconciliation **before** the review write:
+
+1. Persist the immutable body/comparison intent. Hashes, alt text, captions,
+   capture metadata, and source/output associations all affect its operation key.
+2. Upload or reconcile every image through the destination's supported attachment
+   mechanism. Use the original hash to deduplicate/recover uploads, retain the
+   resulting mappings, and preserve existing project media authorization rules.
+   No R2 or other infrastructure is created by this addition.
+3. Supply `{ref, sha256, url}` mappings to:
+   `renderReviewMarkdown(intent, publishedImages, configuredMediaOrigins)`.
+   Each exact content reference must resolve once. Unknown/duplicate mappings,
+   missing images, wrong hashes, unconfigured origins, and credential-bearing
+   links are rejected. Query-based permanent media links are permitted; signed
+   access links are not durable review attachments. The provider must exclude
+   secret URL parameters beyond the helper's common-name checks.
+4. The helper preserves the Markdown description and appends labelled Before
+   and After sections with alt text and captions. It escapes generated labels
+   and captions and encodes image URLs. It returns Markdown, not rendered HTML. The assembled body is limited to
+   60,000 characters and individual media links to 4,096 characters.
+   Publish that body through the native PR or Artifacts review interface and
+   verify the retained body/attachments belong to the recorded operation.
+
+GitHub needs a supported attachment transport with durable links accessible to
+reviewers; its concrete authentication/upload mechanism remains unimplemented.
+The Artifacts/Cabinitron adapter should use its review service's authorized
+media path and description conventions. Neither provider upload is implemented
+here. A provider unable to publish required media must block publication rather
+than silently omit screenshots. Reviewers must be able to access private media
+under the intended review access policy, without publishing access credentials.
+
+Rework creates new comparison manifests for the replacement revision. Prior
+intents, images, upload mappings and review-body versions remain in history;
+they are not overwritten or treated as fresh passing evidence. Durable content
+retention must outlive the ephemeral container. Retain previously recorded
+operation keys unchanged; do not recompute historical intents using a newer
+canonicalization implementation. This PR adds the content contract and Markdown
+assembly only. Uploads, durable media storage, review writes and UI editing/
+preview are still provider/runtime integration work.
+
 ## Publication reliability and durable ownership
 
 D1 should eventually retain, per attempt/source binding: the snapshot,
-immutable publication intent/key, phase, native publication receipt, and latest
-observation. Large source/output bytes belong in the configured content
+immutable publication intent/key (including Markdown and comparison manifests),
+media upload mappings, phase, native publication receipt, and latest observation. Large source/output bytes belong in the configured content
 transport. These persistence records are proposed here, not a new migration.
 
 Persist intent **before** provider writes. On timeout or restart, reconcile the
@@ -333,7 +442,7 @@ and the separate Codex thread/session association.
    reconciliation, and guarded rework/update support. Preserve old revisions
    and reconcile the expected current head before replacing a review revision.
 4. Implement the Artifacts transport plus the Cabinitron review-service mapping,
-   preserving source, validation, media, and approval requirements.
+   preserving source, validation, paired UI media, and approval requirements.
 5. Expose review and exact-revision check/release links/status in the task UI.
 
 Conformance tests use synthetic GitHub and Artifacts records and make no

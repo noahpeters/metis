@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateSource,validatePath,validateSnapshot,validateChangeSet,changeSetDigest,publicationIntent,validatePublication,validateObservation,validateSubmittedChange,validateUpdatePrecondition,defineRepositoryAdapter} from '../src/repository-adapters/contract.mjs';
+import {validateSource,validatePath,validateSnapshot,validateChangeSet,changeSetDigest,publicationIntent,validatePublication,validateObservation,validateSubmittedChange,validateUpdatePrecondition,validateComparisons,renderReviewMarkdown,defineRepositoryAdapter} from '../src/repository-adapters/contract.mjs';
 const sha='a'.repeat(64),nextSha='b'.repeat(64);
 function fixture(adapter='github') {
   const source={adapter,repository:adapter==='github'?'example/project':'team/project',ref:'main'};
@@ -146,4 +146,80 @@ test('multiple rework revisions form a lineage without replacing earlier publica
   const third={...receipt(thirdIntent),review:{...second.review,revision:'submitted-3'}};
   validatePublication(third,thirdIntent,reviewOrigins);
   assert.equal(third.changeId,f.previousPublication.changeId);assert.equal(third.parentIdempotencyKey,second.idempotencyKey);assert.notEqual(third.idempotencyKey,second.idempotencyKey);
+});
+
+async function comparisonFixture(adapter='github') {
+  const f=fixture(adapter),outputDigest=await changeSetDigest(f.changeSet,f.snapshot);
+  const image=(side)=>({content:{ref:`image:${side}`,sha256:side==='before'?sha:nextSha},mimeType:'image/png',byteLength:1024,width:1280,height:900,alt:`${side} task screen`,caption:`${side} of the UI change`,
+    subject:side==='before'?{kind:'source_revision',revision:f.snapshot.revision}:{kind:'change_set',sha256:outputDigest},
+    capture:{scenario:'Task list with sample tasks',route:'/tasks',viewport:{width:1280,height:900,deviceScaleFactor:1},fullPage:false}});
+  const comparisons=[{id:'task-list-desktop',label:'Task list',before:image('before'),after:image('after')}];
+  const request={...f.request,description:'# Task changes\n\n**Implemented:** a task list.\n\n- [x] Tested\n\n| Check | Result |\n| --- | --- |\n| Unit | Passed |',comparisons};
+  const uploads=comparisons.flatMap(pair=>['before','after'].map(side=>({...pair[side].content,url:`https://media.example.test/images/${side}`})));
+  return {...f,request,comparisons,uploads,outputDigest};
+}
+for(const adapter of ['github','artifacts'])test(`${adapter} preserves Markdown and renders paired, revision-bound UI images`,async()=>{
+  const f=await comparisonFixture(adapter),intent=await publicationIntent(f.request);
+  assert.equal(intent.review.descriptionFormat,'markdown');assert.equal(intent.review.descriptionDialect,'gfm');
+  const markdown=renderReviewMarkdown(intent,f.uploads,['https://media.example.test']);
+  assert.ok(markdown.startsWith(f.request.description));assert.match(markdown,/### Before/);assert.match(markdown,/### After/);
+  assert.match(markdown,/!\[before task screen\]\(<https:\/\/media.example.test\/images\/before>\)/);
+  assert.ok(Object.isFrozen(intent.review.comparisons[0].after));
+});
+test('legacy description calls remain Markdown; unsupported rich-text/HTML payload formats are rejected',async()=>{
+  const f=fixture(),intent=await publicationIntent(f.request);assert.equal(renderReviewMarkdown(intent,[],[]),f.request.description);
+  await assert.rejects(publicationIntent({...f.request,descriptionFormat:'html'}),/Markdown/);
+  await assert.rejects(publicationIntent({...f.request,descriptionDialect:'arbitrary-html'}),/Markdown/);
+});
+test('comparison metadata changes publication identity and is detached from caller mutations',async()=>{
+  const f=await comparisonFixture(),pending=publicationIntent(f.request);f.comparisons[0].before.caption='Caller mutated caption';
+  const intent=await pending;assert.notEqual(intent.review.comparisons[0].before.caption,f.comparisons[0].before.caption);
+  const replacement=await publicationIntent(f.request);assert.notEqual(replacement.idempotencyKey,intent.idempotencyKey);
+  assert.equal((await publicationIntent(f.request)).idempotencyKey,replacement.idempotencyKey);
+});
+test('UI evidence rejects missing pairs, invalid images, mismatched viewports/scenarios and unsupported metadata',async()=>{
+  const f=await comparisonFixture();
+  for(const mutate of [
+    c=>{delete c[0].after;},c=>{c[0].before.subject.revision=undefined;},c=>{c[0].before.subject.revision='wrong-base';},
+    c=>{c[0].after.subject.sha256=sha;},c=>{c[0].after.mimeType='image/svg+xml';},c=>{c[0].after.byteLength=6*1024*1024;},
+    c=>{c[0].after.width=0;},c=>{c[0].after.width=16384;c[0].after.height=16384;},c=>{c[0].after.alt='';},
+    c=>{c[0].after.capture.viewport.width=390;},c=>{c[0].after.capture.scenario='different state';},
+    c=>{c[0].after.capture.fullPage=true;},c=>{c[0].after.capture.route='/tasks?token=secret';},
+    c=>{c[0].after.content.token='secret';},c=>{c.push(structuredClone(c[0]));},
+    c=>{c[0].after.content.ref=c[0].before.content.ref;}
+  ]){const comparisons=structuredClone(f.comparisons);mutate(comparisons);await assert.rejects(publicationIntent({...f.request,comparisons}));}
+});
+test('comparison count and aggregate byte limits apply before publication',async()=>{
+  const f=await comparisonFixture();
+  const make=count=>Array.from({length:count},(_,i)=>({...structuredClone(f.comparisons[0]),id:'pair-'+i}));
+  await assert.rejects(publicationIntent({...f.request,comparisons:make(11)}),/10 before/);
+  const comparisons=make(3);for(const pair of comparisons)for(const side of ['before','after'])pair[side].byteLength=5*1024*1024;
+  await assert.rejects(publicationIntent({...f.request,comparisons}),/20 MiB/);
+});
+test('image publication must resolve every exact content reference using configured, credential-free origins',async()=>{
+  const f=await comparisonFixture(),intent=await publicationIntent(f.request);
+  assert.throws(()=>renderReviewMarkdown(intent,f.uploads.slice(1),['https://media.example.test']),/not all/);
+  assert.throws(()=>renderReviewMarkdown(intent,[...f.uploads,f.uploads[0]],['https://media.example.test']),/duplicate/);
+  assert.throws(()=>renderReviewMarkdown(intent,[{...f.uploads[0],sha256:'d'.repeat(64)},f.uploads[1]],['https://media.example.test']),/mismatched/);
+  for(const url of ['https://unconfigured.example.test/img','https://user:secret@media.example.test/img','https://media.example.test/img?token=secret','javascript:alert(1)'])assert.throws(()=>renderReviewMarkdown(intent,[{...f.uploads[0],url},f.uploads[1]],['https://media.example.test']));
+});
+test('generated image labels/captions cannot inject Markdown structure or HTML',async()=>{
+  const f=await comparisonFixture();f.comparisons[0].label='<script>bad</script>';f.comparisons[0].before.alt='image](javascript:evil)';f.comparisons[0].before.caption='<img onerror=evil>\n# injected heading';
+  const intent=await publicationIntent(f.request);f.uploads[0].url='https://media.example.test/image(1).png';
+  const md=renderReviewMarkdown(intent,f.uploads,['https://media.example.test']);assert.ok(!md.includes('<script>'));assert.ok(!md.includes('<img '));assert.ok(!md.includes('\n# injected'));assert.match(md,/image%281%29.png/);
+});
+test('rework preserves historical image intents and requires new after evidence bound to the replacement output',async()=>{
+  const f=await comparisonFixture(),original=await publicationIntent(f.request),rw=await reworkFixture();
+  const comparisons=structuredClone(f.comparisons);comparisons[0].before.subject.revision=rw.previousPublication.review.revision;
+  comparisons[0].after.subject.sha256=await changeSetDigest(rw.request.changeSet,rw.request.snapshot);
+  const updated=await publicationIntent({...rw.request,comparisons},reviewOrigins);
+  assert.equal(updated.changeId,original.changeId);assert.notEqual(updated.idempotencyKey,original.idempotencyKey);assert.equal(original.review.comparisons[0].before.subject.revision,f.snapshot.revision);
+  comparisons[0].after.subject.sha256=original.changeSetDigest;await assert.rejects(publicationIntent({...rw.request,comparisons},reviewOrigins),/different source or output/);
+});
+
+test('assembled Markdown and image URLs remain bounded even when the original description fits',async()=>{
+  const f=await comparisonFixture();f.request.description='x'.repeat(60000);
+  const intent=await publicationIntent(f.request);
+  assert.throws(()=>renderReviewMarkdown(intent,f.uploads,['https://media.example.test']),/60000 characters/);
+  assert.throws(()=>renderReviewMarkdown(intent,[{...f.uploads[0],url:'https://media.example.test/'+ 'x'.repeat(4096)},f.uploads[1]],['https://media.example.test']),/URL exceeds/);
 });
