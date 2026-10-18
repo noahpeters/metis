@@ -33,7 +33,7 @@ export async function providerAuthorization(env,config,write=false,fetchImpl=fet
   const token=write?config.token:config.readToken;requireValue(token);return {token,authorization:'Basic '+btoa('x-access-token:'+token)};
 }
 async function boundedJSON(request,max=1024*1024){const reader=request.body?.getReader();requireValue(reader);let count=0;const chunks=[];try{while(true){const {done,value}=await reader.read();if(done)break;count+=value.length;requireValue(count<=max);chunks.push(value);}}catch(e){await reader.cancel().catch(()=>{});throw e;}const bytes=new Uint8Array(count);let at=0;for(const chunk of chunks){bytes.set(chunk,at);at+=chunk.length;}return JSON.parse(new TextDecoder().decode(bytes));}
-async function storeCall(config,body,fetchImpl){const r=await fetchImpl(config.store.origin,{method:'POST',redirect:'manual',headers:{authorization:'Bearer '+config.store.token,'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(60000)});requireValue(r.ok);return r.json();}
+async function storeCall(env,config,body){requireValue(env.REPOSITORY_STORE?.fetch);const r=await env.REPOSITORY_STORE.fetch(config.store.origin,{method:'POST',redirect:'manual',headers:{authorization:'Bearer '+config.store.token,'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(60000)});requireValue(r.ok);return r.json();}
 const objectScope=claims=>JSON.stringify([claims.binding,claims.source.adapter,claims.source.repository]);
 async function grant(env,binding,content){requireValue(/^sha256:[a-f0-9]{64}$/.test(content.ref)&&content.ref==='sha256:'+content.sha256);await env.DB.prepare('INSERT OR IGNORE INTO repository_object_grants(binding,ref) VALUES(?,?)').bind(binding,content.ref).run();}
 async function grantReturnedContent(env,binding,value){if(!value||typeof value!=='object')return;if(typeof value.ref==='string'&&typeof value.sha256==='string')await grant(env,binding,value);for(const child of Object.values(value))if(child&&typeof child==='object')await grantReturnedContent(env,binding,child);}
@@ -57,13 +57,13 @@ export async function repositoryServiceFetch(request,env,{fetchImpl=fetch,publis
     requireValue(request.method==='POST'&&!url.search);
     if(route==='store'){
       const body=await boundedJSON(request,8*1024*1024),execution='execution:'+claims.executionId;
-      if(body.action==='put'){const content=await storeCall(config,body,fetchImpl);await grant(env,objectScope(claims),content);return json(content);}
-      if(body.action==='get'){requireValue(await env.DB.prepare('SELECT ref FROM repository_object_grants WHERE binding=? AND ref=?').bind(objectScope(claims),body.content?.ref??'').first());return json(await storeCall(config,body,fetchImpl));}
+      if(body.action==='put'){const content=await storeCall(env,config,body);await grant(env,objectScope(claims),content);return json(content);}
+      if(body.action==='get'){requireValue(await env.DB.prepare('SELECT ref FROM repository_object_grants WHERE binding=? AND ref=?').bind(objectScope(claims),body.content?.ref??'').first());return json(await storeCall(env,config,body));}
       if(body.action==='read')requireValue(body.key===execution||body.key==='change:'+claims.logicalTaskId||/^publication:metis-review-[a-f0-9]{64}$/.test(body.key));
       else if(body.action==='save')requireValue(body.key===execution&&body.changeId===execution);
       else if(['lock','unlock'].includes(body.action))requireValue(body.changeId===execution);
       else throw Error('store_action_rejected');
-      const value=await storeCall(config,body,fetchImpl);if(body.action==='read'&&body.key.startsWith('publication:'))requireValue(!value||(value.intent?.taskId??value.receipt?.taskId)===claims.logicalTaskId);return json(value);
+      const value=await storeCall(env,config,body);if(body.action==='read'&&body.key.startsWith('publication:'))requireValue(!value||(value.intent?.taskId??value.receipt?.taskId)===claims.logicalTaskId);return json(value);
     }
     const body=await boundedJSON(request);requireValue(['publish','update','readChange','observe'].includes(body.operation));
     if(['publish','update'].includes(body.operation))await requireGrantedContent(env,objectScope(claims),body.intent);
