@@ -27,6 +27,7 @@ test('smart Git proxy streams advertisements/fetches and rejects all push, path,
 });
 test('broker store fences execution writes and scopes durable blob reads to an enrolled binding',async t=>{
  const f=fixture(t);const fetchImpl=(url,options)=>{assert.equal(options.redirect,'manual');return repositoryStore(new Request(url,options),{DB:f.env.DB,REPOSITORY_STORE_TOKEN:f.config.store.token});};
+ f.env.REPOSITORY_STORE={fetch:fetchImpl};
  const config=await prepareRepositoryExecution(f.env,'example',claims);const store=new HttpRepositoryStore({...config.store,fetchImpl:(url,options)=>repositoryServiceFetch(new Request(url,options),f.env,{fetchImpl})});
  const content=await store.put(Buffer.from([0,255,1]));assert.deepEqual(await store.get(content),Buffer.from([0,255,1]));assert.equal(f.sql.prepare('SELECT count(*) AS n FROM repository_object_grants').get().n,1);
  await store.lock('execution:'+claims.executionId,()=>store.save('execution:'+claims.executionId,{state:'completed'}));assert.equal((await store.read('execution:'+claims.executionId)).state,'completed');
@@ -48,5 +49,7 @@ test('GitHub App tokens are minted for one repository with separate read and pub
 });
 
 test('broker store rejects redirect responses without forwarding its bridge secret',async t=>{
- const f=fixture(t);let calls=0;const response=await f.request('store',{method:'POST',body:JSON.stringify({action:'put',data:'YQ=='})},{fetchImpl:async(url,options)=>{calls++;assert.equal(url,f.config.store.origin);assert.equal(options.redirect,'manual');return new Response(null,{status:307,headers:{location:'https://evil.example'}});}});assert.equal(response.status,403);assert.equal(calls,1);
+ const f=fixture(t);let calls=0;f.env.REPOSITORY_STORE={fetch:async(url,options)=>{calls++;assert.equal(url,f.config.store.origin);assert.equal(options.redirect,'manual');return new Response(null,{status:307,headers:{location:'https://evil.example'}});}};const response=await f.request('store',{method:'POST',body:JSON.stringify({action:'put',data:'YQ=='})},{fetchImpl:async()=>assert.fail('Store bridge must not use public fetch')});assert.equal(response.status,403);assert.equal(calls,1);
 });
+
+test('store bridge fails closed without its private service binding',async t=>{const f=fixture(t);const response=await f.request('store',{method:'POST',body:JSON.stringify({action:'read',key:'execution:'+claims.executionId})},{fetchImpl:async()=>assert.fail('Missing binding must not fall back to public fetch')});assert.equal(response.status,403);});

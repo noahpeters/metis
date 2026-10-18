@@ -86,6 +86,11 @@ D1 bridge. On **metis-repository-service**, install:
   publication mints `contents:write`, `pull_requests:write`, `issues:write`.
   The App must already have those permissions and repository access.
 
+The checked-in `REPOSITORY_STORE` service binding routes broker-to-control-plane
+store calls privately. It is required; the broker does not fall back to public
+Worker-to-Worker fetch. The existing bridge token still authenticates each call.
+The trusted Node publisher continues to use the authenticated HTTPS store bridge.
+
 The execution runtime's legacy `REPOSITORY_BINDINGS_JSON` is no longer read.
 Remove an old provider-credential binding only through an authorized cleanup;
 this change does not delete secrets. Execution uses the checked-in private

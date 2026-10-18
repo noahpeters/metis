@@ -26,3 +26,35 @@ test('Worker Git proxy uses a supported redirect mode and refuses upstream redir
  const response=await mf.dispatchFetch('http://test/');assert.equal(response.status,200);assert.equal(await response.text(),'test advertisement');
  assert.equal((await mf.dispatchFetch('http://test/?redirect')).status,502);
 });
+
+test('Worker broker locks, saves and reads D1 through a private authenticated service binding',async t=>{
+ const root=new URL('../',import.meta.url).pathname;
+ const mf=new Miniflare(convertV4MiniflareOptions({compatibilityDate:'2026-08-30',modulesRoot:root,workers:[
+  {name:'broker',serviceBindings:{REPOSITORY_STORE:'store'},modules:[
+   {type:'ESModule',path:root+'broker-test.mjs',contents:`
+    import {repositoryServiceFetch,issueRepositoryCapability} from './src/repository-service.mjs';
+    export default {async fetch(request,bindings){
+     const source={adapter:'github',repository:'example/project',ref:'main'},env={...bindings,REPOSITORY_CAPABILITY_KEY:'x'.repeat(32),REPOSITORY_PROVIDERS_JSON:JSON.stringify({example:{source,remote:'https://github.com/example/project.git',store:{origin:'https://private.invalid/v1/repositories/store',token:new URL(request.url).searchParams.has('bad-auth')?'wrong':'test-bridge'}}})};
+     const token=await issueRepositoryCapability(env,{source,binding:'example',taskId:'1'.repeat(36),logicalTaskId:'2'.repeat(36),executionId:'1'.repeat(36)});
+     return repositoryServiceFetch(new Request('https://broker.example/v1/repositories/example/store',{method:'POST',headers:{authorization:'Bearer '+token},body:await request.text()}),env,{fetchImpl:()=>{throw Error('Public store transport is forbidden');}});
+    }};`},
+   {type:'ESModule',path:root+'src/repository-service.mjs'},
+   {type:'ESModule',path:root+'src/github.mjs'}
+  ]},
+  {name:'store',d1Databases:{DB:'store-test'},bindings:{REPOSITORY_STORE_TOKEN:'test-bridge'},modules:[
+   {type:'ESModule',path:root+'store-test.mjs',contents:`import {repositoryStore} from './src/repository-store.mjs';export default {fetch(request,env){return repositoryStore(request,env);}};`},
+   {type:'ESModule',path:root+'src/repository-store.mjs'}
+  ]}
+ ]}));
+ t.after(()=>mf.dispose());
+ const db=await mf.getD1Database('DB','store');
+ const {readFile}=await import('node:fs/promises');await db.exec((await readFile(root+'migrations/0024_repository_store.sql','utf8')).split('ALTER TABLE')[0].replaceAll('\n',' '));
+ const call=(body,path='')=>mf.dispatchFetch('http://broker/'+path,{method:'POST',body:JSON.stringify(body)});
+ const changeId='execution:'+'1'.repeat(36),owner='test-owner';
+ assert.equal((await call({action:'lock',changeId,owner})).status,200);
+ assert.equal((await call({action:'save',key:changeId,changeId,owner,value:{state:'running'}})).status,200);
+ let response=await call({action:'read',key:changeId});assert.equal(response.status,200);assert.deepEqual(await response.json(),{state:'running'});
+ assert.equal((await call({action:'read',key:changeId},'?bad-auth')).status,403);
+ const row=await db.prepare('SELECT value FROM repository_records WHERE key=?').bind(changeId).first();assert.deepEqual(JSON.parse(row.value),{state:'running'});
+ assert.equal((await call({action:'unlock',changeId,owner})).status,200);
+});
