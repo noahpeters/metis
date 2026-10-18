@@ -186,3 +186,33 @@ test('read-only diagnostic receives the longer deadline and cannot publish captu
  assert.equal(f.createCalls,0);assert.equal(receipt.result.repository.captureFailure,'diagnostic_source_changes');
  assert.equal((await f.store.read('execution:diagnostic-attempt')).intent,null);
 });
+
+for(const provider of ['github','artifacts'])test(`${provider}: setup package-manager caches stay outside captured source`,async t=>{
+ const f=await fixture(t,provider),metadata=join(f.root,'setup-environment.json');
+ const task={taskId:'setup-cache-attempt',logicalTaskId:'task',repositoryBinding:'example',instructions:'Inspect source only',review:{title:'Title',description:'Description'}};
+ const script=`const fs=require('node:fs'),path=require('node:path');const cache=process.env.XDG_CACHE_HOME||path.join(process.env.HOME,'.cache');const file=path.join(cache,'pnpm/v11/metadata/typescript.jsonl');fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,Buffer.alloc(6*1024*1024));fs.writeFileSync(${JSON.stringify(metadata)},JSON.stringify({home:process.env.HOME,cache,cwd:process.cwd(),file}));`;
+ const execute=async()=>({state:'completed',result:{threadId:'setup-cache-thread',commandCount:1}});
+ const verifyCache=`const fs=require('node:fs'),path=require('node:path');const cache=process.env.XDG_CACHE_HOME||path.join(process.env.HOME,'.cache');if(fs.statSync(path.join(cache,'pnpm/v11/metadata/typescript.jsonl')).size!==6*1024*1024)process.exit(1);`;
+ const receipt=await runRepositoryTask(task,'{}',{...f.config,setupCommands:[[process.execPath,'-e',script],[process.execPath,'-e',verifyCache]]},{store:f.store,adapter:f.adapter,execute});
+ assert.equal(receipt.state,'completed');
+ assert.equal(receipt.result.repository.captureFailure,undefined);
+ assert.equal(receipt.result.repository.publication.state,'no_changes');
+ const setup=JSON.parse(await readFile(metadata,'utf8'));
+ assert.notEqual(setup.home,setup.cwd);
+ assert.ok(!setup.cache.startsWith(setup.cwd+'/'));
+ await assert.rejects(readFile(setup.file),{code:'ENOENT'});
+ assert.equal(f.createCalls,0);
+ assert.equal((await f.store.read('execution:setup-cache-attempt')).intent,null);
+});
+
+test('failed setup removes its private home and cache without invoking Codex',async t=>{
+ const f=await fixture(t),metadata=join(f.root,'failed-setup-home');
+ const task={taskId:'failed-setup',logicalTaskId:'task',repositoryBinding:'example',instructions:'Inspect',review:{title:'Title',description:'Description'}};
+ const script=`const fs=require('node:fs');fs.mkdirSync(process.env.XDG_CACHE_HOME,{recursive:true});fs.writeFileSync(${JSON.stringify(metadata)},process.env.HOME);process.exit(7);`;
+ const receipt=await runRepositoryTask(task,'{}',{...f.config,setupCommands:[[process.execPath,'-e',script]]},{store:f.store,adapter:f.adapter,execute:()=>assert.fail('Setup failure must stop execution')});
+ assert.equal(receipt.state,'blocked');assert.equal(receipt.reason,'repository_setup_failed');
+ const home=await readFile(metadata,'utf8');
+ await assert.rejects(readFile(join(home,'cache','anything')),{code:'ENOENT'});
+ const {lstat}=await import('node:fs/promises');await assert.rejects(lstat(home),{code:'ENOENT'});
+ assert.equal(f.createCalls,0);
+});

@@ -199,8 +199,16 @@ provider error bodies and model prompts are not logged.
 
 ## UI capture, media and rework
 
-Trusted `setupCommands` are bounded argument arrays. An optional capture config
-supplies a command, untracked PNG output path, scenario, route and viewport.
+Trusted `setupCommands` are bounded argument arrays. They share a private
+temporary `HOME` and `XDG_CACHE_HOME` outside the
+source workspace. Their working directory remains the repository, so dependency
+installation still writes normal project dependencies there. The setup home and
+cache are removed after setup, including failure. This prevents package-manager
+metadata caches from becoming source-change candidates; file-size and symlink
+capture protections remain unchanged.
+
+An optional capture config supplies a command, untracked PNG output path,
+scenario, route and viewport.
 The supervisor captures before/after from the actual local interface, validates
 PNG bytes and metadata, and binds images to source/change revisions. Example:
 
