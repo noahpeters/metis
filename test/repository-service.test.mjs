@@ -37,6 +37,7 @@ test('only change package operations reach the publisher and source credentials 
  const f=fixture(t);let count=0;
  const publish=async command=>{count++;assert.equal(command.claims.logicalTaskId,claims.logicalTaskId);assert.equal(command.operation,'publish');assert.equal(command.token,undefined);return {ok:true,value:{review:{id:'1'}}};};
  const response=await f.request('commands',{method:'POST',body:JSON.stringify({operation:'publish',intent:{sample:true},claims:{binding:'other'}})},{publish});assert.equal(response.status,200);assert.equal((await response.json()).value.review.id,'1');assert.equal(count,1);
+ assert.equal((await f.request('commands',{method:'POST',body:JSON.stringify({operation:'publish',intent:{changeSet:{changes:[{after:{contentRef:'sha256:'+'a'.repeat(64)}}]}}})},{publish})).status,403);assert.equal(count,1);
  for(const operation of ['merge','approve','deploy','push'])assert.equal((await f.request('commands',{method:'POST',body:JSON.stringify({operation})},{publish})).status,403);assert.equal(count,1);
 });
 test('provider read authentication never falls back to an enrolled write credential',async t=>{const f=fixture(t);await assert.rejects(providerAuthorization(f.env,{...f.config,readToken:undefined},false));const artifacts={source:{adapter:'artifacts'},authorization:'write-only'};await assert.rejects(providerAuthorization(f.env,artifacts,false));assert.deepEqual(await providerAuthorization(f.env,{...artifacts,readAuthorization:'read-only'},false),{authorization:'read-only'});});

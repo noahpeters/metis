@@ -28,7 +28,7 @@ export async function prepareRepositoryExecution(env,binding,task){
 export async function providerAuthorization(env,config,write=false,fetchImpl=fetch){
   if(config.source.adapter!=='github') {const authorization=write?config.authorization:config.readAuthorization;requireValue(authorization);return {authorization};}
   if(env.GITHUB_APP_ID&&env.GITHUB_APP_INSTALLATION_ID&&env.GITHUB_APP_PRIVATE_KEY){
-    const jwt=await createGithubAppJwt(env.GITHUB_APP_ID,env.GITHUB_APP_PRIVATE_KEY),r=await fetchImpl('https://api.github.com/app/installations/'+env.GITHUB_APP_INSTALLATION_ID+'/access_tokens',{method:'POST',redirect:'error',headers:{authorization:'Bearer '+jwt,'content-type':'application/json','user-agent':'metis-repository-service','x-github-api-version':'2022-11-28'},body:JSON.stringify({repositories:[config.source.repository.split('/')[1]],permissions:write?{contents:'write',pull_requests:'write',issues:'write'}:{contents:'read'}})});requireValue(r.ok);const d=await r.json();requireValue(d.token);return {token:d.token,authorization:'Basic '+btoa('x-access-token:'+d.token)};
+    const jwt=await createGithubAppJwt(env.GITHUB_APP_ID,env.GITHUB_APP_PRIVATE_KEY),r=await fetchImpl('https://api.github.com/app/installations/'+env.GITHUB_APP_INSTALLATION_ID+'/access_tokens',{method:'POST',redirect:'error',headers:{authorization:'Bearer '+jwt,'content-type':'application/json','user-agent':'metis-repository-service','x-github-api-version':'2022-11-28'},body:JSON.stringify({repositories:[config.source.repository.split('/')[1]],permissions:write?{contents:'write',pull_requests:'write',issues:'write'}:{contents:'read'}}),signal:AbortSignal.timeout(30000)});requireValue(r.ok);const d=await r.json();requireValue(d.token);return {token:d.token,authorization:'Basic '+btoa('x-access-token:'+d.token)};
   }
   const token=write?config.token:config.readToken;requireValue(token);return {token,authorization:'Basic '+btoa('x-access-token:'+token)};
 }
@@ -37,6 +37,11 @@ async function storeCall(config,body,fetchImpl){const r=await fetchImpl(config.s
 const objectScope=claims=>JSON.stringify([claims.binding,claims.source.adapter,claims.source.repository]);
 async function grant(env,binding,content){requireValue(/^sha256:[a-f0-9]{64}$/.test(content.ref)&&content.ref==='sha256:'+content.sha256);await env.DB.prepare('INSERT OR IGNORE INTO repository_object_grants(binding,ref) VALUES(?,?)').bind(binding,content.ref).run();}
 async function grantReturnedContent(env,binding,value){if(!value||typeof value!=='object')return;if(typeof value.ref==='string'&&typeof value.sha256==='string')await grant(env,binding,value);for(const child of Object.values(value))if(child&&typeof child==='object')await grantReturnedContent(env,binding,child);}
+async function requireGrantedContent(env,scope,value){
+  const refs=new Set();
+  const visit=item=>{if(!item||typeof item!=='object')return;const ref=typeof item.contentRef==='string'?item.contentRef:(typeof item.ref==='string'&&typeof item.sha256==='string'?item.ref:null);if(ref){requireValue(/^sha256:[a-f0-9]{64}$/.test(ref));refs.add(ref);}for(const child of Object.values(item))if(child&&typeof child==='object')visit(child);};visit(value);
+  const all=[...refs];for(let i=0;i<all.length;i+=80){const batch=all.slice(i,i+80),rows=await env.DB.prepare('SELECT ref FROM repository_object_grants WHERE binding=? AND ref IN ('+batch.map(()=>'?').join(',')+')').bind(scope,...batch).all();requireValue(rows.results.length===batch.length);}
+}
 export async function repositoryServiceFetch(request,env,{fetchImpl=fetch,publish=command=>env.PUBLISHER.getByName('publisher').run(command)}={}){
   try{
     const url=new URL(request.url),match=/^\/v1\/repositories\/([a-z][a-z0-9_-]{0,63})\/(git(?:\/.*)?|store|commands)$/.exec(url.pathname);if(!match)return json({error:'not_found'},404);
@@ -61,6 +66,7 @@ export async function repositoryServiceFetch(request,env,{fetchImpl=fetch,publis
       const value=await storeCall(config,body,fetchImpl);if(body.action==='read'&&body.key.startsWith('publication:'))requireValue(!value||(value.intent?.taskId??value.receipt?.taskId)===claims.logicalTaskId);return json(value);
     }
     const body=await boundedJSON(request);requireValue(['publish','update','readChange','observe'].includes(body.operation));
+    if(['publish','update'].includes(body.operation))await requireGrantedContent(env,objectScope(claims),body.intent);
     const value=await publish({claims,operation:body.operation,intent:body.intent,publication:body.publication});if(value.ok)await grantReturnedContent(env,objectScope(claims),value.value);return json(value);
   }catch{return json({error:'repository_service_rejected'},403);}
 }

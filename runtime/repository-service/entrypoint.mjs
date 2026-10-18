@@ -7,13 +7,15 @@ export class RepositoryPublisher extends Container {
   sleepAfter='6m';
   async run(command){
     if(this.busy)return {ok:false,reason:'publisher_busy'};
-    this.busy=true;let result;
+    this.busy=true;let result,phase='authentication';
     try{
       const config=repositoryBinding(this.env,command.claims.binding);
       const auth=await providerAuthorization(this.env,config,true);
+      phase='startup';
       await this.startAndWaitForPorts({ports:8080,startOptions:{envVars:{METIS_PUBLISHER_CONFIG:JSON.stringify({...config,...auth})}},cancellationOptions:{instanceGetTimeoutMS:60000,portReadyTimeoutMS:30000}});
-      const response=await this.containerFetch(new Request('http://container/publish',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(command),signal:AbortSignal.timeout(240000)}));result=response.ok?await response.json():{ok:false,reason:'publisher_http_failure'};
-    }catch{result={ok:false,reason:'publisher_transport_unknown'};}
+      phase='request';
+      const response=await this.containerFetch(new Request('http://container/publish',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(command),signal:AbortSignal.timeout(240000)}));phase='response';result=response.ok?await response.json():{ok:false,reason:'publisher_http_failure'};
+    }catch{result={ok:false,reason:'publisher_'+phase+'_unavailable'};}
     try{await stopContainerAndConfirm(this);}catch{result={ok:false,reason:'publisher_shutdown_unconfirmed'};}
     this.busy=false;return result;
   }
