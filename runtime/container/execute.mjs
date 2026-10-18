@@ -67,11 +67,11 @@ export async function runCodex(task,rawAuth,{spawnProcess=spawn,timeoutMs=90000,
     const args=['exec','--json','--ephemeral','--ignore-user-config','--skip-git-repo-check','--sandbox','workspace-write','-c','approval_policy="never"','-c','forced_login_method="chatgpt"','-C',workspace];
     if(task.repositoryBinding){const schema=join(root,'outcome.schema.json');await writeFile(schema,JSON.stringify({type:'object',properties:{status:{type:'string',enum:['completed','blocked'],description:'Choose blocked if work is incomplete or project instructions require unresolved human input or approval.'},summary:{type:'string'},blockers:{type:'array',items:{type:'string'}}},required:['status','summary','blockers'],additionalProperties:false}),{mode:0o600});args.push('--output-schema',schema);}
     args.push('-');
-    let output='';let diagnostic='';let bytes=0;let killed=false;
+    let output='';let diagnostic='';let bytes=0;let terminationReason=null;
     const child=spawnProcess('codex',args,{cwd:workspace,env:cliEnvironment(authDir),stdio:['pipe','pipe','pipe'],detached:true});
-    const kill=()=>{killed=true;try{process.kill(-child.pid,'SIGKILL');}catch{child.kill('SIGKILL');}};
-    const timer=setTimeout(kill,timeoutMs);
-    child.stdout.on('data',chunk=>{bytes+=chunk.length;if(bytes>1_000_000)kill();else output+=chunk;});
+    const kill=reason=>{if(terminationReason)return;terminationReason=reason;try{process.kill(-child.pid,'SIGKILL');}catch{child.kill('SIGKILL');}};
+    const timer=setTimeout(()=>kill('execution_timeout'),timeoutMs);
+    child.stdout.on('data',chunk=>{bytes+=chunk.length;if(bytes>1_000_000)kill('execution_output_limit');else output+=chunk;});
     // Raw diagnostics stay in memory only. Persist a fixed category, never text.
     child.stderr.on('data',chunk=>{if(diagnostic.length<16000)diagnostic+=chunk.toString().slice(0,16000-diagnostic.length);});
     const exited=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',code=>resolve(code));});
@@ -79,7 +79,7 @@ export async function runCodex(task,rawAuth,{spawnProcess=spawn,timeoutMs=90000,
     child.stdin.end('Execute the task below in this isolated workspace. Do not use GitHub, merge, deploy, or request API keys. Use shell commands to verify your work. If blocked, explain why.\n\n'+task.instructions);
     let exitCode;
     try {exitCode=await exited;} finally {clearTimeout(timer);}
-    if(killed)return {state:'blocked',reason:'execution_timeout_or_output_limit'};
+    if(terminationReason)return {state:'blocked',reason:terminationReason};
     const credentialValues=Object.values(auth.tokens).filter(value=>typeof value==='string'&&value.length>=8);
     try {
       const refreshed=validateSubscriptionAuth(await readFile(join(authDir,'auth.json'),'utf8'));

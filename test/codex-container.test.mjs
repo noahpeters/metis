@@ -76,3 +76,26 @@ test('repository execution requires a structured outcome and preserves explicit 
   const blocked=await runCodex({taskId:'repository',repositoryBinding:'example',instructions:'work'},auth,{spawnProcess:fakeSpawn({stream:stream('blocked')})});assert.equal(blocked.state,'blocked');assert.equal(blocked.reason,'repository_agent_blocked');assert.equal(blocked.result.threadId,'codex-thread');assert.equal(blocked.result.commandCount,0);assert.equal(blocked.result.blockers.length,1);
   const malformed=await runCodex({taskId:'repository',repositoryBinding:'example',instructions:'work'},auth,{spawnProcess:fakeSpawn()});assert.equal(malformed.state,'blocked');assert.equal(malformed.reason,'repository_outcome_invalid');
 });
+
+test('execution limits retain the first fixed failure category and clean up subscription auth',async t=>{
+  for(const first of ['timeout','output'])await t.test(first,async t=>{
+    t.mock.timers.enable({apis:['setTimeout']});
+    let ready,authDir,kills=0;const started=new Promise(resolve=>{ready=resolve;});
+    const spawnProcess=(bin,args,options)=>{
+      authDir=options.env.CODEX_HOME;
+      const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.stdin=new PassThrough();
+      child.kill=signal=>{assert.equal(signal,'SIGKILL');kills++;child.emit('close',-1);return true;};
+      ready(child);return child;
+    };
+    const pending=runCodex({taskId:'limited',instructions:'work'},auth,{spawnProcess,timeoutMs:10});
+    const child=await started;child.stderr.write('test-access-token private diagnostic');
+    if(first==='timeout')t.mock.timers.tick(10);
+    child.stdout.write(Buffer.alloc(1_000_001,'x'));
+    // A later timeout/output event must not overwrite the first cause or kill twice.
+    t.mock.timers.tick(10);
+    const receipt=await pending;
+    assert.deepEqual(receipt,{state:'blocked',reason:first==='timeout'?'execution_timeout':'execution_output_limit'});
+    assert.equal(kills,1);assert.doesNotMatch(JSON.stringify(receipt),/test-access-token|private diagnostic/);
+    await assert.rejects(access(authDir));
+  });
+});
