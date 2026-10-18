@@ -113,3 +113,8 @@ test('a blocked repository agent cannot publish partial edits and retains the Co
   const execute=async(task,auth,{workspacePath})=>{await writeFile(join(workspacePath,'app.txt'),'unfinished changes');return {state:'blocked',reason:'repository_agent_blocked',result:{threadId:'blocked-thread',blockers:['Human input required']}};};
   const receipt=await runRepositoryTask(task,'{}',f.config,{store:f.store,adapter:f.adapter,execute});assert.equal(receipt.state,'blocked');assert.equal(receipt.result.threadId,'blocked-thread');assert.equal(f.createCalls,0);assert.equal((await f.store.read('execution:blocked-attempt')).state,'blocked');
 });
+test('full execution reports stay durable while the task API receipt remains bounded',async t=>{
+  const f=await fixture(t),task={taskId:'long-report',logicalTaskId:'task',repositoryBinding:'example',instructions:'Inspect source',review:{title:'Title',description:'Description'}};
+  const execute=async task=>({state:'completed',result:{taskId:task.taskId,threadId:'thread',commandCount:1,finalMessage:'x'.repeat(20000),agentOutcome:{status:'completed',summary:'x'.repeat(20000),blockers:[]}}});
+  const receipt=await runRepositoryTask(task,'{}',f.config,{store:f.store,adapter:f.adapter,execute});assert.equal(receipt.state,'completed');assert.ok(receipt.result.finalMessage.length<4100);assert.equal(receipt.result.agentOutcome,undefined);assert.equal((await f.store.read('execution:long-report')).result.finalMessage.length,20000);
+});

@@ -214,7 +214,8 @@ Snapshots and file/image blobs live in `repository_objects` plus chunk rows.
 `publication:<operation-key>`, and `change:<change-id>` records. Publication
 intents are persisted before source/review writes. Completed execution records
 are reused; running/capturing records with unknown outcomes never authorize a
-second Codex run. Source-capture failures retain execution evidence but require
+second Codex run. The task API caps long execution summaries at 4,000 characters;
+the full report remains in the private execution record. Source-capture failures retain execution evidence but require
 operator follow-up; publication retry cannot reconstruct a deleted workspace.
 
 Publication leases exclude concurrent writers and expire after 20 minutes;

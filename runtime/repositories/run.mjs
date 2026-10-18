@@ -9,6 +9,11 @@ import {HttpRepositoryStore,sha256,check,AdapterError} from './store.mjs';
 import {publicationIntent} from '../../src/repository-adapters/contract.mjs';
 import {captureImage,comparisonsFor,httpMediaPublisher,artifactsMediaPublisher} from './media.mjs';
 import {runCodex} from '../container/execute.mjs';
+function publicResult(result){
+  const {agentOutcome,artifacts,...visible}=result;
+  if(typeof visible.finalMessage==='string'&&visible.finalMessage.length>4000)visible.finalMessage=visible.finalMessage.slice(0,4000)+'\n[Full report retained in the execution record.]';
+  return {...visible,artifacts:[]};
+}
 async function setup(config,workspace){
   for(const args of config.setupCommands??[]) {check(Array.isArray(args)&&args.length&&args.every(a=>typeof a==='string'),'invalid_setup_command');try{await promisify(execFile)(args[0],args.slice(1),{cwd:workspace,env:{PATH:process.env.PATH,HOME:workspace,LANG:'C.UTF-8',...(process.env.PLAYWRIGHT_BROWSERS_PATH?{PLAYWRIGHT_BROWSERS_PATH:process.env.PLAYWRIGHT_BROWSERS_PATH}:{})},timeout:120000,maxBuffer:1000000});}catch{throw new AdapterError('repository_setup_failed');}}
 }
@@ -59,6 +64,6 @@ export async function runRepositoryTask(task,auth,config,{store:providedStore,ex
       try {const receipt=task.repositoryOperation==='observe'?(await store.read('publication:'+execution.intent.idempotencyKey))?.receipt:await adapter[execution.intent.operation==='update'?'update':'publish']({intent:execution.intent});check(receipt,'publication_not_recorded');let observation=unknownObservation(receipt);try{observation=await adapter.observe({publication:receipt});}catch{}publication={state:'published',receipt,observation};}
       catch(e){publication={state:'blocked',reason:e instanceof AdapterError?e.code:'repository_publication_failed'};}
     }
-    return {state:'completed',result:{...execution.result,repository:{binding:task.repositoryBinding,executionId,reworkReason:task.reworkReason??null,canRework:config.source.adapter==='github'&&!['closed','integrated'].includes(publication.observation?.review.state),publication}}};
-  }catch(e){const reason=e instanceof AdapterError?e.code:'repository_execution_failed';if(completedExecution){try{await store.lock('execution:'+executionId,()=>store.save('execution:'+executionId,{...completedExecution,state:'completed',intent:null,captureFailure:reason}));}catch{}return {state:'completed',result:{...completedExecution.result,repository:{binding:task.repositoryBinding,executionId,captureFailure:reason,canRework:false,publication:{state:'blocked',reason,retryable:false}}}};}return {state:'blocked',reason,...(blockedExecution?.result?{result:blockedExecution.result}:{})};}
+    return {state:'completed',result:{...publicResult(execution.result),repository:{binding:task.repositoryBinding,executionId,reworkReason:task.reworkReason??null,canRework:config.source.adapter==='github'&&!['closed','integrated'].includes(publication.observation?.review.state),publication}}};
+  }catch(e){const reason=e instanceof AdapterError?e.code:'repository_execution_failed';if(completedExecution){try{await store.lock('execution:'+executionId,()=>store.save('execution:'+executionId,{...completedExecution,state:'completed',intent:null,captureFailure:reason}));}catch{}return {state:'completed',result:{...publicResult(completedExecution.result),repository:{binding:task.repositoryBinding,executionId,captureFailure:reason,canRework:false,publication:{state:'blocked',reason,retryable:false}}}};}return {state:'blocked',reason,...(blockedExecution?.result?{result:blockedExecution.result}:{})};}
 }
