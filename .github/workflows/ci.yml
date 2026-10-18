@@ -34,6 +34,8 @@ jobs:
           docker build --platform linux/amd64 -f runtime/container/Dockerfile -t metis-codex-runtime:test .
           docker run --rm metis-codex-runtime:test codex --version
           docker run --rm metis-codex-runtime:test codex exec --help
+          docker run --rm metis-codex-runtime:test node --input-type=module -e 'await import("./runtime/repositories/run.mjs");'
+          docker run --rm metis-codex-runtime:test node -e 'const {chromium}=require("/usr/local/lib/node_modules/playwright"); (async()=>{const browser=await chromium.launch({headless:true});const page=await browser.newPage();await page.setContent("<h1>Capture smoke test</h1>");const image=await page.screenshot();if(image[0]!==137||image[1]!==80)throw Error("PNG required");await browser.close();})().catch(()=>process.exit(1));'
       - name: Install browser
         run: npx playwright install --with-deps chromium
       - name: Verify rendered administration UI

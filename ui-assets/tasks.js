@@ -28,7 +28,7 @@ function renderDetail(){
     actions.append(button('Edit task',()=>openForm(task),false),button('Mark ready',()=>post('ready')));
   }
   if(!attempts.length&&task.phase!=='cancelled')actions.append(button('Cancel task',()=>post('cancel')));
-  if(task.phase==='ready'&&(!attempts.length||(['blocked','failed'].includes(attempts[0].state)&&attempts[0].result?.containerStopped===true))){const b=button(attempts.length?'Retry cloud execution':'Start cloud execution',()=>post('start',{attempt_id:crypto.randomUUID()}));b.disabled=busy||dependencies.some(d=>d.state!=='completed');actions.append(b);}
+  if(task.phase==='ready'&&(!attempts.length||(['blocked','failed'].includes(attempts[0].state)&&attempts[0].result?.containerStopped===true))){const b=button(attempts.length?'Retry cloud execution':task.data.repositoryBinding?'Run and submit change':'Start cloud execution',()=>post('start',{attempt_id:crypto.randomUUID()}));b.disabled=busy||dependencies.some(d=>d.state!=='completed');actions.append(b);}
   panel.append(actions,el('h3','Instructions'),el('pre',task.instructions,'task-content'),el('h3','Task data'),el('pre',JSON.stringify(task.data,null,2),'task-content'),el('h3','Dependencies'));
   for(const d of dependencies)panel.append(link(`${d.title} · ${d.state}`,`/tasks/${d.id}`),el('br'));
   if(!dependencies.length)panel.append(el('p','No dependencies.'));
@@ -44,6 +44,18 @@ function renderDetail(){
     const article=el('article',undefined,'task-attempt');article.id=`attempt-${attempt.id}`;
     article.append(link(`Attempt ${attempt.id}`,attempt.url),el('p',`${attempt.state} · queued ${date(attempt.queued_at)} · started ${date(attempt.execution_started_at)}`));
     if(attempt.error)article.append(el('p',attempt.error,'warning'));
+    if(attempt.result?.blockers?.length)article.append(el('p',attempt.result.blockers.join(' · '),'warning'));
+    const repository=attempt.result?.repository;
+    if(repository){
+      article.append(el('p',`Repository publication: ${repository.publication.state}${repository.publication.reason?' · '+repository.publication.reason:''}`));
+      const review=repository.publication.receipt?.review;
+      if(review&&review.url.startsWith('https://')){article.append(link('Open submitted change',review.url));if(!['queued','running'].includes(attempt.publication_job_state))article.append(button('Refresh review status',()=>post('observe',{attempt_id:attempt.id,publication_id:crypto.randomUUID()})));}
+      const observed=repository.publication.observation;if(observed)article.append(el('p',`Review: ${observed.review.state} · checks: ${observed.checks.state} · deployment: ${observed.deployment.state}`));
+      if(['queued','running'].includes(attempt.publication_job_state))article.append(el('p',`Publication retry ${attempt.publication_job_state}`));
+      if(repository.publication.state==='blocked'&&repository.publication.retryable!==false&&!['queued','running'].includes(attempt.publication_job_state))article.append(button('Retry publication',()=>post('publish',{attempt_id:attempt.id,publication_id:crypto.randomUUID()})));
+      if(repository.publication.state==='published'&&repository.canRework&&attempt===attempts[0])article.append(button('Rework change',()=>{document.querySelector('#rework-instructions').value='';document.querySelector('#rework-error').textContent='';document.querySelector('#rework-dialog').showModal();},false));
+    }
+
     article.append(el('p',attempt.thread_id?`Codex thread: ${attempt.thread_id}`:'No completed Codex thread recorded.'));
     article.append(el('p','This is the retained Metis execution record. The CLI workspace is ephemeral; a Codex browser session link is unavailable.'));
     const history=el('ol');for(const event of events.filter(e=>e.task_id===attempt.id))history.append(el('li',`${event.state} · ${date(event.created_at)}`));article.append(history);
@@ -53,7 +65,7 @@ function renderDetail(){
 }
 function openForm(task){editing=!!task;$('#task-form-title').textContent=editing?'Edit task':'New task';$('#task-title').value=task?.title??'';$('#task-instructions').value=task?.instructions??'';$('#task-data').value=JSON.stringify(task?.data??{},null,2);$('#task-form-error').textContent='';$('#task-dialog').showModal();}
 async function refresh(force=false){
-  if(refreshing||(!force&&(busy||$('#task-dialog').open||document.activeElement?.closest('.dependency-form'))))return;
+  if(refreshing||(!force&&(busy||document.querySelector('dialog[open]')||document.activeElement?.closest('.dependency-form'))))return;
   refreshing=true;
   try{const data=await api();tasks=data.tasks;const parts=location.pathname.split('/');selected=parts[2]??null;detail=selected?await api(`/${selected}`):null;renderList();renderDetail();notice(`Updated ${new Date().toLocaleTimeString()}`);if(parts[3]==='attempts'&&parts[4])document.getElementById(`attempt-${parts[4]}`)?.scrollIntoView({block:'nearest'});}
   catch(e){notice(`Could not refresh: ${e.message}`);}finally{refreshing=false;}
@@ -65,3 +77,6 @@ $('#task-form').onsubmit=async e=>{
 };
 document.addEventListener('click',event=>{const a=event.target.closest('a');if(!a||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey||event.button!==0)return;const url=new URL(a.href);if(url.origin===location.origin&&url.pathname.startsWith('/tasks')){event.preventDefault();history.pushState({},'',url.pathname);refresh(true);}});
 window.addEventListener('popstate',()=>refresh(true));refresh();setInterval(()=>{if(!document.hidden)refresh();},5000);
+
+$('#cancel-rework').onclick=()=>$('#rework-dialog').close();
+$('#rework-form').onsubmit=event=>{event.preventDefault();const task=detail.task;act(async()=>{try{await api(`/${task.id}/rework`,{version:task.version,attempt_id:crypto.randomUUID(),reason:$('#rework-reason').value,instructions:$('#rework-instructions').value});$('#rework-dialog').close();}catch(error){$('#rework-error').textContent=error.message;throw error;}});};

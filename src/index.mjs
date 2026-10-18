@@ -1,3 +1,5 @@
+import {executeRepositoryPublication,flushRepositoryPublications} from './repository-publication.mjs';
+import {repositoryStore} from './repository-store.mjs';
 import { executeNativeAttempt, flushNativeOutbox } from './native-tasks.mjs';
 import { executeStandaloneCodex } from "./standalone-codex.mjs";
 import { submitStandalone, standaloneStatus, executeStandaloneProof } from "./standalone-dispatch.mjs";
@@ -750,6 +752,7 @@ async function handleCallback(request, env) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/v1/repositories/store") return repositoryStore(request,env);
     if (request.method === "POST" && url.pathname === "/v1/standalone/tasks") return submitStandalone(request, env);
     if (request.method === "GET" && /^\/v1\/standalone\/tasks\/[0-9a-f-]+$/.test(url.pathname)) return standaloneStatus(request, env, url.pathname.split("/").at(-1));
     if (request.method === "GET" && url.pathname === "/health") return json({ ok: true, service: "metis-control-plane" });
@@ -763,7 +766,8 @@ export default {
         if (["intake", "dispatch"].includes(message.body.type)) {
           await env.DB.prepare("DELETE FROM project_queue_signals WHERE task_id=? AND message_type=?").bind(message.body.taskId, message.body.type).run();
         }
-        if (message.body.type === "native_codex") await executeNativeAttempt(env,message.body.taskId,message.attempts);
+        if (message.body.type === "native_repository_publish") await executeRepositoryPublication(env,message.body.taskId,message.attempts);
+        else if (message.body.type === "native_codex") await executeNativeAttempt(env,message.body.taskId,message.attempts);
         else if (message.body.type === "standalone_proof") await executeStandaloneProof(env, message.body.taskId, message.attempts);
         else if (message.body.type === "standalone_codex") await executeStandaloneCodex(env,message.body.taskId,message.attempts);
         else if (message.body.type === "intake") await handleIntake(env, message.body);
@@ -778,7 +782,7 @@ export default {
     }
   },
   async scheduled(_controller, env) {
-    try { await flushNativeOutbox(env); } catch { console.error("Native task outbox unavailable"); }
+    try { await flushNativeOutbox(env); await flushRepositoryPublications(env); } catch { console.error("Native task outbox unavailable"); }
     await ensureScheduledPacingWindow(env);
     await reenergizeExpiredCapacity(env);
     // Analytics failures are ledger observations, not task or recovery failures.

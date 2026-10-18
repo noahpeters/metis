@@ -1,6 +1,6 @@
 // Real execution occurs in the private cloud runtime Worker, never in this
 // control-plane isolate. The runtime durably deduplicates execution by task ID.
-export async function executeStandaloneCodex(env,id,attempts=1) {
+export async function executeStandaloneCodex(env,id,attempts=1,repositoryTask=null) {
   const row=await env.DB.prepare("SELECT id,instructions,state,verification FROM standalone_tasks WHERE id=? AND executor='codex'").bind(id).first();
   if (!row || ['completed','failed','blocked'].includes(row.state)) return;
   if (env.STANDALONE_CODEX_ENABLED!=='true' || !env.CODEX_RUNTIME) {
@@ -9,7 +9,7 @@ export async function executeStandaloneCodex(env,id,attempts=1) {
   }
   await env.DB.prepare("UPDATE standalone_tasks SET state='running',execution_started_at=COALESCE(execution_started_at,unixepoch()),updated_at=unixepoch() WHERE id=? AND state='queued'").bind(id).run();
   try {
-    const receipt=await env.CODEX_RUNTIME.execute({taskId:id,instructions:row.instructions,verification:row.verification});
+    const receipt=await env.CODEX_RUNTIME.execute({taskId:id,instructions:row.instructions,verification:row.verification,...(repositoryTask??{})});
     if (!receipt || !['completed','blocked','failed'].includes(receipt.state)) throw new Error('Invalid cloud runtime receipt');
     const result=receipt.result;
     if (receipt.state==='completed' && (result?.operation!=='codex_exec' || result.taskId!==id || result.billingMode!=='included_subscription' || result.exitCode!==0 || result.turnCompleted!==true || typeof result.threadId!=='string' || !result.threadId || !Number.isInteger(result.commandCount) || result.commandCount<1)) throw new Error('Cloud runtime did not supply command execution evidence');

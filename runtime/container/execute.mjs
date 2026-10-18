@@ -13,7 +13,7 @@ export function validateSubscriptionAuth(raw) {
 }
 export function cliEnvironment(authDir) {
   // Deliberately exclude Worker, GitHub, Cloudflare and API key credentials.
-  return {PATH:process.env.PATH??'/usr/local/bin:/usr/bin:/bin',HOME:authDir,CODEX_HOME:authDir,LANG:'C.UTF-8',TERM:'dumb'};
+  return {PATH:process.env.PATH??'/usr/local/bin:/usr/bin:/bin',HOME:authDir,CODEX_HOME:authDir,LANG:'C.UTF-8',TERM:'dumb',...(process.env.PLAYWRIGHT_BROWSERS_PATH?{PLAYWRIGHT_BROWSERS_PATH:process.env.PLAYWRIGHT_BROWSERS_PATH}:{})};
 }
 export function parseEvents(output) {
   const evidence={threadId:null,turnCompleted:false,commandCount:0,finalMessage:'',failed:false};
@@ -55,16 +55,18 @@ async function verifySolution(workspace) {
   return {kind:'numeric_summary_v1',passed,cases};
 }
 
-export async function runCodex(task,rawAuth,{spawnProcess=spawn,timeoutMs=90000}={}) {
+export async function runCodex(task,rawAuth,{spawnProcess=spawn,timeoutMs=90000,workspacePath}={}) {
   let auth;
   try {auth=validateSubscriptionAuth(rawAuth);} catch {return {state:'blocked',reason:'subscription_auth_required'};}
   const root=await mkdtemp('/tmp/metis-codex-');
-  const workspace=join(root,'workspace');const authDir=join(root,'auth');
+  const workspace=workspacePath??join(root,'workspace');const authDir=join(root,'auth');
   try {
-    await mkdir(workspace,{mode:0o700});await mkdir(authDir,{mode:0o700});
+    if(!workspacePath)await mkdir(workspace,{mode:0o700});await mkdir(authDir,{mode:0o700});
     await writeFile(join(authDir,'auth.json'),JSON.stringify(auth),{mode:0o600});
     const startedAt=new Date().toISOString();
-    const args=['exec','--json','--ephemeral','--ignore-user-config','--skip-git-repo-check','--sandbox','workspace-write','-c','approval_policy="never"','-c','forced_login_method="chatgpt"','-C',workspace,'-'];
+    const args=['exec','--json','--ephemeral','--ignore-user-config','--skip-git-repo-check','--sandbox','workspace-write','-c','approval_policy="never"','-c','forced_login_method="chatgpt"','-C',workspace];
+    if(task.repositoryBinding){const schema=join(root,'outcome.schema.json');await writeFile(schema,JSON.stringify({type:'object',properties:{status:{type:'string',enum:['completed','blocked'],description:'Choose blocked if work is incomplete or project instructions require unresolved human input or approval.'},summary:{type:'string'},blockers:{type:'array',items:{type:'string'}}},required:['status','summary','blockers'],additionalProperties:false}),{mode:0o600});args.push('--output-schema',schema);}
+    args.push('-');
     let output='';let diagnostic='';let bytes=0;let killed=false;
     const child=spawnProcess('codex',args,{cwd:workspace,env:cliEnvironment(authDir),stdio:['pipe','pipe','pipe'],detached:true});
     const kill=()=>{killed=true;try{process.kill(-child.pid,'SIGKILL');}catch{child.kill('SIGKILL');}};
@@ -88,19 +90,28 @@ export async function runCodex(task,rawAuth,{spawnProcess=spawn,timeoutMs=90000}
     let evidence;
     try {evidence=parseEvents(output);} catch {return {state:'failed',reason:'invalid_codex_event_stream'};}
     await rm(authDir,{recursive:true,force:true});
-    if (exitCode!==0 || evidence.failed || !evidence.turnCompleted || !evidence.threadId || evidence.commandCount<1 || !evidence.finalMessage) {
+    if (exitCode!==0 || evidence.failed || !evidence.turnCompleted || !evidence.threadId || (!task.repositoryBinding&&evidence.commandCount<1) || !evidence.finalMessage) {
       const text=diagnostic+'\n'+output;
       const category=/unexpected argument|unrecognized option|unknown option/i.test(text)?'unsupported_option':/401|unauthorized|refresh.token|authentication|not logged in/i.test(text)?'authentication':/bwrap|bubblewrap|landlock|sandbox|operation not permitted/i.test(text)?'sandbox':'unclassified';
       return {state:'blocked',reason:`codex_execution_not_verified_exit_${Number.isInteger(exitCode)?exitCode:'unknown'}_${category}`};
+    }
+    let agentOutcome=null;
+    if(task.repositoryBinding){
+      try{agentOutcome=JSON.parse(evidence.finalMessage);}catch{return {state:'blocked',reason:'repository_outcome_invalid'};}
+      if(!agentOutcome||typeof agentOutcome!=='object'||Object.keys(agentOutcome).some(k=>!['status','summary','blockers'].includes(k))||Buffer.byteLength(JSON.stringify(agentOutcome))>32000||!['completed','blocked'].includes(agentOutcome.status)||typeof agentOutcome.summary!=='string'||!agentOutcome.summary.trim()||!Array.isArray(agentOutcome.blockers)||agentOutcome.blockers.length>20||agentOutcome.blockers.some(item=>typeof item!=='string'||!item.trim()||item.length>1000))return {state:'blocked',reason:'repository_outcome_invalid'};
+      evidence.finalMessage=agentOutcome.summary;
+      if(agentOutcome.status==='blocked')return {state:'blocked',reason:'repository_agent_blocked',result:{operation:'codex_exec',taskId:task.taskId,billingMode:'included_subscription',startedAt,completedAt:new Date().toISOString(),exitCode,...evidence,blockers:agentOutcome.blockers.length?agentOutcome.blockers:[agentOutcome.summary]}};
+      if(agentOutcome.blockers.length)return {state:'blocked',reason:'repository_outcome_inconsistent'};
+      if(evidence.commandCount<1)return {state:'blocked',reason:'repository_no_successful_verification_command'};
     }
     let verification=null;
     if(task.verification==='numeric_summary_v1'){
       try{verification=await verifySolution(workspace);}catch{return {state:'failed',reason:'independent_code_verification_failed'};}
       if(!verification.passed)return {state:'failed',reason:'independent_code_verification_failed'};
     }
-    const artifacts=(await Promise.all(['result.json','solution.mjs'].map(name=>collectArtifact(workspace,name)))).filter(Boolean);
+    const artifacts=task.repositoryBinding?[]:(await Promise.all(['result.json','solution.mjs'].map(name=>collectArtifact(workspace,name)))).filter(Boolean);
     if(artifacts.some(file=>containsCredential(file.content)))return {state:'blocked',reason:'credential_output_rejected'};
-    const result={operation:'codex_exec',taskId:task.taskId,billingMode:'included_subscription',startedAt,completedAt:new Date().toISOString(),exitCode,...evidence,artifacts,verification};
+    const result={operation:'codex_exec',taskId:task.taskId,billingMode:'included_subscription',startedAt,completedAt:new Date().toISOString(),exitCode,...evidence,artifacts,verification,...(agentOutcome?{agentOutcome}:{})};
     if (Buffer.byteLength(JSON.stringify(result))>48000) return {state:'blocked',reason:'codex_result_exceeded_limit'};
     return {state:'completed',result};
   } catch {return {state:'blocked',reason:'runtime_execution_error'};}

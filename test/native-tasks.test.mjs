@@ -7,7 +7,7 @@ import worker from '../src/index.mjs';
 import {proxyApi} from '../src/ui/api.mjs';
 function fixture(t){
   const sql=new DatabaseSync(':memory:');t.after(()=>sql.close());
-  for(const file of ['0020_standalone_dispatch.sql','0021_standalone_d1_proof.sql','0022_standalone_codex_runner.sql','0023_native_tasks.sql'])sql.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
+  for(const file of ['0020_standalone_dispatch.sql','0021_standalone_d1_proof.sql','0022_standalone_codex_runner.sql','0023_native_tasks.sql','0024_repository_store.sql'])sql.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   const DB={prepare(query){let args=[];return {bind(...v){args=v;return this;},async first(){return sql.prepare(query).get(...args)??null;},async all(){return {results:sql.prepare(query).all(...args)};},async run(){return {meta:{changes:Number(sql.prepare(query).run(...args).changes)}};}};},async batch(statements){sql.exec('BEGIN');try{const out=[];for(const s of statements)out.push(await s.run());sql.exec('COMMIT');return out;}catch(e){sql.exec('ROLLBACK');throw e;}}};
   const env={DB,STANDALONE_CODEX_ENABLED:'true',CODEX_RUNTIME:{async execute(task){return {state:'completed',result:{operation:'codex_exec',taskId:task.taskId,billingMode:'included_subscription',exitCode:0,turnCompleted:true,threadId:'real-thread-test',commandCount:2,containerStopped:true}};}},DISPATCH_QUEUE:{sent:[],async send(body){this.sent.push(body);}}};
   const request=(method,path='',body,email='tester@from-trees.com')=>nativeTasksForIdentity(email,method,'/api/tasks'+path,body,env);
@@ -87,4 +87,22 @@ test('safe explicit retry retains separate attempts; stale starts cannot create 
   assert.equal((await f.request('POST',`/${id}/start`,{version:oldVersion,attempt_id:crypto.randomUUID()})).status,409);
   assert.equal((await f.action(id,'start',{attempt_id:crypto.randomUUID()})).status,202);
   assert.equal((await f.get(id)).attempts.length,2);
+});
+test('repository capabilities fail closed before admission and configured bindings reach the cloud runtime',async t=>{
+  const f=fixture(t),id=await f.create();f.sql.prepare('UPDATE native_tasks SET data_json=? WHERE id=?').run(JSON.stringify({repositoryBinding:'example',reviewDescription:'Review body'}),id);await f.action(id,'ready');
+  assert.equal((await f.action(id,'start',{attempt_id:crypto.randomUUID()})).status,503);assert.equal(f.env.DISPATCH_QUEUE.sent.length,0);
+  f.env.CODEX_RUNTIME.repositoryCapabilities=async()=>({configured:true,canRework:true});
+  const run=crypto.randomUUID();assert.equal((await f.action(id,'start',{attempt_id:run})).status,202);
+  let received;f.env.CODEX_RUNTIME.execute=async task=>{received=task;return {state:'completed',result:{operation:'codex_exec',taskId:task.taskId,billingMode:'included_subscription',exitCode:0,turnCompleted:true,threadId:'thread',commandCount:1,containerStopped:true,repository:{binding:'example',executionId:run,canRework:true,publication:{state:'published',receipt:{review:{id:'1',url:'https://github.com/example/project/pull/1'}}}}}};};
+  await worker.queue({messages:[{body:f.env.DISPATCH_QUEUE.sent[0],attempts:1,ack(){},retry(){assert.fail();}}]},f.env);assert.equal(received.repositoryBinding,'example');assert.equal(received.logicalTaskId,id);
+  const revised=crypto.randomUUID();assert.equal((await f.action(id,'rework',{attempt_id:revised,reason:'resolve_conflicts',instructions:'Resolve the conflicts and rerun tests.'})).status,202);
+  const saved=f.sql.prepare('SELECT a.rework_reason,s.instructions FROM native_task_attempts a JOIN standalone_tasks s ON s.id=a.id WHERE a.id=?').get(revised);assert.equal(saved.rework_reason,'resolve_conflicts');assert.match(saved.instructions,/Original|Write and execute code/);assert.match(saved.instructions,/Resolve the conflicts/);
+});
+test('publication retry queues a distinct job while preserving the completed execution receipt',async t=>{
+  const f=fixture(t),id=await f.create();await f.action(id,'ready');const run=crypto.randomUUID();await f.action(id,'start',{attempt_id:run});
+  f.sql.prepare("UPDATE standalone_tasks SET state='completed',result_json=? WHERE id=?").run(JSON.stringify({taskId:run,threadId:'original-thread',exitCode:0,repository:{binding:'example',publication:{state:'blocked',reason:'provider_transport_unknown'}}}),run);
+  f.env.CODEX_RUNTIME.execute=async task=>({state:'completed',result:{taskId:task.executionId,containerStopped:true,repository:{binding:'example',publication:{state:'published',receipt:{review:{id:'1',url:'https://github.com/example/project/pull/1'}}}}}});
+  const job=crypto.randomUUID();assert.equal((await f.action(id,'publish',{attempt_id:run,publication_id:job})).status,202);assert.equal((await f.action(id,'publish',{attempt_id:run,publication_id:crypto.randomUUID()})).status,409);
+  await worker.queue({messages:[{body:{type:'native_repository_publish',taskId:job},attempts:1,ack(){},retry(){assert.fail();}}]},f.env);
+  const saved=JSON.parse(f.sql.prepare('SELECT result_json FROM standalone_tasks WHERE id=?').get(run).result_json);assert.equal(saved.threadId,'original-thread');assert.equal(saved.repository.publication.state,'published');
 });

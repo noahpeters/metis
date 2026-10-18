@@ -5,3 +5,8 @@
 !runtime/container/execute.mjs
 !runtime/container/server.mjs
 !runtime/container/verify-solution.mjs
+!runtime/repositories/
+!runtime/repositories/*.mjs
+!src/
+!src/repository-adapters/
+!src/repository-adapters/*.mjs
