@@ -7,3 +7,32 @@ for(const mode of ['pass','fail','timeout'])test(`sequential cloud diagnostic ch
  const header=JSON.parse(out.stdout.trim().split('\n').at(-1)),result=JSON.parse(await readFile(join(header.log_directory,'progress.json'),'utf8'));t.after(()=>rm(result.log_directory,{recursive:true,force:true}));
  assert.deepEqual((await readFile(calls,'utf8')).trim().split('\n'),mode==='pass'?['lint','typecheck','test','build','build:worker']:['lint','typecheck','test']);assert.equal(result.state,mode==='pass'?'completed':'blocked');assert.equal(result.checks.find(c=>c.name==='test').state,mode==='pass'?'completed':mode==='fail'?'failed':'timeout');assert.match(result.checks.find(c=>c.name==='test').output_tail,/test case progress/);
 });
+
+for (const inheritedCI of [undefined, 'false']) test(`verification isolates CI environment when inherited CI is ${inheritedCI ?? 'unset'}`, async t => {
+ const root = await mkdtemp(join(tmpdir(), 'metis-check-env-'));
+ t.after(() => rm(root, { recursive: true, force: true }));
+ const pnpm = join(root, 'pnpm'), calls = join(root, 'calls');
+ await writeFile(pnpm, `#!/usr/bin/env python3
+import json,os,sys
+with open(${JSON.stringify(calls)},'a') as f:
+ f.write(json.dumps({'check':sys.argv[1],'ci':os.environ.get('CI'),'codex_home':os.environ.get('CODEX_HOME'),'home':os.environ.get('HOME')})+'\\n')
+`, { mode: 0o700 });
+ const env = { ...process.env, CODEX_HOME: join(root, 'private-codex-home'), HOME: root };
+ delete env.CI;
+ if (inheritedCI !== undefined) env.CI = inheritedCI;
+ const parentEnv = { ...env }, processCI = process.env.CI;
+ const { stdout } = await exec('python3', ['runtime/container/sequential-checks.py', '--pnpm', pnpm, '--timeout-seconds', '5'], { env, timeout: 15000 });
+ const result = JSON.parse(stdout.trim().split('\n').at(-1));
+ t.after(() => rm(result.log_directory, { recursive: true, force: true }));
+ assert.equal(result.state, 'completed');
+ const children = (await readFile(calls, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+ assert.deepEqual(children.map(child => child.check), ['lint', 'typecheck', 'test', 'build', 'build:worker']);
+ for (const child of children) {
+  assert.equal(child.ci, 'true');
+  assert.equal(child.codex_home, null);
+  assert.equal(child.home, result.log_directory);
+  assert.notEqual(child.home, root);
+ }
+ assert.deepEqual(env, parentEnv);
+ assert.equal(process.env.CI, processCI);
+});
