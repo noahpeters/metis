@@ -112,7 +112,7 @@ test('interrupted progress retains only validated identity, fixed command hints,
   now=160;const complete={type:'item.completed',item:{id:'private-id',type:'command_execution',command:'pnpm build:worker',status:'completed',exit_code:0,aggregated_output:'test-access-token private output'}};
   progress.push(line(complete)+line(complete));
   now=200;
-  assert.deepEqual(progress.snapshot(),{threadId:'22222222-2222-4222-8222-222222222222',commandCount:1,executionProgress:{elapsedMs:100,lastCommand:{hint:'pnpm_build_worker',status:'completed',elapsedMs:60}}});
+  assert.deepEqual(progress.snapshot(),{threadId:'22222222-2222-4222-8222-222222222222',commandCount:1,executionProgress:{elapsedMs:100,idleMs:40,lastEvent:'item.completed:command_execution',commandsTruncated:0,commands:[{hint:'pnpm_build_worker',status:'completed',elapsedMs:60,startedMs:0}],lastCommand:{hint:'pnpm_build_worker',status:'completed',elapsedMs:60}}});
   assert.doesNotMatch(JSON.stringify(progress.snapshot()),/private|test-access-token|bash|tools|--secret/);
   credentials.push('22222222-2222-4222-8222-222222222222');assert.equal(progress.snapshot().threadId,null);
   progress.push(line({type:'thread.started',thread_id:'not-a-valid-thread-test-access-token'}));assert.equal(progress.snapshot().threadId,null);
@@ -120,4 +120,23 @@ test('interrupted progress retains only validated identity, fixed command hints,
   now=220;assert.deepEqual(progress.snapshot().executionProgress.lastCommand,{hint:'verification_batch',status:'running',elapsedMs:20});
   progress.push('{"type":"item.completed","item":'); // A truncated final event is ignored.
   assert.equal(progress.snapshot().commandCount,1);
+});
+
+test('interrupted timeline bounds history, tracks concurrent commands and separates idle time from command duration',()=>{
+  let now=0;const progress=createExecutionProgress([],()=>now),push=e=>progress.push(JSON.stringify(e)+'\n');
+  for(let i=0;i<35;i++){
+    now=i*10;push({type:'item.started',item:{id:String(i),type:'command_execution',command:'pnpm test --private=hidden'}});
+    now+=5;push({type:'item.completed',item:{id:String(i),type:'command_execution',status:'completed',exit_code:0,aggregated_output:'private-output'}});
+  }
+  now=400;push({type:'item.started',item:{id:'parallel-a',type:'command_execution',command:'pnpm lint'}});
+  now=410;push({type:'item.started',item:{id:'parallel-b',type:'command_execution',command:'pnpm typecheck'}});
+  now=420;push({type:'item.completed',item:{id:'parallel-a',type:'command_execution',status:'completed',exit_code:0}});
+  now=430;push({type:'item.completed',item:{id:'parallel-b',type:'command_execution',status:'failed',exit_code:1}});
+  now=450;push({type:'item.completed',item:{type:'reasoning',text:'private-reasoning'}});
+  now=500;progress.push('invalid\n{"truncated":');
+  const p=progress.snapshot().executionProgress;
+  assert.equal(p.commands.length,32);assert.equal(p.commandsTruncated,5);assert.equal(progress.snapshot().commandCount,36);
+  assert.deepEqual(p.commands.slice(-2),[{hint:'pnpm_lint',status:'completed',elapsedMs:20,startedMs:400},{hint:'pnpm_typecheck',status:'failed',elapsedMs:20,startedMs:410}]);
+  assert.equal(p.lastEvent,'item.completed:reasoning');assert.equal(p.idleMs,50);assert.equal(p.elapsedMs,500);
+  assert.doesNotMatch(JSON.stringify(p),/hidden|private|parallel/);
 });

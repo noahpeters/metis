@@ -1,3 +1,4 @@
+import {repositoryRequestTimeoutMs} from '../repositories/deadline.mjs';
 // Never persist an exception's text: startup errors may include credentials.
 function category(error) {
   const text=String(error?.message??error);
@@ -32,7 +33,7 @@ export async function executeContainerTask(container,task,auth,repositoryConfig)
     // Give cold placement time to finish before the port-readiness window.
     await container.startAndWaitForPorts({ports:8080,startOptions:{envVars:{CODEX_SUBSCRIPTION_AUTH_JSON:auth,...(repositoryConfig?{METIS_REPOSITORY_CONFIG:JSON.stringify(repositoryConfig)}:{})}},cancellationOptions:{instanceGetTimeoutMS:60000,portReadyTimeoutMS:30000}});
     phase='request';
-    const response=await container.containerFetch(new Request('http://container/execute',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(task),signal:AbortSignal.timeout(repositoryConfig?600000:120000)}));
+    const response=await container.containerFetch(new Request('http://container/execute',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(task),signal:AbortSignal.timeout(repositoryConfig?repositoryRequestTimeoutMs(repositoryConfig):120000)}));
     phase='response';
     receipt=response.ok?await response.json():{state:'blocked',reason:`container_http_${response.status}`};
   } catch(error) {receipt={state:'blocked',reason:`container_${phase}_${category(error)}`};}

@@ -109,7 +109,7 @@ test('publication retry queues a distinct job while preserving the completed exe
 
 test('interrupted execution identity and safe progress survive Queue processing, D1 and the task API without completion',async t=>{
   const f=fixture(t),id=await f.create('Interrupted work');await f.action(id,'ready');
-  const progress={threadId:'33333333-3333-4333-8333-333333333333',commandCount:1,executionProgress:{elapsedMs:300000,lastCommand:{hint:'pnpm_test',status:'running',elapsedMs:100000}},containerStopped:true,containerStopForced:false};
+  const progress={threadId:'33333333-3333-4333-8333-333333333333',commandCount:1,executionProgress:{elapsedMs:600000,idleMs:100000,lastEvent:'item.started:command_execution',commandsTruncated:0,commands:[{hint:'pnpm_test',status:'running',startedMs:500000,elapsedMs:100000}],lastCommand:{hint:'pnpm_test',status:'running',elapsedMs:100000}},containerStopped:true,containerStopForced:false};
   let runs=0;f.env.CODEX_RUNTIME.execute=async()=>{runs++;return {state:'blocked',reason:'execution_timeout',result:progress};};
   const attempt=crypto.randomUUID();await f.action(id,'start',{attempt_id:attempt});let acked=false;
   await worker.queue({messages:[{body:f.env.DISPATCH_QUEUE.sent[0],attempts:1,ack(){acked=true;},retry(){assert.fail('Do not replay interrupted Codex');}}]},f.env);

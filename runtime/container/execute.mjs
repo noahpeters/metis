@@ -30,7 +30,7 @@ export function parseEvents(output) {
 // Only fixed hints, counters, timing and a validated thread UUID may survive
 // interruption. Command text, output, diagnostics and item IDs stay in memory.
 export function createExecutionProgress(credentials=[],clock=Date.now) {
-  const started=clock(),completed=new Set();let pending='',threadId=null,count=0,last=null;
+  const started=clock(),completed=new Set(),commands=[];let pending='',threadId=null,count=0,last=null,lastActivity=started,lastEvent=null,commandsTruncated=0;
   const duration=from=>Math.max(0,Math.min(86400000,Math.round(clock()-from)));
   const hint=command=>{
     if(typeof command!=='string')return 'other';
@@ -50,17 +50,26 @@ export function createExecutionProgress(credentials=[],clock=Date.now) {
         const line=pending.slice(0,newline);pending=pending.slice(newline+1);let event;
         try{event=JSON.parse(line);}catch{continue;}
         if(event?.type==='thread.started'&&typeof event.thread_id==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(event.thread_id))threadId=event.thread_id;
-        const item=event?.item;if(item?.type!=='command_execution')continue;
+        const item=event?.item;
+        const kind=['thread.started','turn.started','turn.completed','turn.failed','error'].includes(event?.type)?event.type:
+          ['item.started','item.updated','item.completed'].includes(event?.type)&&['command_execution','agent_message','reasoning'].includes(item?.type)?event.type+':'+item.type:null;
+        if(kind){lastActivity=clock();lastEvent=kind;}
+        if(item?.type!=='command_execution')continue;
         const id=typeof item.id==='string'&&item.id.length<=128?item.id:null;
-        if(event.type==='item.started')last={id,hint:hint(item.command),status:'running',started:clock(),finished:null};
+        if(event.type==='item.started'){
+          last={id,hint:hint(item.command),status:'running',started:clock(),finished:null};commands.push(last);
+          if(commands.length>32){commands.shift();commandsTruncated++;}
+        }
         if(event.type==='item.completed'){
           if(id&&completed.has(id))continue;
           if(item.status==='completed'&&item.exit_code===0)count=Math.min(10000,count+1);if(id)completed.add(id);
-          last={id,hint:hint(item.command),status:item.status==='completed'&&item.exit_code===0?'completed':'failed',started:id&&last?.id===id?last.started:clock(),finished:clock()};
+          let entry=id?commands.find(c=>c.id===id&&c.finished===null):null;
+          if(!entry){entry={id,hint:hint(item.command),started:clock()};commands.push(entry);if(commands.length>32){commands.shift();commandsTruncated++;}}
+          Object.assign(entry,{status:item.status==='completed'&&item.exit_code===0?'completed':'failed',finished:clock()});last=entry;
         }
       }
     },
-    snapshot(){return {threadId:threadId&&!credentials.some(v=>typeof v==='string'&&v.length>=8&&(threadId.includes(v)||v.includes(threadId)))?threadId:null,commandCount:count,executionProgress:{elapsedMs:duration(started),lastCommand:last?{hint:last.hint,status:last.status,elapsedMs:Math.max(0,Math.min(86400000,(last.finished??clock())-last.started))}:null}};}
+    snapshot(){const timing=c=>({hint:c.hint,status:c.status,elapsedMs:Math.max(0,Math.min(86400000,(c.finished??clock())-c.started))});return {threadId:threadId&&!credentials.some(v=>typeof v==='string'&&v.length>=8&&(threadId.includes(v)||v.includes(threadId)))?threadId:null,commandCount:count,executionProgress:{elapsedMs:duration(started),idleMs:duration(lastActivity),lastEvent,commandsTruncated,commands:commands.map(c=>({...timing(c),startedMs:Math.max(0,Math.min(86400000,c.started-started))})),lastCommand:last?timing(last):null}};}
   };
 }
 async function collectArtifact(workspace,name) {

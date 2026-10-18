@@ -32,3 +32,10 @@ test('SIGTERM returning with a healthy container must force termination and conf
   assert.equal(cleanup.forced,true);assert.equal(destroyed,1);assert.equal(running,false);
   await assert.rejects(stopContainerAndConfirm(controller({getState:async()=>({status:'healthy'})}),{delay:async()=>{},graceMs:0,forceMs:0}),/shutdown_not_confirmed/);
 });
+
+test('long repository execution extends the request deadline while standalone proofs keep their deadline',async t=>{
+  const values=[];t.mock.method(AbortSignal,'timeout',ms=>{values.push(ms);return new AbortController().signal;});
+  await executeContainerTask(controller(),task,'auth',{executionTimeoutMs:600000});
+  await executeContainerTask(controller(),task,'auth');
+  assert.deepEqual(values,[780000,120000]);
+});
