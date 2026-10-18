@@ -167,3 +167,10 @@ test('source metadata rejects legacy full-tree manifests and exports raw Git byt
   const snapshot=await f.adapter.resolve({source:f.source});await f.adapter.prepare({snapshot,workspaceHandle:f.workspace});assert.equal(await readFile(join(f.workspace,'app.txt'),'utf8'),'original\n');assert.equal((await f.adapter.collect({snapshot,workspaceHandle:f.workspace})).changeSet,null);
   const content=await f.store.put(JSON.stringify({files:[{path:'app.txt',mode:'100644',sha256:'0'.repeat(64)}]})),other=join(f.root,'legacy');await mkdir(other);await assert.rejects(f.adapter.prepare({snapshot:{...snapshot,adapterVersion:'git-v1',content},workspaceHandle:other}),/invalid_git_reference/);
 });
+
+test('repository progress persists before execution finishes without overwriting execution state',async t=>{
+ const f=await fixture(t),task={taskId:'live-attempt',logicalTaskId:'task',repositoryBinding:'example',instructions:'Inspect',review:{title:'Title',description:'Description'}};
+ const progress={threadId:'11111111-1111-4111-8111-111111111111',commandCount:0,executionProgress:{elapsedMs:5000,idleMs:1000,lastEvent:'item.started:command_execution',commandsTruncated:0,commands:[{hint:'pnpm_test',status:'running',elapsedMs:1000,startedMs:4000}],lastCommand:{hint:'pnpm_test',status:'running',elapsedMs:1000}}};
+ const execute=async(task,auth,options)=>{assert.equal(options.captureCommandOutput,true);await options.onProgress(progress);assert.equal((await f.store.read('execution:live-attempt')).state,'running');assert.deepEqual(await f.store.read('progress:live-attempt'),progress);return {state:'blocked',reason:'execution_timeout',result:progress};};
+ const receipt=await runRepositoryTask(task,'{}',{...f.config,captureCommandOutput:true},{store:f.store,adapter:f.adapter,execute});assert.equal(receipt.state,'blocked');assert.equal((await f.store.read('execution:live-attempt')).state,'blocked');assert.equal(f.createCalls,0);
+});

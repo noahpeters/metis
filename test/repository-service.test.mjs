@@ -30,7 +30,7 @@ test('broker store fences execution writes and scopes durable blob reads to an e
  f.env.REPOSITORY_STORE={fetch:fetchImpl};
  const config=await prepareRepositoryExecution(f.env,'example',claims);const store=new HttpRepositoryStore({...config.store,fetchImpl:(url,options)=>repositoryServiceFetch(new Request(url,options),f.env,{fetchImpl})});
  const content=await store.put(Buffer.from([0,255,1]));assert.deepEqual(await store.get(content),Buffer.from([0,255,1]));assert.equal(f.sql.prepare('SELECT count(*) AS n FROM repository_object_grants').get().n,1);
- await store.lock('execution:'+claims.executionId,()=>store.save('execution:'+claims.executionId,{state:'completed'}));assert.equal((await store.read('execution:'+claims.executionId)).state,'completed');
+ await store.lock('execution:'+claims.executionId,async()=>{await store.save('progress:'+claims.executionId,{commandCount:1});await assert.rejects(store.save('progress:'+'9'.repeat(36),{bad:true}));await store.save('execution:'+claims.executionId,{state:'completed'});});assert.equal((await store.read('execution:'+claims.executionId)).state,'completed');
  await assert.rejects(store.lock(claims.logicalTaskId,()=>{}));await assert.rejects(store.save('change:'+claims.logicalTaskId,{bad:true}));await assert.rejects(store.read('execution:'+'9'.repeat(36)));
  f.sql.prepare('DELETE FROM repository_object_grants').run();await assert.rejects(store.get(content));
 });

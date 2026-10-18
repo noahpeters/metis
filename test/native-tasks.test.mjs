@@ -117,3 +117,12 @@ test('interrupted execution identity and safe progress survive Queue processing,
   const record=await f.get(id);assert.equal(record.task.state,'blocked');assert.equal(record.attempts[0].thread_id,progress.threadId);assert.deepEqual(record.attempts[0].result,progress);assert.equal(record.attempts[0].error,'Cloud runtime: execution_timeout');
   const stored=f.sql.prepare('SELECT state,result_json FROM standalone_tasks WHERE id=?').get(attempt);assert.equal(stored.state,'blocked');assert.deepEqual(JSON.parse(stored.result_json),progress);
 });
+
+test('authenticated task API exposes isolated progress while running, preserves staleness evidence, and never fabricates completion',async t=>{
+ const f=fixture(t),id=await f.create('Live'),other=await f.create('Other');await f.action(id,'ready');const attempt=crypto.randomUUID();await f.action(id,'start',{attempt_id:attempt});f.sql.prepare("UPDATE standalone_tasks SET state='running' WHERE id=?").run(attempt);
+ const progress={threadId:'11111111-1111-4111-8111-111111111111',commandCount:1,private:'do not expose',executionProgress:{elapsedMs:5000,idleMs:1000,lastEvent:'item.completed:command_execution',commands:[{hint:'pnpm_test',status:'running',elapsedMs:4000,startedMs:1000,outputTail:'<script>test failure</script>'}],commandsTruncated:0,lastCommand:null}};
+ f.sql.prepare('INSERT INTO repository_records(key,value,updated_at) VALUES(?,?,?)').run('progress:'+attempt,JSON.stringify(progress),100);
+ let d=await f.get(id);assert.equal(d.attempts[0].state,'running');assert.equal(d.attempts[0].result,null);assert.equal(d.attempts[0].thread_id,progress.threadId);assert.equal(d.attempts[0].observed_progress.updated_at,100);assert.equal(d.attempts[0].observed_progress.running,true);assert.equal(d.attempts[0].observed_progress.private,undefined);assert.equal((await f.get(other)).attempts.length,0);assert.equal((await f.request('GET','/'+id,null,'outsider@example.com')).status,403);
+ f.sql.prepare("UPDATE standalone_tasks SET state='blocked' WHERE id=?").run(attempt);d=await f.get(id);assert.equal(d.attempts[0].observed_progress.running,false);assert.equal(d.attempts[0].state,'blocked');
+ f.sql.prepare('UPDATE repository_records SET value=? WHERE key=?').run('invalid','progress:'+attempt);assert.equal((await f.get(id)).attempts[0].observed_progress,null);
+});

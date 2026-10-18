@@ -18,7 +18,7 @@ function renderList(){
 function button(text,fn,mutate=true){const b=el('button',text);b.type='button';b.disabled=busy;b.onclick=()=>mutate?act(fn):fn();return b;}
 async function act(fn){if(busy)return;busy=true;try{await fn();notice('Saved.');await refresh(true);}catch(e){notice(e.message);}finally{busy=false;renderDetail();}}
 function renderDetail(){
-  const panel=$('#task-detail');panel.replaceChildren();
+  const panel=$('#task-detail'),openProgress=new Set(Array.from(panel.querySelectorAll('details[data-progress][open]'),n=>n.dataset.progress));panel.replaceChildren();
   if(!detail){panel.append(el('p','Select a task or capture new work.'));return;}
   const {task,dependencies,attempts,events}=detail;
   panel.append(el('p',task.state,'task-state'),el('h2',task.title),el('code',task.id),el('p',`Created by ${task.created_by} · ${date(task.created_at)}`));
@@ -56,7 +56,19 @@ function renderDetail(){
       if(repository.publication.state==='published'&&repository.canRework&&attempt===attempts[0])article.append(button('Rework change',()=>{document.querySelector('#rework-instructions').value='';document.querySelector('#rework-error').textContent='';document.querySelector('#rework-dialog').showModal();},false));
     }
 
-    article.append(el('p',attempt.thread_id?`Codex thread: ${attempt.thread_id}`:'No completed Codex thread recorded.'));
+    const observation=attempt.observed_progress;
+    const progress=attempt.result?.executionProgress??observation?.executionProgress;
+    if(progress){
+      article.append(el('h4',observation?.running?'Execution progress':'Retained execution progress'));
+      if(observation){const age=Math.max(0,Math.floor(Date.now()/1000)-observation.updated_at);article.append(el('p',`Last observation ${age}s ago${age>15&&observation.running?' · updates may be stale':''}`));}
+      article.append(el('p',`${Math.round(progress.elapsedMs/1000)}s elapsed · ${progress.idleMs==null?'unknown time':Math.round(progress.idleMs/1000)+'s'} since last CLI event`));
+      const active=progress.commands?.filter(c=>c.status==='running')??[];
+      article.append(el('p',active.length?`Reported running: ${active.map(c=>`${c.hint} (${Math.round(c.elapsedMs/1000)}s)`).join(', ')}`:`Last CLI event: ${progress.lastEvent??'not yet observed'}`));
+      const timeline=el('details');timeline.dataset.progress=attempt.id;timeline.open=openProgress.has(attempt.id);timeline.append(el('summary','Command timeline and diagnostic output'));
+      timeline.append(el('p','CLI-reported observations; these do not establish that required checks passed.'));
+      const commands=el('ol');for(const c of progress.commands??[]){const item=el('li',`${c.hint} · ${c.status} · began at ${Math.round(c.startedMs/1000)}s · duration ${Math.round(c.elapsedMs/1000)}s`);if(c.outputTail)item.append(el('pre',c.outputTail,'task-content'));commands.append(item);}timeline.append(commands);if(progress.commandsTruncated)timeline.append(el('p',`${progress.commandsTruncated} older command observations omitted.`));article.append(timeline);
+    }
+    article.append(el('p',attempt.thread_id?`Codex thread: ${attempt.thread_id}`:'No Codex thread observed yet.'));
     article.append(el('p','This is the retained Metis execution record. The CLI workspace is ephemeral; a Codex browser session link is unavailable.'));
     const history=el('ol');for(const event of events.filter(e=>e.task_id===attempt.id))history.append(el('li',`${event.state} · ${date(event.created_at)}`));article.append(history);
     if(attempt.result){const disclosure=el('details');disclosure.append(el('summary','Saved execution result'),el('pre',JSON.stringify(attempt.result,null,2),'task-content'));article.append(disclosure);}
