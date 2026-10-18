@@ -4,7 +4,7 @@ import {EventEmitter} from 'node:events';
 import {PassThrough} from 'node:stream';
 import {writeFile,readFile,access} from 'node:fs/promises';
 import {join} from 'node:path';
-import {runCodex,parseEvents,cliEnvironment,validateSubscriptionAuth} from '../runtime/container/execute.mjs';
+import {runCodex,parseEvents,cliEnvironment,validateSubscriptionAuth,createExecutionProgress} from '../runtime/container/execute.mjs';
 const auth=JSON.stringify({auth_mode:'chatgpt',OPENAI_API_KEY:null,tokens:{access_token:'test-access-token',id_token:'test-id-token',refresh_token:'test-refresh-token'}});
 const events=[{type:'thread.started',thread_id:'codex-thread'},{type:'item.completed',item:{type:'command_execution',status:'completed',exit_code:0}},{type:'item.completed',item:{type:'agent_message',text:'Implemented and tested'}},{type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}];
 function fakeSpawn({exit=0,stream=events,stderr='',action=async()=>{}}={}) {
@@ -89,13 +89,35 @@ test('execution limits retain the first fixed failure category and clean up subs
     };
     const pending=runCodex({taskId:'limited',instructions:'work'},auth,{spawnProcess,timeoutMs:10});
     const child=await started;child.stderr.write('test-access-token private diagnostic');
+    child.stdout.write(JSON.stringify({type:'thread.started',thread_id:'11111111-1111-4111-8111-111111111111'})+'\n'+JSON.stringify({type:'item.started',item:{id:'sensitive-item-id',type:'command_execution',command:'pnpm test --secret=test-access-token'}})+'\n');
     if(first==='timeout')t.mock.timers.tick(10);
     child.stdout.write(Buffer.alloc(1_000_001,'x'));
     // A later timeout/output event must not overwrite the first cause or kill twice.
     t.mock.timers.tick(10);
     const receipt=await pending;
-    assert.deepEqual(receipt,{state:'blocked',reason:first==='timeout'?'execution_timeout':'execution_output_limit'});
-    assert.equal(kills,1);assert.doesNotMatch(JSON.stringify(receipt),/test-access-token|private diagnostic/);
+    assert.equal(receipt.state,'blocked');assert.equal(receipt.reason,first==='timeout'?'execution_timeout':'execution_output_limit');
+    assert.equal(receipt.result.threadId,'11111111-1111-4111-8111-111111111111');assert.equal(receipt.result.commandCount,0);assert.equal(receipt.result.executionProgress.lastCommand.hint,'pnpm_test');assert.equal(receipt.result.executionProgress.lastCommand.status,'running');assert.ok(receipt.result.executionProgress.elapsedMs>=0);
+    assert.equal(kills,1);assert.doesNotMatch(JSON.stringify(receipt),/test-access-token|private diagnostic|sensitive-item-id|--secret/);
     await assert.rejects(access(authDir));
   });
+});
+
+
+test('interrupted progress retains only validated identity, fixed command hints, counters and timing',()=>{
+  let now=100;const credentials=['test-access-token'],progress=createExecutionProgress(credentials,()=>now);
+  const line=event=>JSON.stringify(event)+'\n';
+  const thread=line({type:'thread.started',thread_id:'22222222-2222-4222-8222-222222222222'});
+  progress.push(thread.slice(0,20));progress.push(thread.slice(20));
+  progress.push(line({type:'item.started',item:{id:'private-id',type:'command_execution',command:"/bin/bash -lc '/tmp/tools/pnpm build:worker --secret=test-access-token'"}}));
+  now=160;const complete={type:'item.completed',item:{id:'private-id',type:'command_execution',command:'pnpm build:worker',status:'completed',exit_code:0,aggregated_output:'test-access-token private output'}};
+  progress.push(line(complete)+line(complete));
+  now=200;
+  assert.deepEqual(progress.snapshot(),{threadId:'22222222-2222-4222-8222-222222222222',commandCount:1,executionProgress:{elapsedMs:100,lastCommand:{hint:'pnpm_build_worker',status:'completed',elapsedMs:60}}});
+  assert.doesNotMatch(JSON.stringify(progress.snapshot()),/private|test-access-token|bash|tools|--secret/);
+  credentials.push('22222222-2222-4222-8222-222222222222');assert.equal(progress.snapshot().threadId,null);
+  progress.push(line({type:'thread.started',thread_id:'not-a-valid-thread-test-access-token'}));assert.equal(progress.snapshot().threadId,null);
+  progress.push('malformed event\n'+line({type:'item.started',item:{id:'next',type:'command_execution',command:'pnpm lint && pnpm typecheck'}}));
+  now=220;assert.deepEqual(progress.snapshot().executionProgress.lastCommand,{hint:'verification_batch',status:'running',elapsedMs:20});
+  progress.push('{"type":"item.completed","item":'); // A truncated final event is ignored.
+  assert.equal(progress.snapshot().commandCount,1);
 });

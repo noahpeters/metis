@@ -27,6 +27,42 @@ export function parseEvents(output) {
   }
   return evidence;
 }
+// Only fixed hints, counters, timing and a validated thread UUID may survive
+// interruption. Command text, output, diagnostics and item IDs stay in memory.
+export function createExecutionProgress(credentials=[],clock=Date.now) {
+  const started=clock(),completed=new Set();let pending='',threadId=null,count=0,last=null;
+  const duration=from=>Math.max(0,Math.min(86400000,Math.round(clock()-from)));
+  const hint=command=>{
+    if(typeof command!=='string')return 'other';
+    const matches=[...command.matchAll(/(?:^|[\s/'"])pnpm(?:\s+run)?\s+(lint|typecheck|test|build:worker|build)(?=$|[\s;|&'"])/g)];
+    const scripts=[...new Set(matches.map(m=>m[1]))];
+    // These are command-text hints, not proof that a check ran or passed.
+    if(scripts.length>1)return 'verification_batch';
+    if(scripts.length===1)return 'pnpm_'+scripts[0].replace(':','_');
+    if(/(?:^|[\s/'"])python3?(?:\s|$)/.test(command))return 'python';
+    if(/(?:^|[\s/'"])node(?:\s|$)/.test(command))return 'node';
+    return 'other';
+  };
+  return {
+    push(chunk){
+      pending+=chunk.toString();let newline;
+      while((newline=pending.indexOf('\n'))>=0){
+        const line=pending.slice(0,newline);pending=pending.slice(newline+1);let event;
+        try{event=JSON.parse(line);}catch{continue;}
+        if(event?.type==='thread.started'&&typeof event.thread_id==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(event.thread_id))threadId=event.thread_id;
+        const item=event?.item;if(item?.type!=='command_execution')continue;
+        const id=typeof item.id==='string'&&item.id.length<=128?item.id:null;
+        if(event.type==='item.started')last={id,hint:hint(item.command),status:'running',started:clock(),finished:null};
+        if(event.type==='item.completed'){
+          if(id&&completed.has(id))continue;
+          if(item.status==='completed'&&item.exit_code===0)count=Math.min(10000,count+1);if(id)completed.add(id);
+          last={id,hint:hint(item.command),status:item.status==='completed'&&item.exit_code===0?'completed':'failed',started:id&&last?.id===id?last.started:clock(),finished:clock()};
+        }
+      }
+    },
+    snapshot(){return {threadId:threadId&&!credentials.some(v=>typeof v==='string'&&v.length>=8&&(threadId.includes(v)||v.includes(threadId)))?threadId:null,commandCount:count,executionProgress:{elapsedMs:duration(started),lastCommand:last?{hint:last.hint,status:last.status,elapsedMs:Math.max(0,Math.min(86400000,(last.finished??clock())-last.started))}:null}};}
+  };
+}
 async function collectArtifact(workspace,name) {
   let file;
   try {
@@ -68,10 +104,11 @@ export async function runCodex(task,rawAuth,{spawnProcess=spawn,timeoutMs=90000,
     if(task.repositoryBinding){const schema=join(root,'outcome.schema.json');await writeFile(schema,JSON.stringify({type:'object',properties:{status:{type:'string',enum:['completed','blocked'],description:'Choose blocked if work is incomplete or project instructions require unresolved human input or approval.'},summary:{type:'string'},blockers:{type:'array',items:{type:'string'}}},required:['status','summary','blockers'],additionalProperties:false}),{mode:0o600});args.push('--output-schema',schema);}
     args.push('-');
     let output='';let diagnostic='';let bytes=0;let terminationReason=null;
+    const credentialValues=Object.values(auth.tokens).filter(value=>typeof value==='string'&&value.length>=8),progress=createExecutionProgress(credentialValues);
     const child=spawnProcess('codex',args,{cwd:workspace,env:cliEnvironment(authDir),stdio:['pipe','pipe','pipe'],detached:true});
     const kill=reason=>{if(terminationReason)return;terminationReason=reason;try{process.kill(-child.pid,'SIGKILL');}catch{child.kill('SIGKILL');}};
     const timer=setTimeout(()=>kill('execution_timeout'),timeoutMs);
-    child.stdout.on('data',chunk=>{bytes+=chunk.length;if(bytes>1_000_000)kill('execution_output_limit');else output+=chunk;});
+    child.stdout.on('data',chunk=>{bytes+=chunk.length;if(bytes>1_000_000)kill('execution_output_limit');else {output+=chunk;progress.push(chunk);}});
     // Raw diagnostics stay in memory only. Persist a fixed category, never text.
     child.stderr.on('data',chunk=>{if(diagnostic.length<16000)diagnostic+=chunk.toString().slice(0,16000-diagnostic.length);});
     const exited=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',code=>resolve(code));});
@@ -79,8 +116,10 @@ export async function runCodex(task,rawAuth,{spawnProcess=spawn,timeoutMs=90000,
     child.stdin.end('Execute the task below in this isolated workspace. Do not use GitHub, merge, deploy, or request API keys. Use shell commands to verify your work. If blocked, explain why.\n\n'+task.instructions);
     let exitCode;
     try {exitCode=await exited;} finally {clearTimeout(timer);}
-    if(terminationReason)return {state:'blocked',reason:terminationReason};
-    const credentialValues=Object.values(auth.tokens).filter(value=>typeof value==='string'&&value.length>=8);
+    if(terminationReason){
+      try{credentialValues.push(...Object.values(validateSubscriptionAuth(await readFile(join(authDir,'auth.json'),'utf8')).tokens));}catch{}
+      return {state:'blocked',reason:terminationReason,result:progress.snapshot()};
+    }
     try {
       const refreshed=validateSubscriptionAuth(await readFile(join(authDir,'auth.json'),'utf8'));
       credentialValues.push(...Object.values(refreshed.tokens).filter(value=>typeof value==='string'&&value.length>=8));
