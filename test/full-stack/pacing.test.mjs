@@ -161,13 +161,23 @@ test("D1 observations round-trip through control-plane RPC and the rendered UI",
   // Seed a provider receipt to verify the actual retained attempt deep link.
   const attemptId=crypto.randomUUID();
   await db.prepare("UPDATE native_tasks SET phase='ready' WHERE id=?").bind(parentId).run();
-  await db.prepare("INSERT INTO standalone_tasks(id,instructions,state,executor,result_json) VALUES (?,'fixture execution','completed','codex',?)").bind(attemptId,JSON.stringify({threadId:'fixture-codex-thread',containerStopped:true,finalMessage:'Context verified'})).run();
+  await db.prepare("INSERT INTO standalone_tasks(id,instructions,state,executor,result_json) VALUES (?,'fixture execution','completed','codex',?)").bind(attemptId,JSON.stringify({threadId:'fixture-codex-thread',containerStopped:true,finalMessage:'Context verified',repository:{binding:'example',canRework:true,publication:{state:'published',receipt:{review:{id:'1',url:'https://github.com/example/project/pull/1'}}}}})).run();
   await db.prepare("INSERT INTO native_task_attempts(id,task_id,requested_by) VALUES (?,?,'tester@from-trees.com')").bind(attemptId,parentId).run();
   await page.goto(`https://ui/tasks/${parentId}/attempts/${attemptId}`);
   await page.getByText('Codex thread: fixture-codex-thread',{exact:true}).waitFor();
   await page.getByText('Saved execution result',{exact:true}).click();
   assert.match(await page.locator('.task-attempt pre').innerText(),/Context verified/);
   await page.screenshot({path:join(artifacts,"native-task-attempt.png"),fullPage:true});
+  await db.prepare("UPDATE native_tasks SET data_json=? WHERE id=?").bind(JSON.stringify({repositoryBinding:'example'}),parentId).run();
+  await page.getByRole('button',{name:'Rework change',exact:true}).click();
+  await page.getByLabel('Reason',{exact:true}).selectOption('resolve_conflicts');
+  await page.getByLabel('Rework instructions',{exact:true}).fill('Resolve the conflicts against the new target base.');
+  const rejectedRework=page.waitForResponse(r=>r.url().endsWith('/rework'));
+  await page.getByRole('button',{name:'Start new attempt',exact:true}).click();
+  assert.equal((await rejectedRework).status(),503);
+  await page.locator('#rework-error').getByText('Repository binding is not configured',{exact:true}).waitFor();
+  await page.locator('#cancel-rework').click();
+
   await page.goto("https://ui/");
 
   await db.exec("DROP TABLE pacing_window_control");

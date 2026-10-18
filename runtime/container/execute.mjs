@@ -13,7 +13,7 @@ export function validateSubscriptionAuth(raw) {
 }
 export function cliEnvironment(authDir) {
   // Deliberately exclude Worker, GitHub, Cloudflare and API key credentials.
-  return {PATH:process.env.PATH??'/usr/local/bin:/usr/bin:/bin',HOME:authDir,CODEX_HOME:authDir,LANG:'C.UTF-8',TERM:'dumb'};
+  return {PATH:process.env.PATH??'/usr/local/bin:/usr/bin:/bin',HOME:authDir,CODEX_HOME:authDir,LANG:'C.UTF-8',TERM:'dumb',...(process.env.PLAYWRIGHT_BROWSERS_PATH?{PLAYWRIGHT_BROWSERS_PATH:process.env.PLAYWRIGHT_BROWSERS_PATH}:{})};
 }
 export function parseEvents(output) {
   const evidence={threadId:null,turnCompleted:false,commandCount:0,finalMessage:'',failed:false};
@@ -55,13 +55,13 @@ async function verifySolution(workspace) {
   return {kind:'numeric_summary_v1',passed,cases};
 }
 
-export async function runCodex(task,rawAuth,{spawnProcess=spawn,timeoutMs=90000}={}) {
+export async function runCodex(task,rawAuth,{spawnProcess=spawn,timeoutMs=90000,workspacePath}={}) {
   let auth;
   try {auth=validateSubscriptionAuth(rawAuth);} catch {return {state:'blocked',reason:'subscription_auth_required'};}
   const root=await mkdtemp('/tmp/metis-codex-');
-  const workspace=join(root,'workspace');const authDir=join(root,'auth');
+  const workspace=workspacePath??join(root,'workspace');const authDir=join(root,'auth');
   try {
-    await mkdir(workspace,{mode:0o700});await mkdir(authDir,{mode:0o700});
+    if(!workspacePath)await mkdir(workspace,{mode:0o700});await mkdir(authDir,{mode:0o700});
     await writeFile(join(authDir,'auth.json'),JSON.stringify(auth),{mode:0o600});
     const startedAt=new Date().toISOString();
     const args=['exec','--json','--ephemeral','--ignore-user-config','--skip-git-repo-check','--sandbox','workspace-write','-c','approval_policy="never"','-c','forced_login_method="chatgpt"','-C',workspace,'-'];

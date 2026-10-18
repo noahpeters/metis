@@ -17,13 +17,14 @@ The GitHub issue scheduler and its task tables keep their existing behavior.
    attempt URL. The page refreshes every five seconds while visible.
 6. A failed or blocked attempt can be explicitly retried only when its receipt
    confirms `containerStopped: true`. Each retry gets a new attempt UUID.
-   Completed tasks cannot be rerun. Ambiguous shutdown blocks further native
+   Ordinary completed executions cannot be rerun. A published, updateable GitHub
+   change can now start a separate rework attempt through the adapter workflow. Ambiguous shutdown blocks further native
    admissions until operator reconciliation; this release has no override UI.
 
-Task data is stored for future adapters; it is not silently injected into the
-model prompt. Instructions alone are passed through the existing cloud CLI
-runtime. No GitHub credentials, repository checkout, artifact publication,
-branch/PR creation, or Cabinitron integration is added by this change.
+Task data is not silently injected into the model prompt. A configured
+`repositoryBinding` now explicitly selects repository preparation and review
+publication; see [repository adapter operations](repository-adapters-operations.md).
+Tasks without that field retain the standalone execution behavior.
 
 ## Records and execution
 
@@ -87,9 +88,10 @@ subscription inference and are not a production end-to-end execution claim.
 
 This slice does not add projects, pagination beyond the latest 200 tasks,
 automatic scheduling, running-task cancellation, ambiguous-run reconciliation,
-full session archives, or adapter execution. GitHub and Cloudflare Artifacts /
+or full session archives. Repository adapter execution is now available through
+configured bindings. GitHub and Cloudflare Artifacts /
 Cabinitron adapters should each declare context inputs and output publication
 contracts, including producing a branch/PR or an artifact review without a
 manual provider-UI step.
 
-The shared source, change, publication, and observation contract is defined in [repository adapters](repository-adapters.md). Provider execution remains a follow-up.
+The shared source, change, publication, and observation contract is defined in [repository adapters](repository-adapters.md). See the linked operating guide for implemented provider paths and rollout blockers.

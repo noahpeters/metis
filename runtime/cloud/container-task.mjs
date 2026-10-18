@@ -25,20 +25,20 @@ export async function stopContainerAndConfirm(container,{delay=ms=>new Promise(r
   if(!await wait(forceMs))throw new Error('container_shutdown_not_confirmed');
   return {forced:true};
 }
-export async function executeContainerTask(container,task,auth) {
+export async function executeContainerTask(container,task,auth,repositoryConfig) {
   let phase='startup';let receipt;
   try {
     // Instance acquisition has a separate SDK default of only eight seconds.
     // Give cold placement time to finish before the port-readiness window.
-    await container.startAndWaitForPorts({ports:8080,startOptions:{envVars:{CODEX_SUBSCRIPTION_AUTH_JSON:auth}},cancellationOptions:{instanceGetTimeoutMS:60000,portReadyTimeoutMS:30000}});
+    await container.startAndWaitForPorts({ports:8080,startOptions:{envVars:{CODEX_SUBSCRIPTION_AUTH_JSON:auth,...(repositoryConfig?{METIS_REPOSITORY_CONFIG:JSON.stringify(repositoryConfig)}:{})}},cancellationOptions:{instanceGetTimeoutMS:60000,portReadyTimeoutMS:30000}});
     phase='request';
-    const response=await container.containerFetch(new Request('http://container/execute',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(task),signal:AbortSignal.timeout(120000)}));
+    const response=await container.containerFetch(new Request('http://container/execute',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(task),signal:AbortSignal.timeout(repositoryConfig?600000:120000)}));
     phase='response';
     receipt=response.ok?await response.json():{state:'blocked',reason:`container_http_${response.status}`};
   } catch(error) {receipt={state:'blocked',reason:`container_${phase}_${category(error)}`};}
   try {
     const cleanup=await stopContainerAndConfirm(container);
-    if(receipt?.state==='completed'){receipt.result.containerStopped=true;receipt.result.containerStopForced=cleanup.forced;}
+    if(receipt?.state==='completed'||repositoryConfig){receipt.result??={};receipt.result.containerStopped=true;receipt.result.containerStopForced=cleanup.forced;}
   } catch(error) {
     if(receipt?.state==='completed')receipt={state:'blocked',reason:`container_shutdown_${category(error)}`};
   }

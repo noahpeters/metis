@@ -11,12 +11,13 @@ GitHub and Cloudflare Artifacts are implementations of the same contract.
 Cabinitron is an Artifacts-hosted project with its own review workflow and
 validation rules, rather than a third repository transport.
 
-This PR adds a version-1 data contract and conformance tests in
-`src/repository-adapters/contract.mjs`. It does not register production adapters,
-add task fields/migrations, materialize repositories in containers, publish
-reviews, or change the existing GitHub-backed dispatcher. The lifecycle below
-is the intended integration design. A future implementation must wire the
-validators into each boundary; defining an adapter alone does not enforce them.
+The version-1 contract now has Git-backed GitHub/Artifacts implementations and
+a cloud task integration. See [operating repository-backed cloud tasks](repository-adapters-operations.md)
+for current capabilities, configuration, tests and blockers. Initial publication,
+GitHub rework, D1 content/recovery records and configured media transports are
+implemented. Artifacts rework is deliberately blocked until the project's
+review API provides a conditional previous-review-version update. Production
+operation still requires configured credentials and an authorized live test.
 
 ## Responsibilities
 
@@ -256,8 +257,8 @@ Publication includes image reconciliation **before** the review write:
 GitHub needs a supported attachment transport with durable links accessible to
 reviewers; its concrete authentication/upload mechanism remains unimplemented.
 The Artifacts/Cabinitron adapter should use its review service's authorized
-media path and description conventions. Neither provider upload is implemented
-here. A provider unable to publish required media must block publication rather
+media path and description conventions. Concrete public GitHub media-branch and existing Artifacts bucket transports
+are implemented; see the operating guide. A provider unable to publish required media must block publication rather
 than silently omit screenshots. Reviewers must be able to access private media
 under the intended review access policy, without publishing access credentials.
 
@@ -266,16 +267,15 @@ intents, images, upload mappings and review-body versions remain in history;
 they are not overwritten or treated as fresh passing evidence. Durable content
 retention must outlive the ephemeral container. Retain previously recorded
 operation keys unchanged; do not recompute historical intents using a newer
-canonicalization implementation. This PR adds the content contract and Markdown
-assembly only. Uploads, durable media storage, review writes and UI editing/
-preview are still provider/runtime integration work.
+canonicalization implementation. The runtime now implements capture/publication and D1 recovery storage. UI
+editing/preview and project enrollment remain separate work.
 
 ## Publication reliability and durable ownership
 
-D1 should eventually retain, per attempt/source binding: the snapshot,
+D1 now retains, per attempt/source binding: the snapshot,
 immutable publication intent/key (including Markdown and comparison manifests),
 media upload mappings, phase, native publication receipt, and latest observation. Large source/output bytes belong in the configured content
-transport. These persistence records are proposed here, not a new migration.
+transport. Migration 0024 creates the content and recovery store.
 
 Persist intent **before** provider writes. On timeout or restart, reconcile the
 same key against both source revision and review before attempting creation.
@@ -313,9 +313,8 @@ base. Keep these identities distinct:
 The future ledger must append publication records, not overwrite the previous
 result. Each update receipt references the prior publication key. That gives
 `change -> revision -> attempt -> Codex session` navigation without losing
-previous code, feedback, validation, or failure evidence. The current task UI
-and D1 schema do not yet implement this rework workflow; this PR defines and
-tests the contract for that subsequent integration.
+previous code, feedback, validation, or failure evidence. The task UI and runtime now implement this workflow for GitHub. Artifacts
+rework remains blocked by its review API concurrency limitation.
 
 ### Preparing a rework attempt
 
@@ -431,21 +430,15 @@ current task UI's execution-completed semantics. All records retain
 `task ID -> change ID -> publication/revision -> attempt ID -> source revision -> review ID -> integrated revision`
 and the separate Codex thread/session association.
 
-## First implementation sequence
+## Implementation and remaining work
 
-1. Add configured source bindings to draft tasks and persist the resolved
-   snapshot per attempt. Begin with one writable source per task; additional
-   read-only context sources can use the same contract later.
-2. Implement GitHub resolve/prepare/collect against the existing cloud runtime;
-   capture general repository diffs outside the current fixed proof artifacts.
-3. Add the durable change/publication revision ledger, GitHub branch/PR
-   reconciliation, and guarded rework/update support. Preserve old revisions
-   and reconcile the expected current head before replacing a review revision.
-4. Implement the Artifacts transport plus the Cabinitron review-service mapping,
-   preserving source, validation, paired UI media, and approval requirements.
-5. Expose review and exact-revision check/release links/status in the task UI.
+The runtime now uses configured source bindings, durable D1 source/output and
+publication records, trusted workspace preparation/capture, GitHub branch/PR
+publication and rework, and initial Artifacts review publication. The task UI
+exposes review links, observations, publication retry and GitHub rework.
 
-Conformance tests use synthetic GitHub and Artifacts records and make no
-network calls. Each real adapter still needs provider contract tests, credential
-scoping checks, timeout/crash and concurrent rework reconciliation tests, and one verified live task
-before it can be called operational.
+The operating guide records remaining project credential/media setup, the
+Artifacts conditional-update blocker, and the required authorized live checks.
+Conformance tests, local Git tests and browser tests do not establish production
+provider operation. Full session archives, richer editing, provider approval
+rules and deployment evidence remain separate work.

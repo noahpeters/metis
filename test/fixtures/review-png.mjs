@@ -1,0 +1,3 @@
+import {deflateSync} from 'node:zlib';
+function chunk(kind,data){const buf=Buffer.alloc(12+data.length);buf.writeUInt32BE(data.length);buf.write(kind,4);data.copy(buf,8);let crc=0xffffffff;for(const b of buf.subarray(4,-4)){crc^=b;for(let i=0;i<8;i++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}buf.writeUInt32BE((crc^0xffffffff)>>>0,buf.length-4);return buf;}
+export function png(){const header=Buffer.alloc(13);header.writeUInt32BE(2);header.writeUInt32BE(1,4);header[8]=8;header[9]=6;return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',header),chunk('IDAT',deflateSync(Buffer.from([0,255,0,0,255,0,255,0,255]))),chunk('IEND',Buffer.alloc(0))]);}

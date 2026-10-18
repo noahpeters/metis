@@ -133,3 +133,5 @@ of a successful cloud Codex run.
 Native task capture, dependencies, and execution monitoring: [task workspace](docs/native-task-workspace.md).
 
 Shared GitHub and Cloudflare Artifacts source/output contract: [repository adapters](docs/repository-adapters.md).
+
+Configure and operate cloud repository tasks: [GitHub and Artifacts adapters](docs/repository-adapters-operations.md).

@@ -3,7 +3,7 @@ import { executeStandaloneCodex } from './standalone-codex.mjs';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const json = (body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json','cache-control':'no-store'}});
 const fail = (message,status=400)=>json({error:{message}},status);
-const attemptsSQL = `SELECT a.*,s.state,s.error,s.created_at AS queued_at,s.execution_started_at,s.updated_at,s.result_json FROM native_task_attempts a JOIN standalone_tasks s ON s.id=a.id`;
+const attemptsSQL = `SELECT a.*,s.state,s.error,s.created_at AS queued_at,s.execution_started_at,s.updated_at,s.result_json,(SELECT j.state FROM repository_publication_jobs j WHERE j.attempt_id=a.id ORDER BY j.created_at DESC,j.rowid DESC LIMIT 1) AS publication_job_state FROM native_task_attempts a JOIN standalone_tasks s ON s.id=a.id`;
 const latestSQL = `(SELECT a.id FROM native_task_attempts a WHERE a.task_id=t.id ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1)`;
 const tasksSQL = `SELECT t.*,s.state AS execution_state,s.error,s.id AS attempt_id FROM native_tasks t LEFT JOIN standalone_tasks s ON s.id=${latestSQL}`;
 function taskView(row) {
@@ -53,7 +53,7 @@ export async function nativeTasksForIdentity(email,method,path,body,env) {
   }
   const task=await env.DB.prepare('SELECT * FROM native_tasks WHERE id=?').bind(id).first();
   if(!task)return fail('Task not found',404);
-  if(action==='start'&&uuid.test(body.attempt_id??'')) {
+  if(['start','rework'].includes(action)&&uuid.test(body.attempt_id??'')) {
     const existing=await env.DB.prepare('SELECT task_id FROM native_task_attempts WHERE id=?').bind(body.attempt_id).first();
     if(existing)return existing.task_id===id?json({id,attempt_id:body.attempt_id},202):fail('Attempt ID conflict',409);
   }
@@ -78,7 +78,29 @@ export async function nativeTasksForIdentity(email,method,path,body,env) {
     const result=await env.DB.prepare(`UPDATE native_tasks SET phase=?,version=version+1,updated_at=unixepoch() WHERE id=? AND version=? AND phase IN ('draft','ready') AND NOT EXISTS (SELECT 1 FROM native_task_attempts WHERE task_id=?)`).bind(action==='ready'?'ready':'cancelled',id,body.version,id).run();
     return result.meta.changes?json({id}):fail('Only unexecuted tasks can change readiness',409);
   }
-  if(action==='start') {
+  if(action==='publish'||action==='observe') {
+    if(!uuid.test(body.attempt_id??'')||!uuid.test(body.publication_id??''))return fail('Attempt and publication UUIDs are required');
+    const run=await env.DB.prepare("SELECT s.result_json FROM native_task_attempts a JOIN standalone_tasks s ON s.id=a.id WHERE a.id=? AND a.task_id=? AND s.state='completed'").bind(body.attempt_id,id).first();
+    const repository=run?JSON.parse(run.result_json??'null')?.repository:null;
+    if(!repository||(action==='publish'&&repository.publication.retryable===false)||(action==='publish'?repository.publication.state!=='blocked':repository.publication.state!=='published'))return fail('No blocked repository publication to retry',409);
+    const inserted=await env.DB.prepare("INSERT OR IGNORE INTO repository_publication_jobs(id,attempt_id,mode) VALUES(?,?,?)").bind(body.publication_id,body.attempt_id,action).run();
+    if(!inserted.meta.changes)return fail('Publication is already queued or running',409);
+    await env.DISPATCH_QUEUE.send({type:'native_repository_publish',taskId:body.publication_id}).catch(()=>{});return json({id,publication_id:body.publication_id},202);
+  }
+  if(action==='rework') {
+    const last=await env.DB.prepare("SELECT s.result_json FROM native_task_attempts a JOIN standalone_tasks s ON s.id=a.id WHERE a.task_id=? ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1").bind(id).first();
+    const repository=last?JSON.parse(last.result_json??'null')?.repository:null;
+    if(!repository?.canRework||repository.publication.state!=='published'||!['fix_issues','resolve_conflicts','refresh_base'].includes(body.reason)||typeof body.instructions!=='string'||!body.instructions.trim()||body.instructions.length>10000)return fail('A published, updateable repository change and rework instructions are required',409);
+  }
+  if(action==='rework'){body.instructions=task.instructions+'\n\nRework ('+body.reason+'): '+body.instructions;if(body.instructions.length>10000)return fail('Combined original and rework instructions exceed 10000 characters');}
+  if(action==='start'||action==='rework') {
+    const prior=action==='start'?await env.DB.prepare('SELECT a.rework_reason,s.instructions FROM native_task_attempts a JOIN standalone_tasks s ON s.id=a.id WHERE a.task_id=? ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1').bind(id).first():null;
+    if(prior?.rework_reason)body.instructions=prior.instructions;
+    const data=JSON.parse(task.data_json);
+    if(data.repositoryBinding){
+      if(typeof data.repositoryBinding!=='string'||!/^[a-z][a-z0-9_-]{0,63}$/.test(data.repositoryBinding))return fail('Invalid repository binding');
+      try{const capability=await env.CODEX_RUNTIME?.repositoryCapabilities(data.repositoryBinding);if(!capability?.configured)return fail('Repository binding is not configured',503);if(action==='rework'&&!capability.canRework)return fail('This provider cannot safely update the existing review',409);}catch{return fail('Repository runtime capabilities unavailable',503);}
+    }
     if(env.STANDALONE_CODEX_ENABLED!=='true'||!env.CODEX_RUNTIME)return fail('Cloud Codex runtime is unavailable',503);
     if(!uuid.test(body.attempt_id??''))return fail('An attempt UUID is required');
     const existing=await env.DB.prepare('SELECT task_id FROM native_task_attempts WHERE id=?').bind(body.attempt_id).first();
@@ -86,8 +108,8 @@ export async function nativeTasksForIdentity(email,method,path,body,env) {
     // Reserve the single native execution atomically, including dependency and
     // prior-attempt checks. Never replay an ambiguous execution as a new run.
     const result=await env.DB.batch([
-      env.DB.prepare(`INSERT OR IGNORE INTO standalone_tasks(id,instructions,state,executor) SELECT ?,instructions,'queued','codex' FROM native_tasks t WHERE t.id=? AND t.version=? AND t.phase='ready' AND (NOT EXISTS (SELECT 1 FROM native_task_attempts WHERE task_id=t.id) OR EXISTS (SELECT 1 FROM standalone_tasks prior WHERE prior.id=${latestSQL} AND prior.state IN ('blocked','failed') AND json_extract(prior.result_json,'$.containerStopped')=1)) AND NOT EXISTS (SELECT 1 FROM standalone_tasks WHERE executor='codex' AND (state IN ('queued','running') OR (id IN (SELECT id FROM native_task_attempts) AND state IN ('blocked','failed') AND COALESCE(json_extract(result_json,'$.containerStopped'),0)<>1))) AND NOT EXISTS (SELECT 1 FROM native_task_dependencies d WHERE d.task_id=t.id AND NOT EXISTS (SELECT 1 FROM native_task_attempts a JOIN standalone_tasks s ON s.id=a.id WHERE a.task_id=d.dependency_id AND s.state='completed'))`).bind(body.attempt_id,id,body.version),
-      env.DB.prepare('INSERT OR IGNORE INTO native_task_attempts(id,task_id,requested_by) SELECT id,?,? FROM standalone_tasks WHERE id=? AND changes()=1').bind(id,email,body.attempt_id),
+      env.DB.prepare(`INSERT OR IGNORE INTO standalone_tasks(id,instructions,state,executor) SELECT ?,${action==='rework'||prior?.rework_reason?'?':'instructions'},'queued','codex' FROM native_tasks t WHERE t.id=? AND t.version=? AND t.phase='ready' AND (NOT EXISTS (SELECT 1 FROM native_task_attempts WHERE task_id=t.id) OR ${action==='rework'?"EXISTS (SELECT 1 FROM standalone_tasks prior WHERE prior.id="+latestSQL+" AND prior.state='completed')":'0'} OR EXISTS (SELECT 1 FROM standalone_tasks prior WHERE prior.id=${latestSQL} AND prior.state IN ('blocked','failed') AND json_extract(prior.result_json,'$.containerStopped')=1)) AND NOT EXISTS (SELECT 1 FROM standalone_tasks WHERE executor='codex' AND (state IN ('queued','running') OR (id IN (SELECT id FROM native_task_attempts) AND state IN ('blocked','failed') AND COALESCE(json_extract(result_json,'$.containerStopped'),0)<>1))) AND NOT EXISTS (SELECT 1 FROM native_task_dependencies d WHERE d.task_id=t.id AND NOT EXISTS (SELECT 1 FROM native_task_attempts a JOIN standalone_tasks s ON s.id=a.id WHERE a.task_id=d.dependency_id AND s.state='completed'))`).bind(body.attempt_id,...(action==='rework'||prior?.rework_reason?[body.instructions]:[]),id,body.version),
+      env.DB.prepare('INSERT OR IGNORE INTO native_task_attempts(id,task_id,requested_by,rework_reason) SELECT id,?,?,? FROM standalone_tasks WHERE id=? AND changes()=1').bind(id,email,action==='rework'?body.reason:prior?.rework_reason??null,body.attempt_id),
       env.DB.prepare('UPDATE native_tasks SET version=version+1,updated_at=unixepoch() WHERE id=? AND EXISTS (SELECT 1 FROM native_task_attempts WHERE id=? AND task_id=?) AND version=?').bind(id,body.attempt_id,id,body.version)
     ]);
     if(!result[0].meta.changes)return fail('Dependencies incomplete, capacity unavailable, or task already attempted. Inspect execution history before retrying.',409);
@@ -105,6 +127,10 @@ export async function flushNativeOutbox(env) {
   for(const row of rows.results)await sendNativeAttempt(env,row.id);
 }
 export async function executeNativeAttempt(env,id,attempts) {
-  const row=await env.DB.prepare('SELECT id FROM native_task_attempts WHERE id=?').bind(id).first();
-  if(row)await executeStandaloneCodex(env,id,attempts);
+  const row=await env.DB.prepare('SELECT a.id,a.task_id,a.rework_reason,t.title,t.data_json FROM native_task_attempts a JOIN native_tasks t ON t.id=a.task_id WHERE a.id=?').bind(id).first();
+  if(row) {
+    const data=JSON.parse(row.data_json);
+    const repositoryTask=data.repositoryBinding?{repositoryBinding:data.repositoryBinding,logicalTaskId:row.task_id,reworkReason:row.rework_reason??null,review:{title:row.title,description:typeof data.reviewDescription==='string'?data.reviewDescription:row.title}}:null;
+    await executeStandaloneCodex(env,id,attempts,repositoryTask);
+  }
 }
