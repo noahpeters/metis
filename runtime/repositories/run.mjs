@@ -17,7 +17,17 @@ function publicResult(result){
   return {...visible,artifacts:[]};
 }
 async function setup(config,workspace){
-  for(const args of config.setupCommands??[]) {check(Array.isArray(args)&&args.length&&args.every(a=>typeof a==='string'),'invalid_setup_command');try{await promisify(execFile)(args[0],args.slice(1),{cwd:workspace,env:{PATH:process.env.PATH,HOME:workspace,LANG:'C.UTF-8',...(process.env.PLAYWRIGHT_BROWSERS_PATH?{PLAYWRIGHT_BROWSERS_PATH:process.env.PLAYWRIGHT_BROWSERS_PATH}:{})},timeout:120000,maxBuffer:1000000});}catch{throw new AdapterError('repository_setup_failed');}}
+  if(!config.setupCommands?.length)return;
+  // Package managers write metadata under HOME/XDG_CACHE_HOME even when their
+  // dependency store is configured elsewhere. Keep that state out of the diff.
+  const home=await mkdtemp(join(tmpdir(),'metis-setup-'));
+  try{
+    for(const args of config.setupCommands) {
+      check(Array.isArray(args)&&args.length&&args.every(a=>typeof a==='string'),'invalid_setup_command');
+      try{await promisify(execFile)(args[0],args.slice(1),{cwd:workspace,env:{PATH:process.env.PATH,HOME:home,XDG_CACHE_HOME:join(home,'cache'),LANG:'C.UTF-8',...(process.env.PLAYWRIGHT_BROWSERS_PATH?{PLAYWRIGHT_BROWSERS_PATH:process.env.PLAYWRIGHT_BROWSERS_PATH}:{})},timeout:120000,maxBuffer:1000000});}
+      catch{throw new AdapterError('repository_setup_failed');}
+    }
+  }finally{await rm(home,{recursive:true,force:true});}
 }
 export async function runRepositoryTask(task,auth,config,{store:providedStore,execute=runCodex,adapter:providedAdapter}={}) {
   let store,adapter,completedExecution,blockedExecution;const executionId=task.executionId??task.taskId;
