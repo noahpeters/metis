@@ -69,3 +69,10 @@ test('credential echoes are rejected instead of being saved as task results',asy
   const receipt=await runCodex({taskId:'t',instructions:'work'},auth,{spawnProcess:fakeSpawn({stream:[...events,{type:'item.completed',item:{type:'agent_message',text:'test-access-token'}}]})});
   assert.equal(receipt.state,'blocked');assert.equal(receipt.reason,'credential_output_rejected');assert.doesNotMatch(JSON.stringify(receipt),/test-access-token/);
 });
+test('repository execution requires a structured outcome and preserves explicit blockers without publishing',async()=>{
+  const stream=status=>events.filter(e=>status!=='blocked'||e.item?.type!=='command_execution').map(e=>e.item?.type==='agent_message'?{...e,item:{...e.item,text:JSON.stringify({status,summary:status==='completed'?'Implemented and verified':'Human approval is required',blockers:status==='blocked'?['Approve the submitted scope before proceeding.']:[]})}}:e);
+  let schemaObserved=false;const spawn=(bin,args,options)=>{assert.ok(args.includes('--output-schema'));schemaObserved=true;return fakeSpawn({stream:stream('completed')})(bin,args,options);};
+  const good=await runCodex({taskId:'repository',repositoryBinding:'example',instructions:'work'},auth,{spawnProcess:spawn});assert.equal(good.state,'completed');assert.equal(good.result.agentOutcome.status,'completed');assert.ok(schemaObserved);
+  const blocked=await runCodex({taskId:'repository',repositoryBinding:'example',instructions:'work'},auth,{spawnProcess:fakeSpawn({stream:stream('blocked')})});assert.equal(blocked.state,'blocked');assert.equal(blocked.reason,'repository_agent_blocked');assert.equal(blocked.result.threadId,'codex-thread');assert.equal(blocked.result.commandCount,0);assert.equal(blocked.result.blockers.length,1);
+  const malformed=await runCodex({taskId:'repository',repositoryBinding:'example',instructions:'work'},auth,{spawnProcess:fakeSpawn()});assert.equal(malformed.state,'blocked');assert.equal(malformed.reason,'repository_outcome_invalid');
+});

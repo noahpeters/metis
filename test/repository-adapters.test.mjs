@@ -108,3 +108,8 @@ test('configured cloud capture flows through PNG verification, durable content, 
   const execute=async(task,auth,{workspacePath})=>{await writeFile(join(workspacePath,'ui.css'),'body {color: green;}');return {state:'completed',result:{taskId:task.taskId,operation:'codex_exec',threadId:'thread',billingMode:'included_subscription',exitCode:0,turnCompleted:true,commandCount:1}};};
   const result=await runRepositoryTask(task,'{}',{...f.config,capture,allowPublicMediaBranch:true},{store:f.store,adapter,execute});assert.equal(result.result.repository.publication.state,'published');const execution=await f.store.read('execution:attempt');assert.equal(execution.intent.review.comparisons.length,1);assert.deepEqual(execution.intent.changeSet.changes.map(c=>c.path),['ui.css']);assert.match(f.reviews[0].body,/### Before/);assert.match(f.reviews[0].body,/### After/);
 });
+test('a blocked repository agent cannot publish partial edits and retains the Codex thread and blocker',async t=>{
+  const f=await fixture(t),task={taskId:'blocked-attempt',logicalTaskId:'task',repositoryBinding:'example',instructions:'Implement',review:{title:'Title',description:'Description'}};
+  const execute=async(task,auth,{workspacePath})=>{await writeFile(join(workspacePath,'app.txt'),'unfinished changes');return {state:'blocked',reason:'repository_agent_blocked',result:{threadId:'blocked-thread',blockers:['Human input required']}};};
+  const receipt=await runRepositoryTask(task,'{}',f.config,{store:f.store,adapter:f.adapter,execute});assert.equal(receipt.state,'blocked');assert.equal(receipt.result.threadId,'blocked-thread');assert.equal(f.createCalls,0);assert.equal((await f.store.read('execution:blocked-attempt')).state,'blocked');
+});

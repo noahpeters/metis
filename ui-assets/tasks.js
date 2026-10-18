@@ -28,7 +28,7 @@ function renderDetail(){
     actions.append(button('Edit task',()=>openForm(task),false),button('Mark ready',()=>post('ready')));
   }
   if(!attempts.length&&task.phase!=='cancelled')actions.append(button('Cancel task',()=>post('cancel')));
-  if(task.phase==='ready'&&(!attempts.length||(['blocked','failed'].includes(attempts[0].state)&&attempts[0].result?.containerStopped===true))){const b=button(attempts.length?'Retry cloud execution':'Start cloud execution',()=>post('start',{attempt_id:crypto.randomUUID()}));b.disabled=busy||dependencies.some(d=>d.state!=='completed');actions.append(b);}
+  if(task.phase==='ready'&&(!attempts.length||(['blocked','failed'].includes(attempts[0].state)&&attempts[0].result?.containerStopped===true))){const b=button(attempts.length?'Retry cloud execution':task.data.repositoryBinding?'Run and submit change':'Start cloud execution',()=>post('start',{attempt_id:crypto.randomUUID()}));b.disabled=busy||dependencies.some(d=>d.state!=='completed');actions.append(b);}
   panel.append(actions,el('h3','Instructions'),el('pre',task.instructions,'task-content'),el('h3','Task data'),el('pre',JSON.stringify(task.data,null,2),'task-content'),el('h3','Dependencies'));
   for(const d of dependencies)panel.append(link(`${d.title} · ${d.state}`,`/tasks/${d.id}`),el('br'));
   if(!dependencies.length)panel.append(el('p','No dependencies.'));
@@ -44,6 +44,7 @@ function renderDetail(){
     const article=el('article',undefined,'task-attempt');article.id=`attempt-${attempt.id}`;
     article.append(link(`Attempt ${attempt.id}`,attempt.url),el('p',`${attempt.state} · queued ${date(attempt.queued_at)} · started ${date(attempt.execution_started_at)}`));
     if(attempt.error)article.append(el('p',attempt.error,'warning'));
+    if(attempt.result?.blockers?.length)article.append(el('p',attempt.result.blockers.join(' · '),'warning'));
     const repository=attempt.result?.repository;
     if(repository){
       article.append(el('p',`Repository publication: ${repository.publication.state}${repository.publication.reason?' · '+repository.publication.reason:''}`));

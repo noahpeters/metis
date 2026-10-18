@@ -6,7 +6,10 @@ Native task -> Queue -> private runtime Worker -> configured GitHub/Artifacts
 adapter -> pinned source snapshot in D1 -> isolated workspace -> subscription
 Codex CLI -> captured replacement changes -> durable publication intent ->
 branch/review -> recorded publication result. The model does not create a PR
-through the Codex UI. Existing issue-backed dispatch and tasks without a
+through the Codex UI. Repository runs require a schema-constrained completed/
+blocked outcome; a completed CLI turn alone cannot override a reported blocker
+or project instruction requiring human input. Blocked outcomes preserve their
+thread and blocker details and cannot publish captured changes. Existing issue-backed dispatch and tasks without a
 repository binding keep their previous behavior.
 
 The adapters implement real Git fetch/read/push commands and authenticated
@@ -184,8 +187,7 @@ Keep original task instructions in the Instructions field. The review body
 includes the configured Markdown, the Codex execution report when present, and
 the task/attempt identities. Optional binding `taskUiOrigin` adds a reverse link
 to the exact Metis execution record. The execution report is model output, not
-an assertion that independent project checks passed. Mark ready and
-start. The control-plane checks runtime binding capabilities before creating an
+an assertion that independent project checks passed. Mark ready and choose **Run and submit change**. The control-plane checks runtime binding capabilities before creating an
 attempt. Artifacts review descriptions need at least 120 characters. Task data
 remains bounded by the task API; it is not a place for tokens or credentials.
 
