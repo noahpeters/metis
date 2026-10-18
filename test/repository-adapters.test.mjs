@@ -174,3 +174,15 @@ test('repository progress persists before execution finishes without overwriting
  const execute=async(task,auth,options)=>{assert.equal(options.captureCommandOutput,true);await options.onProgress(progress);assert.equal((await f.store.read('execution:live-attempt')).state,'running');assert.deepEqual(await f.store.read('progress:live-attempt'),progress);return {state:'blocked',reason:'execution_timeout',result:progress};};
  const receipt=await runRepositoryTask(task,'{}',{...f.config,captureCommandOutput:true},{store:f.store,adapter:f.adapter,execute});assert.equal(receipt.state,'blocked');assert.equal((await f.store.read('execution:live-attempt')).state,'blocked');assert.equal(f.createCalls,0);
 });
+
+
+test('read-only diagnostic receives the longer deadline and cannot publish captured edits',async t=>{
+ const f=await fixture(t),task={taskId:'diagnostic-attempt',logicalTaskId:'task',repositoryBinding:'example',instructions:'Read only',review:{title:'Title',description:'Description'}};
+ const execute=async(task,auth,{workspacePath,timeoutMs})=>{
+  assert.equal(timeoutMs,2100000);await writeFile(join(workspacePath,'app.txt'),'unexpected edit');
+  return {state:'completed',result:{threadId:'diagnostic-thread',commandCount:1}};
+ };
+ const receipt=await runRepositoryTask(task,'{}',{...f.config,readOnlyDiagnostic:true,executionTimeoutMs:2100000},{store:f.store,adapter:f.adapter,execute});
+ assert.equal(f.createCalls,0);assert.equal(receipt.result.repository.captureFailure,'diagnostic_source_changes');
+ assert.equal((await f.store.read('execution:diagnostic-attempt')).intent,null);
+});

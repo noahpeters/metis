@@ -53,6 +53,7 @@ export async function runRepositoryTask(task,auth,config,{store:providedStore,ex
         check(!containsSecret(JSON.stringify(receipt)),'credential_output_rejected');if(receipt.state!=='completed'){blockedExecution=receipt;await store.save(key,{identity,state:'blocked',result:receipt.result??null,reason:receipt.reason});throw new AdapterError(receipt.reason??'codex_repository_execution_incomplete');}completedExecution={identity,result:receipt.result};
         await store.save(key,{identity,state:'capturing',snapshot,result:receipt.result});
         const {changeSet,evidence}=await adapter.collect({snapshot,workspaceHandle:workspace,excludePaths:config.capture?[config.capture.output]:[]});
+        check(config.readOnlyDiagnostic!==true||!changeSet,'diagnostic_source_changes');
         let description=task.review.description;
         if(receipt.result.finalMessage){const suffix='\n\n## Codex execution report\n\n'+receipt.result.finalMessage;description+=suffix.slice(0,Math.max(0,55000-description.length));}
         description+='\n\nMetis task: `'+task.logicalTaskId+'` · attempt: `'+executionId+'`';

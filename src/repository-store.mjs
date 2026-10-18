@@ -24,7 +24,9 @@ export async function repositoryStore(request,env) {
     if(body.action==='read'&&valid(key)){const row=await env.DB.prepare('SELECT value FROM repository_records WHERE key=?').bind(key).first();return json(row?JSON.parse(row.value):null);}
     if(body.action==='save'&&valid(key)) {const value=JSON.stringify(body.value);if(new TextEncoder().encode(value).length>1024*1024)return json({error:'too_large'},413);if(!valid(body.changeId)||!valid(body.owner))return json({error:'lock_required'},409);const result=await env.DB.prepare('INSERT INTO repository_records(key,value) SELECT ?,? WHERE EXISTS (SELECT 1 FROM repository_locks WHERE change_id=? AND owner=? AND expires_at>unixepoch()) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=unixepoch()').bind(key,value,body.changeId,body.owner).run();return json({ok:!!result.meta.changes},result.meta.changes?200:409);}
     if(['lock','unlock'].includes(body.action)&&valid(body.changeId)&&valid(body.owner)) {
-      const result=body.action==='lock'?await env.DB.prepare('INSERT INTO repository_locks(change_id,owner,expires_at) VALUES(?,?,unixepoch()+1200) ON CONFLICT(change_id) DO UPDATE SET owner=excluded.owner,expires_at=excluded.expires_at WHERE repository_locks.expires_at<=unixepoch()').bind(body.changeId,body.owner).run():await env.DB.prepare('DELETE FROM repository_locks WHERE change_id=? AND owner=?').bind(body.changeId,body.owner).run();
+      const leaseSeconds=body.leaseSeconds??1200;
+      if(!Number.isInteger(leaseSeconds)||leaseSeconds<1||leaseSeconds>2700)return json({error:'invalid_lease'},400);
+      const result=body.action==='lock'?await env.DB.prepare('INSERT INTO repository_locks(change_id,owner,expires_at) VALUES(?,?,unixepoch()+?) ON CONFLICT(change_id) DO UPDATE SET owner=excluded.owner,expires_at=excluded.expires_at WHERE repository_locks.expires_at<=unixepoch()').bind(body.changeId,body.owner,leaseSeconds).run():await env.DB.prepare('DELETE FROM repository_locks WHERE change_id=? AND owner=?').bind(body.changeId,body.owner).run();
       return json({ok:!!result.meta.changes},result.meta.changes?200:409);
     }
     return json({error:'invalid_request'},400);

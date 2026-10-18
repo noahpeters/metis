@@ -294,44 +294,62 @@ the CLI emits it; a silent child process does not itself generate live output.
 
 ### Next Cabinitron no-op experiment
 
-After human merge and exact-commit deployment, temporarily enroll the approved
-Cabinitron binding with `executionTimeoutMs:600000` and
-`captureCommandOutput:true`. Create a fresh README-comment-only task. Retain the
-same five project checks and require this diagnostic harness instead of
-launching checks concurrently:
+After human merge and exact-commit deployment, use a temporary **read-only**
+Cabinitron binding for this diagnostic. Set `readOnlyDiagnostic:true`,
+`executionTimeoutMs:2100000` (35 minutes), and `captureCommandOutput:true` in its
+trusted configuration. Enroll only a repository-scoped read credential with at
+least a one-hour lifetime; do not enroll an operator session or publishing
+credential. Use the existing authenticated private runtime RPC client with
+`readOnlyDiagnostic:true` in the task payload, **not native API submission or
+Queues**. Diagnostic bindings report `configured:false` for queued admission,
+and execution config rejects payloads without the private marker. The longer
+mode cannot mint write credentials or publish/update reviews; unexpected source
+changes prevent publication.
+
+Create one fresh source-unchanged diagnostic task. Retain the same five project
+checks and run the harness exactly once from the prepared repository workspace:
 
 ```sh
 python3 /app/runtime/container/sequential-checks.py \
-  --pnpm /tmp/metis-tools/node_modules/.bin/pnpm --timeout-seconds 480
+  --pnpm /tmp/metis-tools/node_modules/.bin/pnpm --timeout-seconds 1800
 ```
 
-Run from the prepared repository workspace. The harness invokes normal `pnpm
-lint`, `typecheck`, `test`, `build`, and `build:worker`, sequentially, without
-skipping tests or changing flags. It prints bounded progress every 15 seconds
-and saves a private `/tmp/metis-checks-*/progress.json` plus per-check logs.
-Verification subprocesses receive `CI=true`, selecting the repository's CI
-profile even when the parent environment omits CI or sets it to false. This
-leaves the parent Codex environment, repository configuration, and execution
-deadlines unchanged. A controlled comparison passed all eight selected geometry
-cases under this profile without a GPU; the full cloud suite still needs a
-post-deployment rerun. That comparison changed both worker count and test timeout,
-so it does not isolate their individual effects.
-Have Codex poll this file and print only the current check and its last 20 log
-lines (at most 2,000 characters) if its shell command yields a background session.
-Do not start another check or another harness while that session is active.
-A check that exceeds the selected timeout or 5 MB of log output is terminated, the
-harness stops with a nonzero exit, and the task must report blocked. No later
-checks run after failure. This bounds diagnosis; it is not a passing result.
-The default remains four minutes per check; this diagnostic explicitly opts into
-eight minutes, the maximum accepted value. The previous CI-profile run passed
-lint and type checking but tests were still producing passing entries when the
-four-minute limit terminated them. No aggregate test result was available and
-neither build ran. This longer window does not change project tests, CI settings,
-or the existing ten-minute overall Codex execution deadline. That overall deadline
-includes all five checks and agent overhead; it can still interrupt a run before
-each check uses its individual allowance. Report incomplete checks as blocked.
+The harness invokes normal `pnpm lint`, `typecheck`, `test`, `build`, and
+`build:worker`, sequentially, without skipping tests or changing flags. It
+provides bounded progress every 15 seconds and private
+`/tmp/metis-checks-*/progress.json` plus per-check logs. Verification children
+receive `CI=true`; the parent Codex environment remains unchanged. Have Codex
+poll the same shell session and progress file, printing only the current check
+and its last 20 log lines (at most 2,000 characters). Never start another harness
+while that session is active. Retain actual elapsed times and final test totals,
+or report totals unavailable if no aggregate result was produced.
 
-Watch the task page/API and independently SELECT the corresponding progress
+The default remains four minutes per check. This experiment opts into 30 minutes,
+the maximum accepted value, with a 35-minute overall Codex deadline to allow the
+other checks and reporting to finish. The container request allows 38 minutes,
+idle sleep is 40 minutes, the execution lease is 45 minutes, and the scoped
+capability lasts 50 minutes. No D1 schema migration is needed; leases already
+store expiry timestamps. These longer values apply only to trusted read-only
+diagnostics. Ordinary bindings retain the existing 90-second default,
+ten-minute maximum, 20-minute lease, and 30-minute capability.
+
+A check exceeding its selected timeout or 5 MB log limit is terminated; the
+harness returns nonzero and stops all later checks. The overall Codex deadline
+can still terminate a task; incomplete verification remains blocked. The prior
+CI-profile run passed lint and type checking, but tests hit the eight-minute
+limit without aggregate counts and neither build ran. A targeted eight-case
+comparison passed with CI enabled without a GPU; WebGL errors in full-suite
+output do not establish a GPU requirement or a passing full-suite result.
+
+Observe execution/progress records directly through read-only D1 queries during
+this private diagnostic; it does not create a native API task record. Compare
+its final runtime receipt if available, independently confirm the execution
+container is inactive, retain any local bridge error, and remove temporary
+read-only enrollment after the run. Do not automatically replay an attempt after
+a transport failure: recover its existing D1 result first.
+
+For a subsequent normally enrolled no-op publication test, watch the task
+page/API and independently SELECT the corresponding progress
 record in D1 during execution. Confirm timestamps advance and output is bounded;
 compare the terminal API/D1 results and independently confirm the container
 stops. Verify native review bytes/check evidence before claiming publication

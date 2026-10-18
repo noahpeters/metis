@@ -20,7 +20,8 @@ test('Worker Git proxy uses a supported redirect mode and refuses upstream redir
     }});
    }};`},
   {type:'ESModule',path:root+'src/repository-service.mjs'},
-  {type:'ESModule',path:root+'src/github.mjs'}
+  {type:'ESModule',path:root+'src/github.mjs'},
+  {type:'ESModule',path:root+'runtime/repositories/deadline.mjs'}
  ]}));
  t.after(()=>mf.dispose());
  const response=await mf.dispatchFetch('http://test/');assert.equal(response.status,200);assert.equal(await response.text(),'test advertisement');
@@ -34,12 +35,13 @@ test('Worker broker locks, saves and reads D1 through a private authenticated se
    {type:'ESModule',path:root+'broker-test.mjs',contents:`
     import {repositoryServiceFetch,issueRepositoryCapability} from './src/repository-service.mjs';
     export default {async fetch(request,bindings){
-     const source={adapter:'github',repository:'example/project',ref:'main'},env={...bindings,REPOSITORY_CAPABILITY_KEY:'x'.repeat(32),REPOSITORY_PROVIDERS_JSON:JSON.stringify({example:{source,remote:'https://github.com/example/project.git',store:{origin:'https://private.invalid/v1/repositories/store',token:new URL(request.url).searchParams.has('bad-auth')?'wrong':'test-bridge'}}})};
+     const source={adapter:'github',repository:'example/project',ref:'main'},env={...bindings,REPOSITORY_CAPABILITY_KEY:'x'.repeat(32),REPOSITORY_PROVIDERS_JSON:JSON.stringify({example:{source,remote:'https://github.com/example/project.git',readOnlyDiagnostic:new URL(request.url).searchParams.has('diagnostic'),store:{origin:'https://private.invalid/v1/repositories/store',token:new URL(request.url).searchParams.has('bad-auth')?'wrong':'test-bridge'}}})};
      const token=await issueRepositoryCapability(env,{source,binding:'example',taskId:'1'.repeat(36),logicalTaskId:'2'.repeat(36),executionId:'1'.repeat(36)});
      return repositoryServiceFetch(new Request('https://broker.example/v1/repositories/example/store',{method:'POST',headers:{authorization:'Bearer '+token},body:await request.text()}),env,{fetchImpl:()=>{throw Error('Public store transport is forbidden');}});
     }};`},
    {type:'ESModule',path:root+'src/repository-service.mjs'},
-   {type:'ESModule',path:root+'src/github.mjs'}
+   {type:'ESModule',path:root+'src/github.mjs'},
+  {type:'ESModule',path:root+'runtime/repositories/deadline.mjs'}
   ]},
   {name:'store',d1Databases:{DB:'store-test'},bindings:{REPOSITORY_STORE_TOKEN:'test-bridge'},modules:[
    {type:'ESModule',path:root+'store-test.mjs',contents:`import {repositoryStore} from './src/repository-store.mjs';export default {fetch(request,env){return repositoryStore(request,env);}};`},
@@ -58,4 +60,9 @@ test('Worker broker locks, saves and reads D1 through a private authenticated se
  const progressKey='progress:'+'1'.repeat(36);assert.equal((await call({action:'save',key:progressKey,changeId,owner,value:{commandCount:1}})).status,200);assert.equal((await call({action:'save',key:'progress:'+'9'.repeat(36),changeId,owner,value:{bad:true}})).status,403);assert.deepEqual(JSON.parse((await db.prepare('SELECT value FROM repository_records WHERE key=?').bind(progressKey).first()).value),{commandCount:1});
  const row=await db.prepare('SELECT value FROM repository_records WHERE key=?').bind(changeId).first();assert.deepEqual(JSON.parse(row.value),{state:'running'});
  assert.equal((await call({action:'unlock',changeId,owner})).status,200);
+ assert.equal((await call({action:'lock',changeId,owner},'?diagnostic')).status,200);
+ const lease=await db.prepare('SELECT expires_at-unixepoch() AS seconds FROM repository_locks WHERE change_id=?').bind(changeId).first();assert.ok(lease.seconds>=2699&&lease.seconds<=2700);
+ await db.prepare('UPDATE repository_locks SET expires_at=expires_at-? WHERE change_id=?').bind(31*60,changeId).run();
+ assert.equal((await call({action:'save',key:changeId,changeId,owner,value:{state:'completed'}},'?diagnostic')).status,200);
+ assert.equal((await call({action:'unlock',changeId,owner},'?diagnostic')).status,200);
 });

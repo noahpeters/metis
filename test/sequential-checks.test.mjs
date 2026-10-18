@@ -37,7 +37,7 @@ with open(${JSON.stringify(calls)},'a') as f:
  assert.equal(process.env.CI, processCI);
 });
 
-for (const timeout of [undefined, '480']) test(`verification accepts ${timeout ?? 'default'} bounded check window`, async t => {
+for (const timeout of [undefined, '480', '1800']) test(`verification accepts ${timeout ?? 'default'} bounded check window`, async t => {
  const root = await mkdtemp(join(tmpdir(), 'metis-check-window-'));
  t.after(() => rm(root, { recursive: true, force: true }));
  const pnpm = join(root, 'pnpm');
@@ -52,14 +52,14 @@ for (const timeout of [undefined, '480']) test(`verification accepts ${timeout ?
   ['lint', 'typecheck', 'test', 'build', 'build:worker'].map(name => [name, 'completed', 0]));
 });
 
-for (const timeout of ['0', '-1', '480.01', 'nan', 'inf']) test(`verification rejects invalid check window ${timeout} before launching checks`, async t => {
+for (const timeout of ['0', '-1', '1800.01', 'nan', 'inf']) test(`verification rejects invalid check window ${timeout} before launching checks`, async t => {
  const root = await mkdtemp(join(tmpdir(), 'metis-check-invalid-'));
  t.after(() => rm(root, { recursive: true, force: true }));
  const pnpm = join(root, 'pnpm'), marker = join(root, 'launched');
  await writeFile(pnpm, `#!/usr/bin/env python3\nfrom pathlib import Path\nPath(${JSON.stringify(marker)}).touch()\n`, { mode: 0o700 });
  await assert.rejects(exec('python3', ['runtime/container/sequential-checks.py', '--pnpm', pnpm, '--timeout-seconds', timeout]), error => {
   assert.equal(error.code, 2);
-  assert.match(error.stderr, /timeout in \(0, 480\] required/);
+  assert.match(error.stderr, /timeout in \(0, 1800\] required/);
   return true;
  });
  await assert.rejects(readFile(marker), { code: 'ENOENT' });

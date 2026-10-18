@@ -14,3 +14,13 @@ test('private D1 bridge stores and independently retrieves binary content across
 });
 test('bridge authentication and content integrity fail closed',async t=>{const f=fixture(t);const unauthorized=await repositoryStore(new Request('https://metis.example/v1/repositories/store',{method:'POST',body:'{}'}),f.env);assert.equal(unauthorized.status,401);const store=f.client();await assert.rejects(store.save('unlocked',{bad:true}));const content=await store.put('contents');f.sql.prepare("UPDATE repository_object_chunks SET data='Y29ycnVwdA==' WHERE ref=?").run(content.ref);await assert.rejects(store.get(content),/integrity/);});
 test('publication leases exclude concurrent writers and fence an expired owner',async t=>{const f=fixture(t),one=f.client(),two=f.client();await one.call('lock',{changeId:'c',owner:'old'});one.lease={changeId:'c',owner:'old'};await assert.rejects(two.call('lock',{changeId:'c',owner:'new'}));f.sql.prepare('UPDATE repository_locks SET expires_at=0').run();await two.call('lock',{changeId:'c',owner:'new'});two.lease={changeId:'c',owner:'new'};await assert.rejects(one.save('record',{owner:'old'}));await two.save('record',{owner:'new'});assert.equal((await two.read('record')).owner,'new');});
+
+
+test('private bridge bounds diagnostic lease duration and preserves ordinary default',async t=>{
+ const f=fixture(t),store=f.client();
+ await store.call('lock',{changeId:'normal',owner:'owner'});
+ assert.ok(f.sql.prepare("SELECT expires_at-unixepoch() AS seconds FROM repository_locks WHERE change_id='normal'").get().seconds<=1200);
+ await store.call('lock',{changeId:'long',owner:'owner',leaseSeconds:2700});
+ assert.ok(f.sql.prepare("SELECT expires_at-unixepoch() AS seconds FROM repository_locks WHERE change_id='long'").get().seconds>=2699);
+ for(const leaseSeconds of [0,-1,2701,1.5,'2700'])await assert.rejects(store.call('lock',{changeId:'invalid',owner:'owner',leaseSeconds}));
+});
