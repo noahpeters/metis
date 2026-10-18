@@ -1,4 +1,5 @@
 import {createGithubAppJwt} from './github.mjs';
+import {repositoryLeaseSeconds,repositoryCapabilitySeconds} from '../runtime/repositories/deadline.mjs';
 const uuid=/^[a-f0-9-]{36}$/;
 const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json','cache-control':'no-store'}});
 function requireValue(condition){if(!condition)throw Error('repository_service_rejected');}
@@ -6,11 +7,12 @@ function base64(bytes){return btoa(String.fromCharCode(...bytes)).replaceAll('+'
 function decode(text){return Uint8Array.from(atob(text.replaceAll('-','+').replaceAll('_','/')),c=>c.charCodeAt(0));}
 async function key(secret){requireValue(typeof secret==='string'&&secret.length>=32);return crypto.subtle.importKey('raw',new TextEncoder().encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign','verify']);}
 export async function issueRepositoryCapability(env,claims,now=Math.floor(Date.now()/1000)){
-  const body=base64(new TextEncoder().encode(JSON.stringify({...claims,expires:now+1800}))),signature=await crypto.subtle.sign('HMAC',await key(env.REPOSITORY_CAPABILITY_KEY),new TextEncoder().encode(body));return body+'.'+base64(new Uint8Array(signature));
+  const config=repositoryBinding(env,claims.binding);
+  const body=base64(new TextEncoder().encode(JSON.stringify({...claims,readOnlyDiagnostic:config.readOnlyDiagnostic===true,expires:now+repositoryCapabilitySeconds(config)}))),signature=await crypto.subtle.sign('HMAC',await key(env.REPOSITORY_CAPABILITY_KEY),new TextEncoder().encode(body));return body+'.'+base64(new Uint8Array(signature));
 }
 export async function verifyRepositoryCapability(env,token,now=Math.floor(Date.now()/1000)){
   const parts=String(token).split('.');requireValue(parts.length===2&&await crypto.subtle.verify('HMAC',await key(env.REPOSITORY_CAPABILITY_KEY),decode(parts[1]),new TextEncoder().encode(parts[0])));
-  const claims=JSON.parse(new TextDecoder().decode(decode(parts[0])));requireValue(Number.isInteger(claims.expires)&&claims.expires>now&&claims.expires<=now+1800&&/^[a-z][a-z0-9_-]{0,63}$/.test(claims.binding)&&uuid.test(claims.taskId)&&uuid.test(claims.logicalTaskId)&&uuid.test(claims.executionId));return claims;
+  const claims=JSON.parse(new TextDecoder().decode(decode(parts[0]))),config=repositoryBinding(env,claims.binding);requireValue((claims.readOnlyDiagnostic===true)===(config.readOnlyDiagnostic===true)&&Number.isInteger(claims.expires)&&claims.expires>now&&claims.expires<=now+repositoryCapabilitySeconds(config)&&/^[a-z][a-z0-9_-]{0,63}$/.test(claims.binding)&&uuid.test(claims.taskId)&&uuid.test(claims.logicalTaskId)&&uuid.test(claims.executionId));return claims;
 }
 export function repositoryBinding(env,binding){
   const bindings=JSON.parse(env.REPOSITORY_PROVIDERS_JSON??'{}');requireValue(Object.hasOwn(bindings,binding));const config=bindings[binding],url=new URL(config.remote);
@@ -21,11 +23,18 @@ export function repositoryBinding(env,binding){
 }
 export async function prepareRepositoryExecution(env,binding,task){
   const config=repositoryBinding(env,binding);requireValue(uuid.test(task.taskId)&&uuid.test(task.logicalTaskId)&&uuid.test(task.executionId??task.taskId));
+  // Queue task payloads never carry this private diagnostic marker. Recheck at
+  // execution time as well as admission, including after binding reconfiguration.
+  requireValue(config.readOnlyDiagnostic!==true||task.readOnlyDiagnostic===true);
   const origin=new URL(env.REPOSITORY_PUBLIC_ORIGIN);requireValue(origin.protocol==='https:'&&origin.origin===env.REPOSITORY_PUBLIC_ORIGIN);
   const token=await issueRepositoryCapability(env,{binding,taskId:task.taskId,logicalTaskId:task.logicalTaskId,executionId:task.executionId??task.taskId,source:config.source});const prefix=origin.origin+'/v1/repositories/'+binding;
-  return {source:config.source,remote:prefix+'/git',authorization:'Bearer '+token,broker:{origin:prefix+'/commands',token},store:{origin:prefix+'/store',token},reviewOrigin:config.origin,executionTimeoutMs:config.executionTimeoutMs,setupCommands:config.setupCommands,capture:config.capture,captureCommandOutput:config.captureCommandOutput===true,taskUiOrigin:config.taskUiOrigin};
+  return {source:config.source,remote:prefix+'/git',authorization:'Bearer '+token,broker:{origin:prefix+'/commands',token},store:{origin:prefix+'/store',token},reviewOrigin:config.origin,executionTimeoutMs:config.executionTimeoutMs,readOnlyDiagnostic:config.readOnlyDiagnostic===true,setupCommands:config.setupCommands,capture:config.capture,captureCommandOutput:config.captureCommandOutput===true,taskUiOrigin:config.taskUiOrigin};
+}
+export function repositoryCapabilities(env,binding){
+  try{const c=repositoryBinding(env,binding);const app=!!(env.GITHUB_APP_PRIVATE_KEY&&env.GITHUB_APP_ID&&env.GITHUB_APP_INSTALLATION_ID);const read=c.source.adapter==='github'?(app||c.readToken):c.readAuthorization;const write=c.source.adapter==='github'?(app||c.token):(c.authorization&&c.session);return {configured:c.readOnlyDiagnostic!==true&&!!(read&&write&&env.REPOSITORY_CAPABILITY_KEY&&env.REPOSITORY_PUBLIC_ORIGIN),canRework:c.source.adapter==='github',hasCapture:!!c.capture,hasMedia:!!(c.media||c.artifactsMedia||c.allowPublicMediaBranch)};}catch{return {configured:false};}
 }
 export async function providerAuthorization(env,config,write=false,fetchImpl=fetch){
+  requireValue(!write||config.readOnlyDiagnostic!==true);
   if(config.source.adapter!=='github') {const authorization=write?config.authorization:config.readAuthorization;requireValue(authorization);return {authorization};}
   if(env.GITHUB_APP_ID&&env.GITHUB_APP_INSTALLATION_ID&&env.GITHUB_APP_PRIVATE_KEY){
     const jwt=await createGithubAppJwt(env.GITHUB_APP_ID,env.GITHUB_APP_PRIVATE_KEY),r=await fetchImpl('https://api.github.com/app/installations/'+env.GITHUB_APP_INSTALLATION_ID+'/access_tokens',{method:'POST',redirect:'manual',headers:{authorization:'Bearer '+jwt,'content-type':'application/json','user-agent':'metis-repository-service','x-github-api-version':'2022-11-28'},body:JSON.stringify({repositories:[config.source.repository.split('/')[1]],permissions:write?{contents:'write',pull_requests:'write',issues:'write'}:{contents:'read'}}),signal:AbortSignal.timeout(30000)});requireValue(r.ok);const d=await r.json();requireValue(d.token);return {token:d.token,authorization:'Basic '+btoa('x-access-token:'+d.token)};
@@ -63,9 +72,11 @@ export async function repositoryServiceFetch(request,env,{fetchImpl=fetch,publis
       else if(body.action==='save')requireValue((body.key===execution||body.key==='progress:'+claims.executionId)&&body.changeId===execution);
       else if(['lock','unlock'].includes(body.action))requireValue(body.changeId===execution);
       else throw Error('store_action_rejected');
+      if(body.action==='lock')body.leaseSeconds=repositoryLeaseSeconds(config);
       const value=await storeCall(env,config,body);if(body.action==='read'&&body.key.startsWith('publication:'))requireValue(!value||(value.intent?.taskId??value.receipt?.taskId)===claims.logicalTaskId);return json(value);
     }
     const body=await boundedJSON(request);requireValue(['publish','update','readChange','observe'].includes(body.operation));
+    requireValue(config.readOnlyDiagnostic!==true||!['publish','update'].includes(body.operation));
     if(['publish','update'].includes(body.operation))await requireGrantedContent(env,objectScope(claims),body.intent);
     const value=await publish({claims,operation:body.operation,intent:body.intent,publication:body.publication});if(value.ok)await grantReturnedContent(env,objectScope(claims),value.value);return json(value);
   }catch{return json({error:'repository_service_rejected'},403);}

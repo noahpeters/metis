@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';import {readFileSync} from 'node:fs';
-import {repositoryServiceFetch,issueRepositoryCapability,verifyRepositoryCapability,prepareRepositoryExecution,providerAuthorization} from '../src/repository-service.mjs';
+import {repositoryServiceFetch,issueRepositoryCapability,verifyRepositoryCapability,prepareRepositoryExecution,providerAuthorization,repositoryCapabilities} from '../src/repository-service.mjs';
 import {repositoryStore} from '../src/repository-store.mjs';import {HttpRepositoryStore} from '../runtime/repositories/store.mjs';
 const claims={source:{adapter:'github',repository:'example/project',ref:'main'},binding:'example',taskId:'1'.repeat(36),logicalTaskId:'2'.repeat(36),executionId:'1'.repeat(36)};
 function fixture(t){const sql=new DatabaseSync(':memory:');t.after(()=>sql.close());for(const file of ['0020_standalone_dispatch.sql','0021_standalone_d1_proof.sql','0022_standalone_codex_runner.sql','0023_native_tasks.sql','0024_repository_store.sql','0025_repository_object_grants.sql'])sql.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
@@ -53,3 +53,40 @@ test('broker store rejects redirect responses without forwarding its bridge secr
 });
 
 test('store bridge fails closed without its private service binding',async t=>{const f=fixture(t);const response=await f.request('store',{method:'POST',body:JSON.stringify({action:'read',key:'execution:'+claims.executionId})},{fetchImpl:async()=>assert.fail('Missing binding must not fall back to public fetch')});assert.equal(response.status,403);});
+
+
+test('read-only diagnostic enrollment extends scoped lifetimes but cannot enter queued admission or publishing',async t=>{
+ const f=fixture(t);
+ assert.equal(repositoryCapabilities(f.env,'example').configured,true);
+ f.env.REPOSITORY_PROVIDERS_JSON=JSON.stringify({example:{...f.config,readOnlyDiagnostic:true,executionTimeoutMs:2100000}});
+ assert.equal(repositoryCapabilities(f.env,'example').configured,false);
+ await assert.rejects(prepareRepositoryExecution(f.env,'example',claims));
+ const config=await prepareRepositoryExecution(f.env,'example',{...claims,readOnlyDiagnostic:true});
+ assert.equal(config.readOnlyDiagnostic,true);assert.equal(config.executionTimeoutMs,2100000);
+ const token=await issueRepositoryCapability(f.env,claims,1000);
+ assert.equal((await verifyRepositoryCapability(f.env,token,1000+31*60)).expires,4000);
+ await assert.rejects(verifyRepositoryCapability(f.env,token,4000));
+ for(const operation of ['publish','update'])assert.equal((await f.request('commands',{method:'POST',body:JSON.stringify({operation,intent:{}})},{publish:()=>assert.fail('Diagnostic cannot publish')})).status,403);
+ await assert.rejects(providerAuthorization(f.env,{...f.config,readOnlyDiagnostic:true},true,()=>assert.fail('No publishing credential minting')));
+ f.env.REPOSITORY_STORE={fetch:(url,options)=>repositoryStore(new Request(url,options),{DB:f.env.DB,REPOSITORY_STORE_TOKEN:f.config.store.token})};
+ const store=new HttpRepositoryStore({...config.store,fetchImpl:(url,options)=>repositoryServiceFetch(new Request(url,options),f.env)});
+ await store.lock('execution:'+claims.executionId,async()=>{
+  const row=f.sql.prepare('SELECT expires_at-unixepoch() AS seconds FROM repository_locks').get();assert.ok(row.seconds>=2699&&row.seconds<=2700);
+  // Simulate 31 minutes passing: the former 20-minute fence would reject this.
+  f.sql.prepare('UPDATE repository_locks SET expires_at=expires_at-?').run(31*60);
+  await store.save('execution:'+claims.executionId,{state:'completed'});
+ });
+ // Changing the trusted mode invalidates existing diagnostic capabilities.
+ f.env.REPOSITORY_PROVIDERS_JSON=JSON.stringify({example:f.config});
+ await assert.rejects(verifyRepositoryCapability(f.env,token,1001));
+ const ordinary=await issueRepositoryCapability(f.env,{...claims,readOnlyDiagnostic:true},1000);
+ assert.equal((await verifyRepositoryCapability(f.env,ordinary,1001)).readOnlyDiagnostic,false);
+ await assert.rejects(verifyRepositoryCapability(f.env,ordinary,2800));
+});
+
+test('normal broker locks ignore caller attempts to request a diagnostic lifetime',async t=>{
+ const f=fixture(t);let forwarded;
+ f.env.REPOSITORY_STORE={fetch:async(url,options)=>{forwarded=JSON.parse(options.body);return Response.json({ok:true});}};
+ assert.equal((await f.request('store',{method:'POST',body:JSON.stringify({action:'lock',changeId:'execution:'+claims.executionId,owner:'owner',leaseSeconds:2700})})).status,200);
+ assert.equal(forwarded.leaseSeconds,1200);
+});

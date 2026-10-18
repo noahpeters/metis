@@ -1,6 +1,6 @@
 import {WorkerEntrypoint} from 'cloudflare:workers';
 import {Container} from '@cloudflare/containers';
-import {repositoryServiceFetch,repositoryBinding,prepareRepositoryExecution,providerAuthorization} from '../../src/repository-service.mjs';
+import {repositoryServiceFetch,repositoryBinding,prepareRepositoryExecution,providerAuthorization,repositoryCapabilities} from '../../src/repository-service.mjs';
 import {stopContainerAndConfirm} from '../cloud/container-task.mjs';
 export class RepositoryPublisher extends Container {
   defaultPort=8080;
@@ -23,7 +23,7 @@ export class RepositoryPublisher extends Container {
 export default class RepositoryService extends WorkerEntrypoint {
   fetch(request){return repositoryServiceFetch(request,this.env);}
   async capabilities(binding){
-    try{const c=repositoryBinding(this.env,binding);const app=!!(this.env.GITHUB_APP_PRIVATE_KEY&&this.env.GITHUB_APP_ID&&this.env.GITHUB_APP_INSTALLATION_ID);const read=c.source.adapter==='github'?(app||c.readToken):c.readAuthorization;const write=c.source.adapter==='github'?(app||c.token):(c.authorization&&c.session);return {configured:!!(read&&write&&this.env.REPOSITORY_CAPABILITY_KEY&&this.env.REPOSITORY_PUBLIC_ORIGIN),canRework:c.source.adapter==='github',hasCapture:!!c.capture,hasMedia:!!(c.media||c.artifactsMedia||c.allowPublicMediaBranch)};}catch{return {configured:false};}
+    return repositoryCapabilities(this.env,binding);
   }
   executionConfig(binding,task){return prepareRepositoryExecution(this.env,binding,task);}
 }
