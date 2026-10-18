@@ -18,8 +18,8 @@ def main():
     parser.add_argument('--pnpm', required=True)
     parser.add_argument('--timeout-seconds', type=float, default=240)
     args = parser.parse_args()
-    if not os.path.isabs(args.pnpm) or not 0 < args.timeout_seconds <= 240:
-        parser.error('absolute pnpm path and a timeout in (0, 240] required')
+    if not os.path.isabs(args.pnpm) or not 0 < args.timeout_seconds <= 480:
+        parser.error('absolute pnpm path and a timeout in (0, 480] required')
     root = Path(tempfile.mkdtemp(prefix='metis-checks-'))
     summary = {'state': 'running', 'checks': [], 'log_directory': str(root)}
     active = None
