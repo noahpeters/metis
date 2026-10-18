@@ -15,6 +15,7 @@
     "test:ui:visual": "node scripts/capture-ui.mjs",
     "test:full-stack": "node --test test/full-stack/pacing.test.mjs",
     "verify": "npm run check && npm test",
+    "deploy:repository:production": "node scripts/require-github-actions.mjs && wrangler deploy --config wrangler.repository.jsonc",
     "deploy:codex:production": "node scripts/require-github-actions.mjs && wrangler deploy --config wrangler.codex.jsonc"
   },
   "devDependencies": {

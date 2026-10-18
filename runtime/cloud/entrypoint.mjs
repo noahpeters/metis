@@ -13,7 +13,7 @@ export class CodexContainer extends Container {
     if (!this.env.CODEX_SUBSCRIPTION_AUTH_JSON) return {state:'blocked',reason:'subscription_auth_missing'};
     let repositoryConfig;
     if(task.repositoryBinding) {
-      try { const bindings=JSON.parse(this.env.REPOSITORY_BINDINGS_JSON??'{}');repositoryConfig=Object.hasOwn(bindings,task.repositoryBinding)?bindings[task.repositoryBinding]:undefined; } catch {}
+      try {repositoryConfig=await this.env.REPOSITORY_SERVICE?.executionConfig(task.repositoryBinding,task);}catch{}
       if(!repositoryConfig)return {state:'blocked',reason:'repository_binding_not_configured'};
     }
     this.sleepAfter=repositoryConfig?'12m':'3m';
@@ -27,8 +27,7 @@ export default class CodexRuntime extends WorkerEntrypoint {
   // invoke the RPC method. A task's UUID selects its own durable container.
   fetch() {return new Response('Not found',{status:404});}
   async repositoryCapabilities(binding) {
-    let config;try{const bindings=JSON.parse(this.env.REPOSITORY_BINDINGS_JSON??'{}');config=Object.hasOwn(bindings,binding)?bindings[binding]:undefined;}catch{}
-    return {configured:!!(config?.store?.origin&&config?.store?.token&&config?.remote&&(config.source?.adapter==='github'?config.token:config.session)),canRework:config?.source?.adapter==='github',hasCapture:!!config?.capture,hasMedia:!!(config?.media||config?.artifactsMedia||config?.allowPublicMediaBranch)};
+    try{return await this.env.REPOSITORY_SERVICE?.capabilities(binding)??{configured:false};}catch{return {configured:false};}
   }
   async execute(task) {
     if (!task || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(task.taskId) || typeof task.instructions!=='string' || !task.instructions.trim() || task.instructions.length>10000 || (task.verification!=null && task.verification!=='numeric_summary_v1')) return {state:'blocked',reason:'invalid_task'};

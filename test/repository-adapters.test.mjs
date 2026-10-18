@@ -118,3 +118,44 @@ test('full execution reports stay durable while the task API receipt remains bou
   const execute=async task=>({state:'completed',result:{taskId:task.taskId,threadId:'thread',commandCount:1,finalMessage:'x'.repeat(20000),agentOutcome:{status:'completed',summary:'x'.repeat(20000),blockers:[]}}});
   const receipt=await runRepositoryTask(task,'{}',f.config,{store:f.store,adapter:f.adapter,execute});assert.equal(receipt.state,'completed');assert.ok(receipt.result.finalMessage.length<4100);assert.equal(receipt.result.agentOutcome,undefined);assert.equal((await f.store.read('execution:long-report')).result.finalMessage.length,20000);
 });
+
+for(const provider of ['github','artifacts'])test(`${provider}: Git-reference source exceeds old limits while only changed bytes enter the store`,async t=>{
+  const f=await fixture(t,provider);
+  // More than 50 MiB overall, and every binary exceeds the former 5 MiB cap.
+  for(let n=0;n<9;n++)await writeFile(join(f.seed,'large-'+n+'.bin'),Buffer.alloc(6*1024*1024,n));
+  git(f.seed,'add','.');git(f.seed,'commit','-m','existing large assets');git(f.seed,'push','origin','main');
+  const puts=[],originalPut=f.store.put.bind(f.store);f.store.put=async bytes=>{puts.push(Buffer.byteLength(bytes));return originalPut(bytes);};
+  const adapter=(provider==='github'?createGitHubAdapter:createArtifactsAdapter)({...f.config});
+  const snapshot=await adapter.resolve({source:f.source});assert.equal(snapshot.adapterVersion,'git-reference-v1');assert.ok(puts.every(n=>n<1000));assert.equal(puts.length,1);
+  await adapter.prepare({snapshot,workspaceHandle:f.workspace});assert.equal((await readFile(join(f.workspace,'large-8.bin'))).length,6*1024*1024);
+  assert.equal((await adapter.collect({snapshot,workspaceHandle:f.workspace})).changeSet,null);
+  await writeFile(join(f.workspace,'app.txt'),'no-op documentation test\n');await writeFile(join(f.workspace,'new.bin'),Buffer.from([0,255,128]));await rm(join(f.workspace,'large-0.bin'));
+  const {changeSet}=await adapter.collect({snapshot,workspaceHandle:f.workspace});assert.deepEqual(changeSet.changes.map(c=>c.path),['app.txt','large-0.bin','new.bin']);
+  const intent=await publicationIntent({taskId:'t',attemptId:'a',changeId:'c',snapshot,changeSet,title:'No-op review',description:'Documentation-only fixture publication and binary transport validation. '.repeat(3)});
+  const receipt=await adapter.publish({intent});assert.equal(git(f.root,'--git-dir='+f.origin,'show',receipt.review.revision+':app.txt'),'no-op documentation test');assert.equal(git(f.root,'--git-dir='+f.origin,'ls-tree',receipt.review.revision,'large-0.bin'),'');assert.ok(git(f.root,'--git-dir='+f.origin,'ls-tree',receipt.review.revision,'large-8.bin'));assert.ok(puts.every(n=>n<1000),'unchanged repository blobs must not enter D1');
+  await writeFile(join(f.workspace,'new.bin'),Buffer.alloc(6*1024*1024));await assert.rejects(adapter.collect({snapshot,workspaceHandle:f.workspace}),/unsafe_workspace_entry/);
+});
+
+for(const provider of ['github','artifacts'])test(`${provider}: isolated publisher applies only the saved task-bound package and reconciles repeat submissions`,async t=>{
+  const {runPublisherCommand}=await import('../runtime/repositories/publisher.mjs');const f=await fixture(t,provider),snapshot=await f.adapter.resolve({source:f.source});await f.adapter.prepare({snapshot,workspaceHandle:f.workspace});await writeFile(join(f.workspace,'app.txt'),'published by service\n');await writeFile(join(f.workspace,'added.bin'),Buffer.from([0,255,3]));
+  const {changeSet}=await f.adapter.collect({snapshot,workspaceHandle:f.workspace});const intent=await publicationIntent({taskId:'task',attemptId:'attempt',changeId:'task',snapshot,changeSet,title:'Controlled package',description:'Apply the captured change package through the trusted publisher. '.repeat(3)});
+  const claims={binding:'example',logicalTaskId:'task',executionId:'attempt'},config={...f.config,binding:'example'},command={claims,operation:'publish',intent};
+  let result=await runPublisherCommand(command,config,{store:f.store,adapter:f.adapter});assert.equal(result.reason,'publisher_execution_not_completed');assert.equal(f.createCalls,0);
+  await f.store.save('execution:attempt',{state:'completed',intent});
+  result=await runPublisherCommand({...command,claims:{...claims,logicalTaskId:'other'}},config,{store:f.store,adapter:f.adapter});assert.equal(result.ok,false);assert.equal(f.createCalls,0);
+  result=await runPublisherCommand({...command,intent:{...intent,review:{...intent.review,description:'tampered'}}},config,{store:f.store,adapter:f.adapter});assert.equal(result.ok,false);assert.equal(f.createCalls,0);
+  result=await runPublisherCommand(command,config,{store:f.store,adapter:f.adapter});assert.equal(result.ok,true,result.reason);assert.equal(f.createCalls,1);assert.equal(git(f.root,'--git-dir='+f.origin,'show',result.value.review.revision+':app.txt'),'published by service');
+  assert.deepEqual(await runPublisherCommand(command,config,{store:f.store,adapter:f.adapter}),result);assert.equal(f.createCalls,1);
+  const observed=await runPublisherCommand({claims,operation:'observe',publication:result.value},config,{store:f.store,adapter:{observe:async()=>({review:'observed'})}});assert.equal(observed.ok,true);assert.deepEqual(observed.value,{review:'observed'});
+  for(const operation of ['merge','approve','deploy'])assert.equal((await runPublisherCommand({claims,operation},config,{store:f.store,adapter:f.adapter})).ok,false);
+});
+test('execution-side adapter delegates all publication operations without a repository write credential',async t=>{
+  const {createExecutionAdapter}=await import('../runtime/repositories/execution-adapter.mjs'),f=await fixture(t),seen=[];
+  const adapter=createExecutionAdapter({source:f.source,remote:'https://broker.example/v1/repositories/example/git',authorization:'Bearer read-capability',broker:{origin:'https://broker.example/v1/repositories/example/commands',token:'task-capability'}},f.store,{fetchImpl:async(url,options)=>{seen.push(JSON.parse(options.body));assert.equal(options.headers.authorization,'Bearer task-capability');assert.ok(!options.body.includes('test-credential'));return Response.json({ok:true,value:{received:true}});}});
+  for(const method of ['publish','update','readChange','observe'])assert.deepEqual(await adapter[method](method==='publish'||method==='update'?{intent:{sample:'captured'}}:{publication:{sample:'recorded'}}),{received:true});assert.deepEqual(seen.map(x=>x.operation),['publish','update','readChange','observe']);
+});
+test('source metadata rejects legacy full-tree manifests and exports raw Git bytes without checkout filters',async t=>{
+  const f=await fixture(t);await writeFile(join(f.seed,'.gitattributes'),'*.txt text eol=crlf\n');git(f.seed,'add','.gitattributes');git(f.seed,'commit','-m','attributes');git(f.seed,'push','origin','main');
+  const snapshot=await f.adapter.resolve({source:f.source});await f.adapter.prepare({snapshot,workspaceHandle:f.workspace});assert.equal(await readFile(join(f.workspace,'app.txt'),'utf8'),'original\n');assert.equal((await f.adapter.collect({snapshot,workspaceHandle:f.workspace})).changeSet,null);
+  const content=await f.store.put(JSON.stringify({files:[{path:'app.txt',mode:'100644',sha256:'0'.repeat(64)}]})),other=join(f.root,'legacy');await mkdir(other);await assert.rejects(f.adapter.prepare({snapshot:{...snapshot,adapterVersion:'git-v1',content},workspaceHandle:other}),/invalid_git_reference/);
+});

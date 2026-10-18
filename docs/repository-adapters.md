@@ -1,3 +1,5 @@
+> Source storage update: adapters now retain Git commit references, never full repositories in D1. Cloud execution uses the read-only Git proxy and submits binary-safe change packages to the separate publisher service. See [operations](repository-adapters-operations.md) for enrollment, limits and the remaining Artifacts update guard.
+
 # Repository adapters: source, workspace, change, review
 
 ## Purpose and implementation status
