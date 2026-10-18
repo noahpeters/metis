@@ -135,6 +135,13 @@ and authenticated review API; this is not a universal Cloudflare reviews API.
 Its repository tokens/operator sessions need renewal by their enrolled owner.
 There is no automatic long-lived Artifacts credential refresh in this release.
 
+Interrupted Codex runs remain blocked. Their receipts retain a validated thread
+UUID when available, a successful-command count, elapsed time, and the last
+command's fixed hint/status/timing. Hints summarize CLI-reported command text;
+they do not establish that a required check ran or passed. Raw command text,
+stdout, stderr and credentials are excluded. The task API and D1 retain this
+metadata for diagnosis; publication still requires a verified completed turn.
+
 ## Change package and limits
 
 The submitted patch is a structured file-change manifest, rather than a

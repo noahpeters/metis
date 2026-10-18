@@ -106,3 +106,14 @@ test('publication retry queues a distinct job while preserving the completed exe
   await worker.queue({messages:[{body:{type:'native_repository_publish',taskId:job},attempts:1,ack(){},retry(){assert.fail();}}]},f.env);
   const saved=JSON.parse(f.sql.prepare('SELECT result_json FROM standalone_tasks WHERE id=?').get(run).result_json);assert.equal(saved.threadId,'original-thread');assert.equal(saved.repository.publication.state,'published');
 });
+
+test('interrupted execution identity and safe progress survive Queue processing, D1 and the task API without completion',async t=>{
+  const f=fixture(t),id=await f.create('Interrupted work');await f.action(id,'ready');
+  const progress={threadId:'33333333-3333-4333-8333-333333333333',commandCount:1,executionProgress:{elapsedMs:300000,lastCommand:{hint:'pnpm_test',status:'running',elapsedMs:100000}},containerStopped:true,containerStopForced:false};
+  let runs=0;f.env.CODEX_RUNTIME.execute=async()=>{runs++;return {state:'blocked',reason:'execution_timeout',result:progress};};
+  const attempt=crypto.randomUUID();await f.action(id,'start',{attempt_id:attempt});let acked=false;
+  await worker.queue({messages:[{body:f.env.DISPATCH_QUEUE.sent[0],attempts:1,ack(){acked=true;},retry(){assert.fail('Do not replay interrupted Codex');}}]},f.env);
+  assert.equal(runs,1);assert.equal(acked,true);
+  const record=await f.get(id);assert.equal(record.task.state,'blocked');assert.equal(record.attempts[0].thread_id,progress.threadId);assert.deepEqual(record.attempts[0].result,progress);assert.equal(record.attempts[0].error,'Cloud runtime: execution_timeout');
+  const stored=f.sql.prepare('SELECT state,result_json FROM standalone_tasks WHERE id=?').get(attempt);assert.equal(stored.state,'blocked');assert.deepEqual(JSON.parse(stored.result_json),progress);
+});
